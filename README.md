@@ -44,10 +44,8 @@ Develop an **ultra-compact, GPS-aided, Mach-capable tracking, telemetry, and con
 
 ### 1.2 Power Management  
 - Input range **2 V – 16 V**, regulated by **TPS63070** buck-boost converter  
-- Dual-domain power rails for digital and analog isolation  
 - TVS and reverse-polarity protection on main input  
 - Ferrite-bead filtering for sensor rail stability during pyro discharge  
-- Power-on sequencing prevents GPS/LoRa brownouts  
 - Current-sense shunt for real-time current telemetry  
 - Optimized for single- or dual-cell Li-ion/LiPo operation
 
@@ -93,9 +91,7 @@ Develop an **ultra-compact, GPS-aided, Mach-capable tracking, telemetry, and con
   - Each driven by **Dedicated N-MOSFET** with Kelvin-sense feedback  
   - **16-bit ADC-based continuity detection** via precision sense resistor  
   - Supports both pulse and sustained fire modes  
-- Integrated flyback suppression and gate clamping  
-- Electrically isolated from sensor grounds  
-- Assignable for recovery, staging, or control actuation logic
+- Integrated flyback suppression and gate clamping   
 
 ---
 
@@ -103,7 +99,7 @@ Develop an **ultra-compact, GPS-aided, Mach-capable tracking, telemetry, and con
 - **Four PWM channels** driven by hardware timers for low-latency response  
 - Compatible with 7.4 V servo rail  
 - Shared timing source with navigation loop for synchronized control  
-- Upstream filtering implemented at regulator level (no local decoupling)
+- Upstream filtering implemented at regulator level 
 
 ---
 
@@ -119,7 +115,6 @@ Develop an **ultra-compact, GPS-aided, Mach-capable tracking, telemetry, and con
 - **4-layer PCB stackup** 
 - Controlled impedance traces (50 Ω RF, 90 Ω USB)  
 - Conformal coating for environmental resilience  
-- Rated for > 50 g acceleration and thermal shock tolerance  
 - Compact layout for 38 mm and 54 mm avionics bays  
 - Screw connectors for power, pyro, and servo I/O  
 - SWD programming header for debug and firmware development
