@@ -135,7 +135,7 @@ Planned subsections will include:
 ---
 
 ## 📬 Contact  
-For inquiries or collaboration requests, please contact **Ashwin Vishwanath** via the [Project Sunride GitHub organization](https://github.com/AshwinVishwanath) or open an issue in this repository.
+For inquiries or collaboration requests, please contact **Ashwin Vishwanath** via the [Project C.A.S.P.E.R. GitHub organization](https://github.com/AshwinVishwanath) or open an issue in this repository.
 
 ---
 
