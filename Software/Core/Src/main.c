@@ -22,8 +22,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <string.h>  // For strlen()
-#include "usbd_cdc_if.h"  // For CDC_Transmit_FS()
+#include <string.h>
+#include "usbd_cdc_if.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,16 +65,7 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart4;
 
 /* USER CODE BEGIN PV */
-// Timing variables (milliseconds)
-uint32_t last_usb_print_ms = 0;
-uint32_t last_led_update_ms = 0;
 
-// LED cycling state (0=YN4, 1=YN3, 2=YN2, 3=YN1)
-uint8_t led_state = 0;
-
-// Timing constants
-#define USB_PRINT_INTERVAL_MS 4000
-#define LED_CYCLE_INTERVAL_MS 500  // 500ms per LED (2 seconds full cycle)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -103,33 +94,7 @@ static void MX_SPI3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// Cycle LEDs: YN4 → YN3 → YN2 → YN1, one at a time
-// State: 0=YN4, 1=YN3, 2=YN2, 3=YN1
-static void cycle_continuity_leds(uint8_t state) {
-    // Turn all LEDs off first
-    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
 
-    // Turn on selected LED
-    switch(state) {
-        case 0:  // YN4
-            HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
-            break;
-        case 1:  // YN3
-            HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
-            break;
-        case 2:  // YN2
-            HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
-            break;
-        case 3:  // YN1
-            HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
-            break;
-        default:
-            break;
-    }
-}
 /* USER CODE END 0 */
 
 /**
@@ -152,73 +117,64 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-  // EARLY DIAGNOSTIC: Blink before clock config
-  // Uses default 64 MHz HSI clock
-  __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  GPIO_InitStruct.Pin = GPIO_PIN_7;  // CONT_YN_4
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  // Blink YN4 twice to show we reached this point
-  for(int i = 0; i < 2; i++) {
-      HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_SET);
-      HAL_Delay(100);
-      HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_RESET);
-      HAL_Delay(100);
-  }
+  // Milestone 1: HAL_Init passed — turn on CONT_YN_1 (PA10) via raw register
+  RCC->AHB4ENR |= RCC_AHB4ENR_GPIOAEN;
+  (void)RCC->AHB4ENR;
+  GPIOA->MODER = (GPIOA->MODER & ~(3UL << (10 * 2))) | (1UL << (10 * 2));
+  GPIOA->BSRR = (1UL << 10);
+  HAL_Delay(500);
   /* USER CODE END Init */
 
   /* Configure the system clock */
-  SystemClock_Config();
+  // SystemClock_Config();  // DISABLED — HSE/PLL failing, running on HSI 64MHz
 
   /* Configure the peripherals common clocks */
-  PeriphCommonClock_Config();
+  // PeriphCommonClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  // Enable HSI48 for USB clock (no PLL available without SystemClock_Config)
+  RCC->CR |= RCC_CR_HSI48ON;
+  while (!(RCC->CR & RCC_CR_HSI48RDY));
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_ADC1_Init();
-  MX_ADC2_Init();
-  MX_ADC3_Init();
-  MX_I2C1_Init();
-  MX_I2C2_Init();
-  MX_QUADSPI_Init();
-  MX_SPI1_Init();
-  MX_SPI2_Init();
-  MX_SPI4_Init();
-  MX_TIM2_Init();
-  MX_CRC_Init();
-  MX_TIM4_Init();
-  MX_UART4_Init();
-  MX_I2C3_Init();
-  MX_SPI3_Init();
+  // MX_ADC1_Init();
+  // MX_ADC2_Init();
+  // MX_ADC3_Init();
+  // MX_I2C1_Init();
+  // MX_I2C2_Init();
+  // MX_QUADSPI_Init();
+  // MX_SPI1_Init();
+  // MX_SPI2_Init();
+  // MX_SPI4_Init();
+  // MX_TIM2_Init();
+  // MX_CRC_Init();
+  // MX_TIM4_Init();
+  // MX_UART4_Init();
+  // MX_I2C3_Init();
+  // MX_SPI3_Init();
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
-  // Startup indication: Blink all LEDs 3 times rapidly to show code is running
-  for(int i = 0; i < 3; i++) {
-      HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
-      HAL_Delay(200);
-      HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
-      HAL_Delay(200);
-  }
+  // Milestone 2: GPIO configured — turn on CONT_YN_2 (PB14)
+  HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+  HAL_Delay(500);
 
-  // Small delay for USB enumeration
-  HAL_Delay(1000);
+  // Milestone 3: USB init done — turn on CONT_YN_3 (PE8)
+  HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+  HAL_Delay(500);
+
+  // Milestone 4: all done — turn on CONT_YN_4 (PE7)
+  HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+  HAL_Delay(1000);  // USB enumeration time
+
+  // Turn all OFF before entering chase loop
+  HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+
+  uint32_t last_print_tick = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -228,31 +184,27 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    // Get current time in milliseconds (wraps after ~49.7 days)
-    uint32_t current_time_ms = HAL_GetTick();
-
-    // USB CDC: Print message every 4 seconds
-    if (current_time_ms - last_usb_print_ms >= USB_PRINT_INTERVAL_MS) {
-        last_usb_print_ms = current_time_ms;
-
-        // Prepare message
-        char msg[] = "Hello world, I am C.A.S.P.E.R\r\n";
-        uint16_t msg_len = strlen(msg);
-
-        // Transmit via USB CDC (non-blocking, returns USBD_BUSY if previous transmission ongoing)
-        CDC_Transmit_FS((uint8_t*)msg, msg_len);
+    if (HAL_GetTick() - last_print_tick >= 5000) {
+      const char *msg = "hello world this is C.A.S.P.E.R 2\r\n";
+      CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
+      last_print_tick = HAL_GetTick();
     }
 
-    // LED Cycling: Update LED state every 500ms
-    if (current_time_ms - last_led_update_ms >= LED_CYCLE_INTERVAL_MS) {
-        last_led_update_ms = current_time_ms;
+    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+    HAL_Delay(500);
+    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
 
-        // Update LED pattern
-        cycle_continuity_leds(led_state);
+    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+    HAL_Delay(500);
+    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
 
-        // Advance to next LED (wrap around after YN1)
-        led_state = (led_state + 1) % 4;
-    }
+    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+    HAL_Delay(500);
+    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+    HAL_Delay(500);
+    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
   }
   /* USER CODE END 3 */
 }
@@ -268,7 +220,7 @@ void SystemClock_Config(void)
 
   /** Supply configuration update enable
   */
-  HAL_PWREx_ConfigSupply(PWR_EXTERNAL_SOURCE_SUPPLY);
+  HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
 
   /** Configure the main internal regulator output voltage
   */

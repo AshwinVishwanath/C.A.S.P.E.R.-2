@@ -59,8 +59,6 @@ dkms.conf
 # Build output
 build/
 
-# Makefile
-Makefile
 
 # STM32CubeMX project file
 *.ioc
