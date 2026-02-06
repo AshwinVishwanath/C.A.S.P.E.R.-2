@@ -8,7 +8,7 @@
 
 ## Summary
 
-Brought the C.A.S.P.E.R.-2 flight computer from a completely unresponsive state to running firmware with all 4 continuity LEDs operational and USB CDC transmitting over serial. The ST-Link debugger is available on this board, but infrastructure surrounding it isnt available currently — all flashing is done via USB DFU (BOOT0 pin), which made debugging significantly harder.
+Brought the C.A.S.P.E.R.-2 flight computer from a completely unresponsive state to running firmware with all 4 continuity LEDs operational and USB CDC transmitting over serial. The ST-Link debugger is available on this board, but infrastructure surrounding it isn't available currently — all flashing is done via USB DFU (BOOT0 pin), which made debugging significantly harder.
 
 ---
 
