@@ -1,14 +1,14 @@
-# Dev Update — First Boot & Bring-Up
+# Dev Update — Flight Computer Bring-Up
 
 **Date:** February 2026
 **Board:** C.A.S.P.E.R.-2 Rev 1 (STM32H750VBT6, LQFP100)
-**Firmware:** CubeMX HAL + USB CDC on HSI 64 MHz
+**Firmware:** CubeMX HAL + USB CDC, 432 MHz SYSCLK (HSI+PLL), MS5611 + LSM6DSO32 sensors
 
 ---
 
 ## Summary
 
-Brought the C.A.S.P.E.R.-2 flight computer from a completely unresponsive state to running firmware with all 4 continuity LEDs operational and USB CDC transmitting over serial. The ST-Link debugger is available on this board, but infrastructure surrounding it isn't available currently — all flashing is done via USB DFU (BOOT0 pin), which made debugging significantly harder.
+Brought the C.A.S.P.E.R.-2 flight computer from a completely unresponsive state to running at 432 MHz with two active sensors: MS5611 barometer (SPI4) and LSM6DSO32 IMU (SPI2). Both output real-time data at 100 Hz over USB CDC serial plotter. No ST-Link debugger — all flashing via USB DFU, all debugging via milestone LEDs and serial output.
 
 ---
 
@@ -50,36 +50,106 @@ The VCO frequency sits at the very edge of the STM32H750's specified range, and 
 
 We confirmed this by adding a pre-init LED test that configured all 4 pins as outputs before any HAL calls. After that, `Error_Handler()` blinked all 4 LEDs simultaneously. Verified at 240fps slow-motion that all LEDs turn on in the exact same frame — confirming it was `Error_Handler()` (all-at-once), not the sequential chase loop (one-at-a-time).
 
-**Workaround:** `SystemClock_Config()` is disabled. The MCU runs on the default **HSI 64 MHz** internal oscillator. This is sufficient for bring-up and testing. All other peripheral inits (ADC, I2C, SPI, UART, etc.) are also disabled for now — only GPIO and USB are active.
+**Fix:** HSE crystal confirmed dead. Rewrote `SystemClock_Config()` to use **HSI (64 MHz)** as PLL source:
+- PLL1: PLLM=4, PLLN=54, PLLP=2, PLLQ=18 → **432 MHz SYSCLK**, **48 MHz USB** (PLL1Q)
+- PLL2: PLL2M=8, PLL2N=21 → **84 MHz SPI clock** source
 
-**TODO:** Investigate the HSE crystal circuit. A more conservative PLL configuration (e.g. 768 MHz VCO → 384 MHz SYSCLK) should also be tested.
+CubeMX always regenerates with HSE — the HSI workaround must be manually re-applied after every CubeMX regeneration (see CLAUDE.md for the full checklist).
 
 ---
 
-### 3. USB CDC Clock Source — PLL to HSI48
+### 3. USB CDC Clock Source
 
-**Symptom:** With `SystemClock_Config()` disabled, PLL1 is not running. The CubeMX-generated USB configuration in `usbd_conf.c` uses `RCC_USBCLKSOURCE_PLL` (PLL1Q = 48 MHz) as the USB clock.
+**Original workaround:** When running without PLL, used HSI48 for USB clock.
 
-**Fix:** Changed USB clock source to `RCC_USBCLKSOURCE_HSI48` (internal 48 MHz oscillator). HSI48 is enabled via direct register write before USB init:
+**Current:** With HSI+PLL running, PLL1Q provides 48 MHz for USB. `RCC_USBCLKSOURCE_PLL` in `usbd_conf.c` is correct.
 
+---
+
+### 4. CubeMX SPI Defaults — Wrong DataSize and BaudRate
+
+**Symptom:** SPI sensors not responding or returning garbage.
+
+**Root Cause:** CubeMX generates SPI config with `SPI_DATASIZE_4BIT` (must be 8-bit for all sensors) and `SPI_BAUDRATEPRESCALER_2` (too fast for most sensors).
+
+**Fix:**
+- All SPI: `SPI_DATASIZE_8BIT`
+- SPI2 (LSM6DSO32): `SPI_BAUDRATEPRESCALER_16` → 5.25 MHz (max 10 MHz)
+- SPI4 (MS5611): `SPI_BAUDRATEPRESCALER_8` → ~13.5 MHz (max 20 MHz)
+
+---
+
+### 5. MS5611 Pressure Calculation Overflow
+
+**Symptom:** Altitude values wildly incorrect despite valid raw ADC readings.
+
+**Root Cause:** `(int32_t)` cast was truncating an intermediate ~3.28e9 value in the pressure compensation calculation before the final multiply.
+
+**Fix:** Wrapped the entire expression in a float cast: `(int32_t)((...) * 3.05e-5f)`
+
+---
+
+### 6. LSM6DSO32 SPI2 — Multiple Issues
+
+#### 6a. PC2 MODER Clobbered to Analog Mode
+
+**Symptom:** SPI2 MISO (PC2_C) stuck in analog mode instead of AF5 after all peripheral inits complete.
+
+**Root Cause:** Unknown clobbering mechanism — SPI2 MspInit correctly sets PC2 to AF5, but MODER gets reset to analog (0x11) by some later init. Likely related to STM32H7 companion pin (PC2 vs PC2_C) and the SYSCFG analog switch.
+
+**Fix:** Force PC2 back to AF5 mode in USER CODE BEGIN 2, after all inits complete:
 ```c
-RCC->CR |= RCC_CR_HSI48ON;
-while (!(RCC->CR & RCC_CR_HSI48RDY));
+HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE);
+GPIO_InitTypeDef gpio_fix = {.Pin=GPIO_PIN_2, .Mode=GPIO_MODE_AF_PP, .Alternate=GPIO_AF5_SPI2};
+HAL_GPIO_Init(GPIOC, &gpio_fix);
 ```
+
+#### 6b. SPI Mode 3 Required
+
+**Root Cause:** LSM6DSO32 datasheet specifies SPI Mode 3 only (CPOL=1, CPHA=1). CubeMX generates Mode 0.
+
+**Fix:** Override in USER CODE SPI2_Init 2: CPOL=HIGH, CPHA=2EDGE, MasterKeepIOState=ENABLE (keeps SCK HIGH between transactions), NSSPMode=DISABLE.
+
+#### 6c. INT1 NC — Data-Ready Must Route to INT2
+
+**Root Cause:** INT1 pin is not connected on this PCB. INT2 is wired to PC15.
+
+**Fix:** Route accelerometer data-ready to INT2_CTRL (register 0x0E) instead of INT1_CTRL.
+
+#### 6d. SPI2_CS Wrong Pin Assignment (ROOT CAUSE of all SPI2 failures)
+
+**Symptom:** WHO_AM_I register returns 0x00 via both HAL SPI and manual GPIO bit-bang. MODER/AFR confirmed correct. Barometer on SPI4 works fine.
+
+**Root Cause:** CubeMX had SPI2_CS assigned to **PD15**, but the PCB routes the CS trace to **PC14**. The chip select signal never reached the LSM6DSO32.
+
+**Diagnosis:** MODER register dump confirmed PC2 in AF mode (fix 6a working). GPIO bit-bang WHO_AM_I also returned 0x00, proving the issue was not the SPI peripheral but the physical connection. Both HAL and bit-bang failing = sensor not being selected.
+
+**Fix:** Corrected pin assignment in CubeMX (PD15 → PC14), regenerated project, re-applied all manual fixes (HSI PLL, SPI config, Mode 3, PC2 MODER, etc.).
+
+**Lesson:** When SPI returns all-zeros, verify CS pin assignment against the schematic **first**, before debugging data lines, clock polarity, or register configuration.
 
 ---
 
 ## Current Firmware Behaviour
 
-1. **Milestone LEDs** light up sequentially during initialization (500ms between each):
+1. **432 MHz SYSCLK** via HSI (64 MHz) + PLL1. All peripherals initialized.
+
+2. **Milestone LEDs** light up sequentially during initialization (500ms between each):
    - LED1 (PA10) → `HAL_Init()` passed
-   - LED2 (PB14) → `MX_GPIO_Init()` passed
-   - LED3 (PE8) → `MX_USB_DEVICE_Init()` passed
-   - LED4 (PE7) → All initialization complete
+   - LED2 (PB14) → GPIO + peripheral inits passed
+   - LED3 (PE8) → USB init passed
+   - LED4 (PE7) → All sensors initialized
 
-2. **USB CDC** transmits `"hello world this is C.A.S.P.E.R 2"` every 5 seconds
+3. **WHO_AM_I diagnostic** prints `>who:0x6C` (or `0x00` on failure) 5 times over CDC after boot.
 
-3. **LED chase pattern** cycles through all 4 LEDs sequentially at 500ms per LED
+4. **100 Hz sensor output** over USB CDC serial plotter format:
+   ```
+   >altitude:XX.XX,ax:XX.XX,ay:XX.XX,az:XX.XX,gx:XX.X,gy:XX.X,gz:XX.X
+   ```
+   - MS5611 barometer: altitude in meters (OSR_1024)
+   - LSM6DSO32 IMU: acceleration in g (±32g), angular rate in dps (±2000dps)
+
+5. **LED1 heartbeat** toggles every 10ms (100 Hz) in the main loop
 
 ---
 
@@ -87,9 +157,15 @@ while (!(RCC->CR & RCC_CR_HSI48RDY));
 
 | File | Change |
 |------|--------|
-| `Software/Core/Src/main.c` | LDO power supply fix, disabled `SystemClock_Config()`, HSI48 enable, milestone LEDs, USB CDC hello, sequential LED chase |
-| `Software/USB_DEVICE/Target/usbd_conf.c` | USB clock source: `RCC_USBCLKSOURCE_PLL` → `RCC_USBCLKSOURCE_HSI48` |
-| `Software/Makefile` | `USE_PWR_EXTERNAL_SOURCE_SUPPLY` → `USE_PWR_LDO_SUPPLY` |
+| `Software/Core/Src/main.c` | HSI+PLL clock, SPI2+SPI4 fixes, PC2 MODER fix, MS5611+LSM6DSO32 init, 100Hz serial plotter output, EXTI callback, milestone LEDs |
+| `Software/Core/Src/ms5611.c` | **NEW** — MS5611 SPI barometer driver (from RobTillaart/MS5611_SPI) |
+| `Software/Core/Inc/ms5611.h` | **NEW** — MS5611 driver header |
+| `Software/Core/Src/lsm6dso32.c` | **NEW** — LSM6DSO32 SPI IMU driver (from STMicroelectronics/lsm6dso32-pid) |
+| `Software/Core/Inc/lsm6dso32.h` | **NEW** — LSM6DSO32 driver header |
+| `Software/Core/Src/stm32h7xx_it.c` | EXTI15_10 handler for LSM6DSO32 INT2 |
+| `Software/USB_DEVICE/Target/usbd_conf.c` | USB clock: PLL1Q 48 MHz |
+| `Software/Makefile` | `USE_PWR_LDO_SUPPLY`, sensor source files, `-u _printf_float` |
+| `.claude/CLAUDE.md` | Updated documentation: clock config, pin mapping, CubeMX regen checklist |
 
 ---
 
@@ -118,10 +194,23 @@ make clean && make -j8
 
 ---
 
+## SPI Bus Mapping
+
+| SPI | Sensor | SCK | MOSI | MISO | CS | INT |
+|-----|--------|-----|------|------|----|-----|
+| SPI1 | TBD | PA5 | PA7 | PB4 | PB0 | PB1 |
+| SPI2 | LSM6DSO32 | PD3 | PC1 | PC2_C | PC14 | PC15 (INT2) |
+| SPI3 | TBD | PC10 | PC12 | PC11 | PA15 | PD2 |
+| SPI4 | MS5611 | PE12 | PE14 | PE13 | PE11 | — |
+
 ## Next Steps
 
-- [ ] Investigate HSE crystal circuit and fix PLL configuration
-- [ ] Enable remaining peripheral inits (sensors, radio, flash)
-- [ ] Implement bidirectional USB CDC command interface
-- [ ] Sensor bring-up (IMU, barometer, magnetometer, GPS)
-- [ ] Flight state machine and data logging
+- [x] Fix power supply and clock configuration
+- [x] MS5611 barometer altitude over USB CDC
+- [x] LSM6DSO32 IMU accel+gyro over USB CDC
+- [ ] Flash & verify LSM6DSO32 readings on hardware
+- [ ] Remaining sensors: ADXL372 (high-g accel), MMC5983MA (magnetometer)
+- [ ] GPS (U-blox M10M via UART4)
+- [ ] Bidirectional USB CDC command interface
+- [ ] QSPI flash data logging (W25Q512JV)
+- [ ] Flight state machine

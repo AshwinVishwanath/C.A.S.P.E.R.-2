@@ -47,8 +47,7 @@ static void lsm6dso32_read_burst(lsm6dso32_t *dev, uint8_t reg,
 {
     uint8_t tx[13] = {0};  /* max: 1 addr + 12 data */
     uint8_t rx[13] = {0};
-    /* SPI multi-byte read: set READ (bit7) + auto-increment (bit6). */
-    tx[0] = reg | 0xC0;
+    tx[0] = reg | 0x80;
     cs_low(dev);
     HAL_SPI_TransmitReceive(dev->hspi, tx, rx, len + 1, 100);
     cs_high(dev);
