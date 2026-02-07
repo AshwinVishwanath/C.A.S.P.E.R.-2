@@ -61,10 +61,10 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define RADIO_NRST_Pin GPIO_PIN_13
 #define RADIO_NRST_GPIO_Port GPIOC
-#define RADIO_CS_Pin GPIO_PIN_14
-#define RADIO_CS_GPIO_Port GPIOC
-#define RADIO_INT_Pin GPIO_PIN_15
-#define RADIO_INT_GPIO_Port GPIOC
+#define SPI2_CS_Pin GPIO_PIN_14
+#define SPI2_CS_GPIO_Port GPIOC
+#define SPI2_INT_Pin GPIO_PIN_15
+#define SPI2_INT_GPIO_Port GPIOC
 #define CONT_4_Pin GPIO_PIN_0
 #define CONT_4_GPIO_Port GPIOC
 #define CONT_3_Pin GPIO_PIN_3
@@ -75,14 +75,14 @@ void Error_Handler(void);
 #define CONT_2_GPIO_Port GPIOA
 #define CONT1_Pin GPIO_PIN_4
 #define CONT1_GPIO_Port GPIOC
-#define SPI1_CS_Pin GPIO_PIN_0
-#define SPI1_CS_GPIO_Port GPIOB
+#define Radio_CS_Pin GPIO_PIN_0
+#define Radio_CS_GPIO_Port GPIOB
+#define SPI1_INT_Pin GPIO_PIN_1
+#define SPI1_INT_GPIO_Port GPIOB
 #define CONT_YN_4_Pin GPIO_PIN_7
 #define CONT_YN_4_GPIO_Port GPIOE
 #define CONT_YN_3_Pin GPIO_PIN_8
 #define CONT_YN_3_GPIO_Port GPIOE
-#define SPI4_INT_Pin GPIO_PIN_10
-#define SPI4_INT_GPIO_Port GPIOE
 #define SPI4_CS_Pin GPIO_PIN_11
 #define SPI4_CS_GPIO_Port GPIOE
 #define NRST_GPS_Pin GPIO_PIN_15
@@ -103,8 +103,6 @@ void Error_Handler(void);
 #define PY1_GPIO_Port GPIOD
 #define BUZZER_Pin GPIO_PIN_14
 #define BUZZER_GPIO_Port GPIOD
-#define SPI2_CS_Pin GPIO_PIN_15
-#define SPI2_CS_GPIO_Port GPIOD
 #define I2C_3_INT_Pin GPIO_PIN_8
 #define I2C_3_INT_GPIO_Port GPIOC
 #define CONT_YN_1_Pin GPIO_PIN_10
@@ -121,8 +119,6 @@ void Error_Handler(void);
 #define RADIO_DIO1_GPIO_Port GPIOD
 #define I2C1_INT_Pin GPIO_PIN_0
 #define I2C1_INT_GPIO_Port GPIOE
-#define I2C2_INT_Pin GPIO_PIN_1
-#define I2C2_INT_GPIO_Port GPIOE
 
 /* USER CODE BEGIN Private defines */
 

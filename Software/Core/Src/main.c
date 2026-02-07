@@ -66,8 +66,6 @@ SPI_HandleTypeDef hspi4;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
 
-UART_HandleTypeDef huart4;
-
 /* USER CODE BEGIN PV */
 ms5611_t baro;
 lsm6dso32_t imu;
@@ -90,7 +88,6 @@ static void MX_SPI4_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_CRC_Init(void);
 static void MX_TIM4_Init(void);
-static void MX_UART4_Init(void);
 static void MX_I2C3_Init(void);
 static void MX_SPI3_Init(void);
 /* USER CODE BEGIN PFP */
@@ -161,7 +158,6 @@ int main(void)
   MX_TIM2_Init();
   MX_CRC_Init();
   MX_TIM4_Init();
-  MX_UART4_Init();
   MX_I2C3_Init();
   MX_SPI3_Init();
   MX_USB_DEVICE_Init();
@@ -212,7 +208,7 @@ int main(void)
     }
   }
 
-  // Enable EXTI15 interrupt for LSM6DSO32 INT1 (PC15)
+  // Enable EXTI15 interrupt for LSM6DSO32 INT2 (PC15)
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
@@ -226,8 +222,17 @@ int main(void)
   HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 
+  // Print WHO_AM_I on first few lines so terminal can capture it
+  {
+    char who_buf[40];
+    int who_len = snprintf(who_buf, sizeof(who_buf), ">who:0x%02X\r\n", imu.device_id);
+    for (int i = 0; i < 5; i++) {
+      CDC_Transmit_FS((uint8_t *)who_buf, who_len);
+      HAL_Delay(200);
+    }
+  }
+
   uint32_t last_sensor_tick = 0;
-  bool first_print = true;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -237,33 +242,19 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    // Sensor output at 100 Hz (10ms interval)
     if (HAL_GetTick() - last_sensor_tick >= 10) {
-      // Read barometer (non-blocking state machine)
       ms5611_read(&baro);
       float altitude = ms5611_get_altitude(&baro, 1013.25f);
-
-      // Read IMU unconditionally (sensor at 104 Hz, BDU=1 ensures consistent data)
       lsm6dso32_read(&imu);
 
       char buf[200];
-      int len;
-
-      if (first_print) {
-        // First output: print WHO_AM_I to verify SPI2 communication
-        len = snprintf(buf, sizeof(buf), ">who:0x%02X\r\n", imu.device_id);
-        first_print = false;
-      } else {
-        // Serial plotter output
-        len = snprintf(buf, sizeof(buf),
-            ">altitude:%.2f,ax:%.2f,ay:%.2f,az:%.2f,gx:%.1f,gy:%.1f,gz:%.1f\r\n",
-            altitude,
-            imu.accel_g[0], imu.accel_g[1], imu.accel_g[2],
-            imu.gyro_dps[0], imu.gyro_dps[1], imu.gyro_dps[2]);
-      }
+      int len = snprintf(buf, sizeof(buf),
+          ">altitude:%.2f,ax:%.2f,ay:%.2f,az:%.2f,gx:%.1f,gy:%.1f,gz:%.1f\r\n",
+          altitude,
+          imu.accel_g[0], imu.accel_g[1], imu.accel_g[2],
+          imu.gyro_dps[0], imu.gyro_dps[1], imu.gyro_dps[2]);
       CDC_Transmit_FS((uint8_t *)buf, len);
 
-      // Heartbeat LED toggle (~5 Hz visible blink)
       HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
       last_sensor_tick = HAL_GetTick();
     }
@@ -834,8 +825,8 @@ static void MX_SPI2_Init(void)
   hspi2.Instance = SPI2;
   hspi2.Init.Mode = SPI_MODE_MASTER;
   hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;  // LSM6DSO32 needs 8-bit (CubeMX default was 4-bit)
-  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
   hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;  // PLL2P=84MHz /16 = 5.25MHz (LSM6DSO32 max 10MHz)
@@ -937,11 +928,11 @@ static void MX_SPI4_Init(void)
   hspi4.Instance = SPI4;
   hspi4.Init.Mode = SPI_MODE_MASTER;
   hspi4.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi4.Init.DataSize = SPI_DATASIZE_8BIT;  // MS5611 needs 8-bit (CubeMX default was 4-bit)
+  hspi4.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi4.Init.NSS = SPI_NSS_SOFT;
-  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;  // D2PCLK1=108MHz /8 = 13.5MHz (MS5611 max 20MHz)
+  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;  // PLL2P=84MHz /8 = 10.5MHz → actual ~13.5MHz APB (MS5611 max 20MHz)
   hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi4.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi4.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -1077,54 +1068,6 @@ static void MX_TIM4_Init(void)
 }
 
 /**
-  * @brief UART4 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_UART4_Init(void)
-{
-
-  /* USER CODE BEGIN UART4_Init 0 */
-
-  /* USER CODE END UART4_Init 0 */
-
-  /* USER CODE BEGIN UART4_Init 1 */
-
-  /* USER CODE END UART4_Init 1 */
-  huart4.Instance = UART4;
-  huart4.Init.BaudRate = 115200;
-  huart4.Init.WordLength = UART_WORDLENGTH_8B;
-  huart4.Init.StopBits = UART_STOPBITS_1;
-  huart4.Init.Parity = UART_PARITY_NONE;
-  huart4.Init.Mode = UART_MODE_TX_RX;
-  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart4.Init.ClockPrescaler = UART_PRESCALER_DIV1;
-  huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetTxFifoThreshold(&huart4, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetRxFifoThreshold(&huart4, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_DisableFifoMode(&huart4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN UART4_Init 2 */
-
-  /* USER CODE END UART4_Init 2 */
-
-}
-
-/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -1145,33 +1088,36 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, RADIO_NRST_Pin|RADIO_CS_Pin|I2C_3_INT_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, RADIO_NRST_Pin|I2C_3_INT_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SPI2_CS_GPIO_Port, SPI2_CS_Pin, GPIO_PIN_SET);  // CS idle HIGH
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, SPI1_CS_Pin|CONT_YN_2_Pin|PY4_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, Radio_CS_Pin|CONT_YN_2_Pin|PY4_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, CONT_YN_4_Pin|CONT_YN_3_Pin|SPI4_CS_Pin|NRST_GPS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, CONT_YN_4_Pin|CONT_YN_3_Pin|SPI4_CS_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(NRST_GPS_GPIO_Port, NRST_GPS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, PY3_Pin|PY2_Pin|PY1_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOD, SPI2_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, CONT_YN_1_Pin|SPI3_CS_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : RADIO_NRST_Pin RADIO_CS_Pin I2C_3_INT_Pin */
-  GPIO_InitStruct.Pin = RADIO_NRST_Pin|RADIO_CS_Pin|I2C_3_INT_Pin;
+  /*Configure GPIO pins : RADIO_NRST_Pin SPI2_CS_Pin I2C_3_INT_Pin */
+  GPIO_InitStruct.Pin = RADIO_NRST_Pin|SPI2_CS_Pin|I2C_3_INT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : RADIO_INT_Pin */
-  GPIO_InitStruct.Pin = RADIO_INT_Pin;
+  /*Configure GPIO pin : SPI2_INT_Pin */
+  GPIO_InitStruct.Pin = SPI2_INT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(RADIO_INT_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(SPI2_INT_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : RADIO_DIO3_Pin */
   GPIO_InitStruct.Pin = RADIO_DIO3_Pin;
@@ -1179,34 +1125,35 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(RADIO_DIO3_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SPI1_CS_Pin CONT_YN_2_Pin PY4_Pin */
-  GPIO_InitStruct.Pin = SPI1_CS_Pin|CONT_YN_2_Pin|PY4_Pin;
+  /*Configure GPIO pins : Radio_CS_Pin CONT_YN_2_Pin PY4_Pin */
+  GPIO_InitStruct.Pin = Radio_CS_Pin|CONT_YN_2_Pin|PY4_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : CONT_YN_4_Pin CONT_YN_3_Pin SPI4_CS_Pin NRST_GPS_Pin */
-  GPIO_InitStruct.Pin = CONT_YN_4_Pin|CONT_YN_3_Pin|SPI4_CS_Pin|NRST_GPS_Pin;
+  /*Configure GPIO pins : SPI1_INT_Pin RADIO_DIO4_Pin RADIO_DIO5_Pin */
+  GPIO_InitStruct.Pin = SPI1_INT_Pin|RADIO_DIO4_Pin|RADIO_DIO5_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : CONT_YN_4_Pin CONT_YN_3_Pin SPI4_CS_Pin */
+  GPIO_InitStruct.Pin = CONT_YN_4_Pin|CONT_YN_3_Pin|SPI4_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SPI4_INT_Pin I2C1_INT_Pin I2C2_INT_Pin */
-  GPIO_InitStruct.Pin = SPI4_INT_Pin|I2C1_INT_Pin|I2C2_INT_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+  /*Configure GPIO pin : NRST_GPS_Pin */
+  GPIO_InitStruct.Pin = NRST_GPS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(NRST_GPS_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : RADIO_DIO4_Pin RADIO_DIO5_Pin */
-  GPIO_InitStruct.Pin = RADIO_DIO4_Pin|RADIO_DIO5_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PY3_Pin PY2_Pin PY1_Pin SPI2_CS_Pin */
-  GPIO_InitStruct.Pin = PY3_Pin|PY2_Pin|PY1_Pin|SPI2_CS_Pin;
+  /*Configure GPIO pins : PY3_Pin PY2_Pin PY1_Pin */
+  GPIO_InitStruct.Pin = PY3_Pin|PY2_Pin|PY1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1231,6 +1178,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPS_TIMEPULSE_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : I2C1_INT_Pin */
+  GPIO_InitStruct.Pin = I2C1_INT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(I2C1_INT_GPIO_Port, &GPIO_InitStruct);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
@@ -1239,7 +1192,7 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == RADIO_INT_Pin) {  /* PC15 = LSM6DSO32 INT1 */
+  if (GPIO_Pin == SPI2_INT_Pin) {  /* PC15 = LSM6DSO32 INT2 */
     lsm6dso32_irq_handler(&imu);
   }
 }
