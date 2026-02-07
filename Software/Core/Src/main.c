@@ -1154,7 +1154,8 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOE, CONT_YN_4_Pin|CONT_YN_3_Pin|SPI4_CS_Pin|NRST_GPS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, PY3_Pin|PY2_Pin|PY1_Pin|SPI2_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, PY3_Pin|PY2_Pin|PY1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, SPI2_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, CONT_YN_1_Pin|SPI3_CS_Pin, GPIO_PIN_RESET);
