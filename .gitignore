@@ -74,3 +74,6 @@ Middlewares/
 
 # Windows reserved device names
 nul
+
+# Claude Code
+.claude/

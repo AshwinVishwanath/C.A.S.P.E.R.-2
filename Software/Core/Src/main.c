@@ -23,7 +23,11 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include <stdio.h>
+#include <stdbool.h>
 #include "usbd_cdc_if.h"
+#include "ms5611.h"
+#include "lsm6dso32.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,7 +69,8 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart4;
 
 /* USER CODE BEGIN PV */
-
+ms5611_t baro;
+lsm6dso32_t imu;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -117,43 +122,48 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-  // Milestone 1: HAL_Init passed — turn on CONT_YN_1 (PA10) via raw register
-  RCC->AHB4ENR |= RCC_AHB4ENR_GPIOAEN;
+  // Enable GPIO clocks for all 4 LEDs
+  RCC->AHB4ENR |= RCC_AHB4ENR_GPIOAEN | RCC_AHB4ENR_GPIOBEN | RCC_AHB4ENR_GPIOEEN;
   (void)RCC->AHB4ENR;
-  GPIOA->MODER = (GPIOA->MODER & ~(3UL << (10 * 2))) | (1UL << (10 * 2));
-  GPIOA->BSRR = (1UL << 10);
+
+  // Configure all 4 LED pins as GP output (MODER = 01)
+  GPIOA->MODER = (GPIOA->MODER & ~(3UL << (10*2))) | (1UL << (10*2)); // PA10
+  GPIOB->MODER = (GPIOB->MODER & ~(3UL << (14*2))) | (1UL << (14*2)); // PB14
+  GPIOE->MODER = (GPIOE->MODER & ~(3UL << (8*2)))  | (1UL << (8*2));  // PE8
+  GPIOE->MODER = (GPIOE->MODER & ~(3UL << (7*2)))  | (1UL << (7*2));  // PE7
+
+  // Milestone 1: HAL_Init passed
+  GPIOA->BSRR = (1UL << 10);  // LED1 ON
   HAL_Delay(500);
   /* USER CODE END Init */
 
   /* Configure the system clock */
-  // SystemClock_Config();  // DISABLED — HSE/PLL failing, running on HSI 64MHz
+  SystemClock_Config();
 
   /* Configure the peripherals common clocks */
-  // PeriphCommonClock_Config();
+  PeriphCommonClock_Config();
 
   /* USER CODE BEGIN SysInit */
-  // Enable HSI48 for USB clock (no PLL available without SystemClock_Config)
-  RCC->CR |= RCC_CR_HSI48ON;
-  while (!(RCC->CR & RCC_CR_HSI48RDY));
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  // MX_ADC1_Init();
-  // MX_ADC2_Init();
-  // MX_ADC3_Init();
-  // MX_I2C1_Init();
-  // MX_I2C2_Init();
-  // MX_QUADSPI_Init();
-  // MX_SPI1_Init();
-  // MX_SPI2_Init();
-  // MX_SPI4_Init();
-  // MX_TIM2_Init();
-  // MX_CRC_Init();
-  // MX_TIM4_Init();
-  // MX_UART4_Init();
-  // MX_I2C3_Init();
-  // MX_SPI3_Init();
+  MX_ADC1_Init();
+  MX_ADC2_Init();
+  MX_ADC3_Init();
+  MX_I2C1_Init();
+  MX_I2C2_Init();
+  MX_QUADSPI_Init();
+  MX_SPI1_Init();
+  MX_SPI2_Init();
+  MX_SPI4_Init();
+  MX_TIM2_Init();
+  MX_CRC_Init();
+  MX_TIM4_Init();
+  MX_UART4_Init();
+  MX_I2C3_Init();
+  MX_SPI3_Init();
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
   // Milestone 2: GPIO configured — turn on CONT_YN_2 (PB14)
@@ -164,17 +174,60 @@ int main(void)
   HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
   HAL_Delay(500);
 
+  // Init MS5611 barometer on SPI4
+  if (!ms5611_init(&baro, &hspi4, SPI4_CS_GPIO_Port, SPI4_CS_Pin)) {
+    // PROM read failed — blink LED3+LED4 as warning but continue
+    for (int i = 0; i < 6; i++) {
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(200);
+    }
+  }
+  ms5611_set_oversampling(&baro, MS5611_OSR_1024);
+
+  // Explicitly close PC2 analog switch for SPI2 MISO (PC2_C)
+  HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE);
+
+  // Fix PC2 MODER: something during init sets PC2 to analog mode instead of AF.
+  // AFR is correctly set to AF5 by SPI2 MspInit, but MODER gets clobbered.
+  // Force PC2 back to AF mode for SPI2 MISO.
+  {
+    GPIO_InitTypeDef gpio_fix = {0};
+    gpio_fix.Pin = GPIO_PIN_2;
+    gpio_fix.Mode = GPIO_MODE_AF_PP;
+    gpio_fix.Pull = GPIO_NOPULL;
+    gpio_fix.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio_fix.Alternate = GPIO_AF5_SPI2;
+    HAL_GPIO_Init(GPIOC, &gpio_fix);
+  }
+
+  // Init LSM6DSO32 IMU on SPI2
+  lsm6dso32_init(&imu, &hspi2, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
+  if (imu.device_id != LSM6DSO32_WHO_AM_I_VAL) {
+    // WHO_AM_I mismatch — blink LED3+LED4 as warning but continue
+    for (int i = 0; i < 6; i++) {
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(200);
+    }
+  }
+
+  // Enable EXTI15 interrupt for LSM6DSO32 INT1 (PC15)
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
   // Milestone 4: all done — turn on CONT_YN_4 (PE7)
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
   HAL_Delay(1000);  // USB enumeration time
 
-  // Turn all OFF before entering chase loop
+  // Turn all OFF before entering main loop
   HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 
-  uint32_t last_print_tick = 0;
+  uint32_t last_sensor_tick = 0;
+  bool first_print = true;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -184,27 +237,36 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (HAL_GetTick() - last_print_tick >= 5000) {
-      const char *msg = "hello world this is C.A.S.P.E.R 2\r\n";
-      CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
-      last_print_tick = HAL_GetTick();
+    // Sensor output at 100 Hz (10ms interval)
+    if (HAL_GetTick() - last_sensor_tick >= 10) {
+      // Read barometer (non-blocking state machine)
+      ms5611_read(&baro);
+      float altitude = ms5611_get_altitude(&baro, 1013.25f);
+
+      // Read IMU unconditionally (sensor at 104 Hz, BDU=1 ensures consistent data)
+      lsm6dso32_read(&imu);
+
+      char buf[200];
+      int len;
+
+      if (first_print) {
+        // First output: print WHO_AM_I to verify SPI2 communication
+        len = snprintf(buf, sizeof(buf), ">who:0x%02X\r\n", imu.device_id);
+        first_print = false;
+      } else {
+        // Serial plotter output
+        len = snprintf(buf, sizeof(buf),
+            ">altitude:%.2f,ax:%.2f,ay:%.2f,az:%.2f,gx:%.1f,gy:%.1f,gz:%.1f\r\n",
+            altitude,
+            imu.accel_g[0], imu.accel_g[1], imu.accel_g[2],
+            imu.gyro_dps[0], imu.gyro_dps[1], imu.gyro_dps[2]);
+      }
+      CDC_Transmit_FS((uint8_t *)buf, len);
+
+      // Heartbeat LED toggle (~5 Hz visible blink)
+      HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+      last_sensor_tick = HAL_GetTick();
     }
-
-    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
-    HAL_Delay(500);
-    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
-
-    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
-    HAL_Delay(500);
-    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-
-    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
-    HAL_Delay(500);
-    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
-
-    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
-    HAL_Delay(500);
-    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
   }
   /* USER CODE END 3 */
 }
@@ -231,16 +293,19 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  // WORKAROUND: HSE crystal dead — use HSI (64MHz) as PLL source
+  // HSI/4 = 16MHz input, x54 = 864MHz VCO, /2 = 432MHz SYSCLK, /18 = 48MHz USB
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_DIV1;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 6;
-  RCC_OscInitStruct.PLL.PLLN = 240;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 54;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 20;
-  RCC_OscInitStruct.PLL.PLLR = 2;
-  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
+  RCC_OscInitStruct.PLL.PLLQ = 18;
+  RCC_OscInitStruct.PLL.PLLR = 4;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_3;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
   RCC_OscInitStruct.PLL.PLLFRACN = 0;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
@@ -265,6 +330,10 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+
+  /** Enables the Clock Security System
+  */
+  HAL_RCC_EnableCSS();
 }
 
 /**
@@ -277,15 +346,21 @@ void PeriphCommonClock_Config(void)
 
   /** Initializes the peripherals clock
   */
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADC;
-  PeriphClkInitStruct.PLL2.PLL2M = 2;
-  PeriphClkInitStruct.PLL2.PLL2N = 13;
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADC|RCC_PERIPHCLK_SPI3
+                              |RCC_PERIPHCLK_SPI2|RCC_PERIPHCLK_SPI1
+                              |RCC_PERIPHCLK_UART4;
+  // WORKAROUND: PLL source is HSI (64MHz) — recalculate PLL2 for same 168MHz VCO
+  // HSI/8 = 8MHz input, x21 = 168MHz VCO, /2 = 84MHz output (same as HSE config)
+  PeriphClkInitStruct.PLL2.PLL2M = 8;
+  PeriphClkInitStruct.PLL2.PLL2N = 21;
   PeriphClkInitStruct.PLL2.PLL2P = 2;
   PeriphClkInitStruct.PLL2.PLL2Q = 2;
   PeriphClkInitStruct.PLL2.PLL2R = 2;
   PeriphClkInitStruct.PLL2.PLL2RGE = RCC_PLL2VCIRANGE_3;
   PeriphClkInitStruct.PLL2.PLL2VCOSEL = RCC_PLL2VCOMEDIUM;
   PeriphClkInitStruct.PLL2.PLL2FRACN = 0;
+  PeriphClkInitStruct.Spi123ClockSelection = RCC_SPI123CLKSOURCE_PLL2;
+  PeriphClkInitStruct.Usart234578ClockSelection = RCC_USART234578CLKSOURCE_PLL2;
   PeriphClkInitStruct.AdcClockSelection = RCC_ADCCLKSOURCE_PLL2;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
@@ -529,7 +604,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x307075B1;
+  hi2c1.Init.Timing = 0x10707DBC;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -577,7 +652,7 @@ static void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x307075B1;
+  hi2c2.Init.Timing = 0x10707DBC;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -625,7 +700,7 @@ static void MX_I2C3_Init(void)
 
   /* USER CODE END I2C3_Init 1 */
   hi2c3.Instance = I2C3;
-  hi2c3.Init.Timing = 0x307075B1;
+  hi2c3.Init.Timing = 0x10707DBC;
   hi2c3.Init.OwnAddress1 = 0;
   hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -759,11 +834,11 @@ static void MX_SPI2_Init(void)
   hspi2.Instance = SPI2;
   hspi2.Init.Mode = SPI_MODE_MASTER;
   hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi2.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;  // LSM6DSO32 needs 8-bit (CubeMX default was 4-bit)
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;  // PLL2P=84MHz /16 = 5.25MHz (LSM6DSO32 max 10MHz)
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -783,7 +858,14 @@ static void MX_SPI2_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN SPI2_Init 2 */
-
+  // LSM6DSO32 requires SPI Mode 3 (CPOL=1, CPHA=1).
+  // MasterKeepIOState=ENABLE keeps SCK HIGH (CPOL=1 idle) between transactions,
+  // preventing a spurious rising edge when HAL_SPI_TransmitReceive enables the peripheral.
+  hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;   // CPOL=1
+  hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;        // CPHA=1
+  hspi2.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+  hspi2.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
+  HAL_SPI_Init(&hspi2);
   /* USER CODE END SPI2_Init 2 */
 
 }
@@ -855,11 +937,11 @@ static void MX_SPI4_Init(void)
   hspi4.Instance = SPI4;
   hspi4.Init.Mode = SPI_MODE_MASTER;
   hspi4.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi4.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi4.Init.DataSize = SPI_DATASIZE_8BIT;  // MS5611 needs 8-bit (CubeMX default was 4-bit)
   hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi4.Init.NSS = SPI_NSS_SOFT;
-  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;  // D2PCLK1=108MHz /8 = 13.5MHz (MS5611 max 20MHz)
   hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi4.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi4.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -1154,7 +1236,12 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == RADIO_INT_Pin) {  /* PC15 = LSM6DSO32 INT1 */
+    lsm6dso32_irq_handler(&imu);
+  }
+}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
@@ -1201,6 +1288,12 @@ void Error_Handler(void)
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  // Configure all 4 LED pins as GP output (MODER = 01)
+  GPIOA->MODER = (GPIOA->MODER & ~(3UL << (10*2))) | (1UL << (10*2)); // PA10
+  GPIOB->MODER = (GPIOB->MODER & ~(3UL << (14*2))) | (1UL << (14*2)); // PB14
+  GPIOE->MODER = (GPIOE->MODER & ~(3UL << (8*2)))  | (1UL << (8*2));  // PE8
+  GPIOE->MODER = (GPIOE->MODER & ~(3UL << (7*2)))  | (1UL << (7*2));  // PE7
 
   while (1)
   {
