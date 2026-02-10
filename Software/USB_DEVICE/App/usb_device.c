@@ -23,8 +23,13 @@
 #include "usb_device.h"
 #include "usbd_core.h"
 #include "usbd_desc.h"
+#if (USB_MODE == 2)
+#include "usbd_msc.h"
+#include "usbd_msc_storage_if.h"
+#else
 #include "usbd_cdc.h"
 #include "usbd_cdc_if.h"
+#endif
 
 /* USER CODE BEGIN Includes */
 
@@ -72,6 +77,16 @@ void MX_USB_DEVICE_Init(void)
   {
     Error_Handler();
   }
+#if (USB_MODE == 2)
+  if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_MSC) != USBD_OK)
+  {
+    Error_Handler();
+  }
+  if (USBD_MSC_RegisterStorage(&hUsbDeviceFS, &USBD_MSC_fops) != USBD_OK)
+  {
+    Error_Handler();
+  }
+#else
   if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_CDC) != USBD_OK)
   {
     Error_Handler();
@@ -80,6 +95,7 @@ void MX_USB_DEVICE_Init(void)
   {
     Error_Handler();
   }
+#endif
   if (USBD_Start(&hUsbDeviceFS) != USBD_OK)
   {
     Error_Handler();

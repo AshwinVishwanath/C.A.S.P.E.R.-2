@@ -23,7 +23,11 @@
 #include "stm32h7xx_hal.h"
 #include "usbd_def.h"
 #include "usbd_core.h"
+#if (USB_MODE == 2)
+#include "usbd_msc.h"
+#else
 #include "usbd_cdc.h"
+#endif
 
 /* USER CODE BEGIN Includes */
 
@@ -646,7 +650,11 @@ USBD_StatusTypeDef USBD_LL_SetTestMode(USBD_HandleTypeDef *pdev, uint8_t testmod
 void *USBD_static_malloc(uint32_t size)
 {
   UNUSED(size);
+#if (USB_MODE == 2)
+  static uint32_t mem[(sizeof(USBD_MSC_BOT_HandleTypeDef)/4)+1];/* On 32-bit boundary */
+#else
   static uint32_t mem[(sizeof(USBD_CDC_HandleTypeDef)/4)+1];/* On 32-bit boundary */
+#endif
   return mem;
 }
 

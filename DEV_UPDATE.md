@@ -2,13 +2,13 @@
 
 **Date:** February 2026
 **Board:** C.A.S.P.E.R.-2 Rev 1 (STM32H750VBT6, LQFP100)
-**Firmware:** CubeMX HAL + USB CDC, 432 MHz SYSCLK (HSI+PLL), MS5611 + LSM6DSO32 sensors
+**Firmware:** CubeMX HAL + USB CDC/MSC, 432 MHz SYSCLK (HSI+PLL), 4 sensors + EKF navigation
 
 ---
 
 ## Summary
 
-Brought the C.A.S.P.E.R.-2 flight computer from a completely unresponsive state to running at 432 MHz with two active sensors: MS5611 barometer (SPI4) and LSM6DSO32 IMU (SPI2). Both output real-time data at 100 Hz over USB CDC serial plotter. No ST-Link debugger — all flashing via USB DFU, all debugging via milestone LEDs and serial output.
+Brought the C.A.S.P.E.R.-2 flight computer from a completely unresponsive state through three development revisions: basic sensor bring-up (Rev 2), data infrastructure and noise characterization (Rev 3a/3b), and a full EKF navigation stack (Rev 3c). Four sensors active: MS5611 barometer, LSM6DSO32 IMU, ADXL372 high-g accelerometer, and W25Q512JV QSPI flash. The EKF fuses IMU + baro at 500 Hz to estimate altitude, velocity, and attitude. No ST-Link debugger — all flashing via USB DFU, all debugging via milestone LEDs and serial output.
 
 ---
 
@@ -130,7 +130,7 @@ HAL_GPIO_Init(GPIOC, &gpio_fix);
 
 ---
 
-## Current Firmware Behaviour
+## Rev 2 — Firmware Behaviour (after initial bring-up)
 
 1. **432 MHz SYSCLK** via HSI (64 MHz) + PLL1. All peripherals initialized.
 
@@ -146,26 +146,244 @@ HAL_GPIO_Init(GPIOC, &gpio_fix);
    ```
    >altitude:XX.XX,ax:XX.XX,ay:XX.XX,az:XX.XX,gx:XX.X,gy:XX.X,gz:XX.X
    ```
-   - MS5611 barometer: altitude in meters (OSR_1024)
-   - LSM6DSO32 IMU: acceleration in g (±32g), angular rate in dps (±2000dps)
 
 5. **LED1 heartbeat** toggles every 10ms (100 Hz) in the main loop
 
 ---
 
-## Files Changed (from CubeMX baseline)
+## Rev 3a — Sensor Bring-Up & Data Infrastructure
+
+### ADXL372 High-G Accelerometer (SPI3)
+
+Brought up the Analog Devices ADXL372 ultra-high-g accelerometer on SPI3:
+- Range: ±200g, 12-bit output, 100 mg/LSB
+- FIFO streaming for burst data collection (stream mode, up to 512 samples)
+- ODR configurable up to 6400 Hz (800 Hz used for characterization)
+- Device ID readback: 0xFA (0xAD device, 0x1D MEMS, 0x02 part, 0xFA devid)
+- Files: `adxl372.c/h`
+
+### W25Q512JV QSPI Flash
+
+Brought up the Winbond W25Q512JV 64MB NOR flash on QUADSPI:
+- 512 Mbit (64 MB), 4-byte addressing mode
+- Sector erase (4 KB), block erase (64 KB), chip erase
+- Read/write/erase API with busy-wait polling
+- JEDEC ID verification on init
+- Files: `w25q512jv.c/h`
+
+### FATFS Integration
+
+Integrated FatFs filesystem on top of the QSPI flash:
+- `user_diskio.c` bridges FatFs sector read/write to W25Q512JV driver
+- Block size: 4096 bytes (matches flash sector size), 16384 blocks
+- Used for CSV data logging in data collection mode
+- Files: `FATFS/App/fatfs.c/h`, `FATFS/Target/user_diskio.c/h`
+
+### USB MSC Mode
+
+Added USB Mass Storage Class mode so the flash appears as a USB drive:
+- `usbd_msc_storage_if.c` bridges SCSI read/write commands to W25Q512JV
+- PC can mount the flash, read CSV files, format the filesystem
+- Files: `usbd_msc_storage_if.c/h`
+
+### USB_MODE Compile-Time Switching
+
+Introduced `USB_MODE` define for build-time firmware mode selection:
+- **USB_MODE=1**: CDC serial output (original mode)
+- **USB_MODE=2**: MSC mass storage (flash as USB drive, LED ping-pong pattern)
+- **USB_MODE=3**: CDC + data collection harness (sensor logging to flash)
+
+Set in Makefile `C_DEFS`: `-DUSB_MODE=3`
+
+### Data Collection Harness
+
+Built a phase-based sensor data logging system for noise characterization:
+- **DATA_PHASE=1**: LSM6DSO32 at 833 Hz for 300s → `IMU.CSV` (timestamp, ax, ay, az, gx, gy, gz, temp)
+- **DATA_PHASE=2**: ADXL372 FIFO at 800 Hz for 300s → `ADXL.CSV` (timestamp, ax, ay, az)
+- **DATA_PHASE=3**: MS5611 raw ADC at OSR_4096 for 300s → `BARO_HI.CSV`
+- **DATA_PHASE=4**: MS5611 raw ADC at OSR_1024 for 120s → `BARO_MD.CSV`
+- **DATA_PHASE=5**: MS5611 raw ADC at OSR_256 for 120s → `BARO_LO.CSV`
+- All LEDs blink together upon completion
+- Files: `data_collect.c/h`
+
+### New Files (Rev 3a)
+
+| File | Description |
+|------|-------------|
+| `Core/Src/adxl372.c` / `Core/Inc/adxl372.h` | ADXL372 SPI driver |
+| `Core/Src/w25q512jv.c` / `Core/Inc/w25q512jv.h` | W25Q512JV QSPI flash driver |
+| `Core/Src/data_collect.c` / `Core/Inc/data_collect.h` | Data collection harness |
+| `USB_DEVICE/App/usbd_msc_storage_if.c/h` | USB MSC storage interface |
+| `FATFS/App/fatfs.c/h` | FatFs initialization |
+| `FATFS/Target/user_diskio.c/h` | Disk I/O layer for W25Q512JV |
+
+---
+
+## Rev 3b — MATLAB Sensor Noise Characterization
+
+### Workflow
+
+1. Flash firmware with `USB_MODE=3` and desired `DATA_PHASE` (1-5)
+2. Power board → data collection runs automatically, LEDs blink when done
+3. Reflash with `USB_MODE=2` → board appears as USB drive on PC
+4. Copy CSV files from flash to `Matlab Code/` directory
+5. Run `casper_sensor_characterization.m` in MATLAB (or VS Code MATLAB extension)
+
+### Analysis Pipeline (`casper_sensor_characterization.m`)
+
+The script performs three analysis stages:
+
+**Stage 1 — Data Quality Check:**
+- Sample rate regularity (mean/std/min/max of dt)
+- Dropout detection (dt > 2x expected period)
+- LSM6 gap analysis (FATFS flush gaps ~5-10ms, ignored via configurable threshold)
+- Gravity vector magnitude verification
+- Gyro static bias measurement
+- Baro pressure sanity check
+
+**Stage 2 — Allan Variance (IMU):**
+- LSM6 gyroscope: ARW (angle random walk) and BI (bias instability) per axis
+- LSM6 accelerometer: VRW (velocity random walk) and BI per axis
+- ADXL372 accelerometer: VRW and BI per axis (reference only — too noisy for EKF)
+- Outlier removal via `filloutliers()` before analysis
+
+**Stage 3 — Barometer Characterization:**
+- Pressure noise σ at each OSR setting
+- Altitude noise σ (Pa → m conversion)
+- R_alt (measurement noise variance) for EKF R matrix
+- Allan deviation and power spectral density plots
+
+### Outputs
+
+- `noise_params.mat` — IMU noise parameters (gyro ARW/BI, accel VRW/BI for both sensors)
+- `baro_noise_params.mat` — Barometer noise parameters (σ, R at each OSR)
+- 10 plots saved to `plots/` directory:
+  - `qc_sample_timing.png`, `qc_raw_imu.png`, `qc_raw_baro.png`, `qc_noise_histograms.png`
+  - `allan_lsm6_gyro.png`, `allan_lsm6_accel.png`, `allan_adxl372.png`
+  - `baro_allan_dev.png`, `baro_psd.png`, `baro_allan_overlay.png`
+
+### Key Results (fed into EKF)
+
+| Parameter | Value | Source | Used in |
+|-----------|-------|--------|---------|
+| Gyro ARW (X,Y,Z) | 6.73e-5, 6.08e-5, 4.92e-5 rad/sqrt(s) | Allan variance | `casper_gyro_int.c` gyro_arw[] |
+| Accel VRW (vertical) | 2.163e-3 m/s/sqrt(s) | Allan variance | `casper_ekf.c` Q matrix (qa) |
+| Accel BI | 1.954e-4 m/s^2/sqrt(s) | Allan variance | `casper_ekf.c` Q matrix (qab) |
+| Baro altitude σ | ~0.5 m (OSR 1024) | Std deviation | `casper_ekf.c` R_baro = 0.25 m^2 |
+| Baro BI | 1.0e-3 m/sqrt(s) | Estimated | `casper_ekf.c` Q matrix (qbb) |
+
+---
+
+## Rev 3c — EKF Navigation Stack
+
+### CMSIS-DSP Integration
+
+Cherry-picked 6 matrix function sources from the ARM CMSIS-DSP GitHub repository:
+- `arm_mat_init_f32`, `arm_mat_mult_f32`, `arm_mat_trans_f32`
+- `arm_mat_add_f32`, `arm_mat_sub_f32`, `arm_mat_scale_f32`
+- Headers in `Drivers/CMSIS/DSP/Include/`, sources in `Drivers/CMSIS/DSP/Source/MatrixFunctions/`
+- Makefile: `-DARM_MATH_CM7`, include paths for DSP headers
+
+### Quaternion Library (`casper_quat.c/h`)
+
+Hamilton quaternion operations, convention: `q[4] = {w, x, y, z}`, scalar-first, body-to-NED:
+- `casper_quat_mult()` — Hamilton product
+- `casper_quat_normalize()` — in-place normalization
+- `casper_quat_to_rotmat()` — quaternion to 3x3 rotation matrix (row-major)
+- `casper_quat_from_accel()` — initial orientation from gravity vector (pitch/roll from accel, yaw=0)
+- `casper_quat_to_euler()` — quaternion to ZYX Euler angles [roll, pitch, yaw] in degrees
+
+### Gyro Integrator (`casper_gyro_int.c/h`)
+
+RK4 quaternion propagation for attitude dead-reckoning:
+- IIR low-pass filter on gyro input (default 50 Hz cutoff)
+- On-pad gyro bias estimation (double-precision accumulators, frozen at launch)
+- Launch detection: `|accel| > 3g` triggers bias freeze
+- Open-loop attitude uncertainty tracking (per-axis σ using ARW noise model)
+- RK4 working memory pre-allocated in struct (no stack allocation in tight loop)
+
+### Extended Kalman Filter (`casper_ekf.c/h`)
+
+4-state vertical-channel EKF: **[altitude, velocity, accel_bias, baro_bias]**
+- **Predict** (500 Hz): Rotates body-frame accel to NED via quaternion, subtracts gravity and accel bias, propagates state and covariance (Phi*P*Phi' + Q via CMSIS-DSP)
+- **Baro update** (~100 Hz): Sequential scalar update, H=[1,0,0,1], Joseph form covariance, symmetrization
+- **Transonic gating**: Gates baro updates when estimated Mach > 0.4, ungates below 0.35 (ISA lapse rate for speed-of-sound)
+- **GPS stubs**: `update_gps_alt` (H=[1,0,0,0], R=100) and `update_gps_vel` (H=[0,1,0,0], R=1.0) — ready for hardware integration
+- Pre-computed Phi, PhiT, Q matrices for fixed dt=0.002s
+
+### Main Loop Restructuring
+
+Transformed from 100 Hz blocking poll to 500 Hz non-blocking architecture:
+- **500 Hz**: IMU poll → unit conversion (g→m/s², dps→rad/s) → gyro integrator → EKF predict
+- **Async**: `ms5611_tick()` non-blocking baro state machine → EKF update on new data
+- **50 Hz**: USB CDC output with EKF state + Euler angles
+- Added `ms5611_tick()` non-blocking API alongside existing blocking `ms5611_read()`
+
+### USB Output Format (Rev 3c)
+
+```
+>alt:XX.XX,vel:XX.XX,roll:XX.X,pitch:XX.X,yaw:XX.X
+```
+- `alt`: EKF filtered altitude (m, AGL)
+- `vel`: EKF vertical velocity (m/s, positive up)
+- `roll`, `pitch`, `yaw`: Euler angles from gyro integrator quaternion (degrees)
+
+### New Files (Rev 3c)
+
+| File | Description |
+|------|-------------|
+| `Core/Src/casper_quat.c` / `Core/Inc/casper_quat.h` | Quaternion operations |
+| `Core/Src/casper_gyro_int.c` / `Core/Inc/casper_gyro_int.h` | RK4 gyro integrator |
+| `Core/Src/casper_ekf.c` / `Core/Inc/casper_ekf.h` | Extended Kalman Filter |
+| `Drivers/CMSIS/DSP/` | CMSIS-DSP matrix functions (6 source files + headers) |
+
+---
+
+## Current Firmware Behaviour (Rev 3c)
+
+1. **432 MHz SYSCLK** via HSI (64 MHz) + PLL1. All peripherals initialized.
+
+2. **Milestone LEDs** light up sequentially during initialization (200ms between each):
+   - LED1 (PA10) → `HAL_Init()` passed
+   - LED2 (PB14) → GPIO + peripheral inits passed
+   - LED3 (PE8) → USB init passed
+   - LED4 (PE7) → All sensors initialized + EKF ready
+
+3. **USB_MODE=3** (current build): Data collection harness mode. Behaviour depends on `DATA_PHASE` define.
+
+4. **USB_MODE=1** (EKF mode): 500 Hz EKF loop with **50 Hz USB CDC output**:
+   ```
+   >alt:XX.XX,vel:XX.XX,roll:XX.X,pitch:XX.X,yaw:XX.X
+   ```
+
+5. **USB_MODE=2** (MSC mode): Flash appears as USB drive. Alternating LED pairs indicate drive mode.
+
+6. **Build size:** ~68 KB (well within 128 KB flash)
+
+---
+
+## Files Changed (all revisions combined)
 
 | File | Change |
 |------|--------|
-| `Software/Core/Src/main.c` | HSI+PLL clock, SPI2+SPI4 fixes, PC2 MODER fix, MS5611+LSM6DSO32 init, 100Hz serial plotter output, EXTI callback, milestone LEDs |
-| `Software/Core/Src/ms5611.c` | **NEW** — MS5611 SPI barometer driver (from RobTillaart/MS5611_SPI) |
-| `Software/Core/Inc/ms5611.h` | **NEW** — MS5611 driver header |
-| `Software/Core/Src/lsm6dso32.c` | **NEW** — LSM6DSO32 SPI IMU driver (from STMicroelectronics/lsm6dso32-pid) |
-| `Software/Core/Inc/lsm6dso32.h` | **NEW** — LSM6DSO32 driver header |
-| `Software/Core/Src/stm32h7xx_it.c` | EXTI15_10 handler for LSM6DSO32 INT2 |
-| `Software/USB_DEVICE/Target/usbd_conf.c` | USB clock: PLL1Q 48 MHz |
-| `Software/Makefile` | `USE_PWR_LDO_SUPPLY`, sensor source files, `-u _printf_float` |
-| `.claude/CLAUDE.md` | Updated documentation: clock config, pin mapping, CubeMX regen checklist |
+| `Core/Src/main.c` | HSI+PLL clock, SPI fixes, PC2 MODER fix, all sensor inits, USB_MODE dispatch, 500Hz EKF loop, data collection, milestone LEDs |
+| `Core/Src/ms5611.c` / `Core/Inc/ms5611.h` | **NEW** — MS5611 SPI barometer (blocking + non-blocking API) |
+| `Core/Src/lsm6dso32.c` / `Core/Inc/lsm6dso32.h` | **NEW** — LSM6DSO32 SPI IMU driver |
+| `Core/Src/adxl372.c` / `Core/Inc/adxl372.h` | **NEW** — ADXL372 SPI high-g accelerometer driver |
+| `Core/Src/w25q512jv.c` / `Core/Inc/w25q512jv.h` | **NEW** — W25Q512JV QSPI flash driver |
+| `Core/Src/data_collect.c` / `Core/Inc/data_collect.h` | **NEW** — Phase-based data collection harness |
+| `Core/Src/casper_quat.c` / `Core/Inc/casper_quat.h` | **NEW** — Quaternion operations |
+| `Core/Src/casper_gyro_int.c` / `Core/Inc/casper_gyro_int.h` | **NEW** — RK4 gyro integrator |
+| `Core/Src/casper_ekf.c` / `Core/Inc/casper_ekf.h` | **NEW** — Extended Kalman Filter |
+| `Core/Src/stm32h7xx_it.c` | EXTI15_10 handler for LSM6DSO32 INT2 |
+| `USB_DEVICE/App/usbd_msc_storage_if.c/h` | **NEW** — USB MSC storage interface |
+| `USB_DEVICE/Target/usbd_conf.c` | USB clock: PLL1Q 48 MHz, MSC init for USB_MODE=2 |
+| `USB_DEVICE/App/usbd_desc.c` | USB descriptor for MSC mode |
+| `FATFS/App/fatfs.c/h` | **NEW** — FatFs initialization |
+| `FATFS/Target/user_diskio.c/h` | **NEW** — Disk I/O for W25Q512JV |
+| `Drivers/CMSIS/DSP/` | **NEW** — CMSIS-DSP matrix functions (6 sources + headers) |
+| `Makefile` | LDO fix, all sources, CMSIS-DSP, USB_MODE, DATA_PHASE, `-u _printf_float` |
+| `Matlab Code/casper_sensor_characterization.m` | **NEW** — Allan variance analysis pipeline |
 
 ---
 
@@ -174,6 +392,11 @@ HAL_GPIO_Init(GPIOC, &gpio_fix);
 ```bash
 # Build (from Software/ directory)
 make clean && make -j8
+
+# Switch USB mode (edit Makefile C_DEFS):
+#   -DUSB_MODE=1  → CDC serial output (EKF mode)
+#   -DUSB_MODE=2  → USB mass storage (read flash)
+#   -DUSB_MODE=3  → CDC + data collection
 
 # Flash via DFU
 # 1. Hold BOOT0, press RESET, release BOOT0
@@ -200,17 +423,26 @@ make clean && make -j8
 |-----|--------|-----|------|------|----|-----|
 | SPI1 | TBD | PA5 | PA7 | PB4 | PB0 | PB1 |
 | SPI2 | LSM6DSO32 | PD3 | PC1 | PC2_C | PC14 | PC15 (INT2) |
-| SPI3 | TBD | PC10 | PC12 | PC11 | PA15 | PD2 |
+| SPI3 | ADXL372 | PC10 | PC12 | PC11 | PA15 | PD2 |
 | SPI4 | MS5611 | PE12 | PE14 | PE13 | PE11 | — |
+| QUADSPI | W25Q512JV | PB2 (CLK) | PD11-13, PE2, PB6 | — | — | — |
 
 ## Next Steps
 
 - [x] Fix power supply and clock configuration
 - [x] MS5611 barometer altitude over USB CDC
 - [x] LSM6DSO32 IMU accel+gyro over USB CDC
-- [ ] Flash & verify LSM6DSO32 readings on hardware
-- [ ] Remaining sensors: ADXL372 (high-g accel), MMC5983MA (magnetometer)
-- [ ] GPS (U-blox M10M via UART4)
+- [x] ADXL372 high-g accelerometer bring-up
+- [x] W25Q512JV QSPI flash + FATFS
+- [x] USB MSC mode (flash as USB drive)
+- [x] Data collection harness (5 phases)
+- [x] MATLAB sensor noise characterization
+- [x] EKF navigation stack (altitude + velocity + attitude)
+- [x] Non-blocking barometer reads
+- [ ] Flash & verify EKF on hardware (desk test + tilt test + shake test)
+- [ ] Remaining sensors: MMC5983MA (magnetometer)
+- [ ] GPS (U-blox M10M via UART4) + EKF GPS updates
 - [ ] Bidirectional USB CDC command interface
-- [ ] QSPI flash data logging (W25Q512JV)
-- [ ] Flight state machine
+- [ ] Flight state machine & pyro control
+- [ ] Servo PWM output (TIM2 CH1-4)
+- [ ] LoRa telemetry

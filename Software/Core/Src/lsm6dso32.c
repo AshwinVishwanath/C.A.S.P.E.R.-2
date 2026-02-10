@@ -45,8 +45,8 @@ static uint8_t lsm6dso32_read_reg(lsm6dso32_t *dev, uint8_t reg)
 static void lsm6dso32_read_burst(lsm6dso32_t *dev, uint8_t reg,
                                   uint8_t *buf, uint16_t len)
 {
-    uint8_t tx[13] = {0};  /* max: 1 addr + 12 data */
-    uint8_t rx[13] = {0};
+    uint8_t tx[15] = {0};  /* max: 1 addr + 14 data (temp+gyro+accel) */
+    uint8_t rx[15] = {0};
     tx[0] = reg | 0x80;
     cs_low(dev);
     HAL_SPI_TransmitReceive(dev->hspi, tx, rx, len + 1, 100);
@@ -85,11 +85,17 @@ bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
     /* CTRL3_C: BDU=1, IF_INC=1 (auto-increment for burst reads) */
     lsm6dso32_write_reg(dev, LSM6DSO32_CTRL3_C, 0x44);
 
-    /* CTRL1_XL: ODR=104Hz high-perf (0100b), FS=±32g (01b) = 0x41 */
-    lsm6dso32_write_reg(dev, LSM6DSO32_CTRL1_XL, 0x41);
+    /* CTRL1_XL: ODR=833Hz high-perf (0111b), FS=±32g (01b) = 0x74 */
+    lsm6dso32_write_reg(dev, LSM6DSO32_CTRL1_XL, 0x74);
 
-    /* CTRL2_G: ODR=104Hz high-perf (0100b), FS=±2000dps (110b) = 0x4C */
-    lsm6dso32_write_reg(dev, LSM6DSO32_CTRL2_G, 0x4C);
+    /* CTRL2_G: ODR=833Hz high-perf (0111b), FS=±2000dps (110b) = 0x7C */
+    lsm6dso32_write_reg(dev, LSM6DSO32_CTRL2_G, 0x7C);
+
+    /* CTRL6_C: XL_HM_MODE=0 → accel high-performance enabled */
+    lsm6dso32_write_reg(dev, LSM6DSO32_CTRL6_C, 0x00);
+
+    /* CTRL7_G: G_HM_MODE=0 → gyro high-performance enabled */
+    lsm6dso32_write_reg(dev, LSM6DSO32_CTRL7_G, 0x00);
 
     /* INT2_CTRL: route accelerometer data-ready to INT2 (INT1 is NC on this PCB) */
     lsm6dso32_write_reg(dev, LSM6DSO32_INT2_CTRL, 0x01);
@@ -127,6 +133,40 @@ int lsm6dso32_read(lsm6dso32_t *dev)
 
     dev->data_ready = false;
     return LSM6DSO32_READ_OK;
+}
+
+int lsm6dso32_read_raw(lsm6dso32_t *dev)
+{
+    uint8_t buf[14];
+
+    /* Burst-read 14 bytes: OUT_TEMP_L (0x20) through OUTZ_H_A (0x2D) */
+    lsm6dso32_read_burst(dev, LSM6DSO32_OUT_TEMP_L, buf, 14);
+
+    /* Temperature: bytes 0-1 (little-endian int16, 256 LSB/°C, 0 = 25°C) */
+    dev->raw_temp = (int16_t)((uint16_t)buf[1] << 8 | buf[0]);
+
+    /* Gyroscope: bytes 2-7 (little-endian int16) */
+    dev->raw_gyro[0] = (int16_t)((uint16_t)buf[3] << 8 | buf[2]);
+    dev->raw_gyro[1] = (int16_t)((uint16_t)buf[5] << 8 | buf[4]);
+    dev->raw_gyro[2] = (int16_t)((uint16_t)buf[7] << 8 | buf[6]);
+
+    /* Accelerometer: bytes 8-13 (little-endian int16) */
+    dev->raw_accel[0] = (int16_t)((uint16_t)buf[9]  << 8 | buf[8]);
+    dev->raw_accel[1] = (int16_t)((uint16_t)buf[11] << 8 | buf[10]);
+    dev->raw_accel[2] = (int16_t)((uint16_t)buf[13] << 8 | buf[12]);
+
+    dev->data_ready = false;
+    return LSM6DSO32_READ_OK;
+}
+
+void lsm6dso32_write_reg_ext(lsm6dso32_t *dev, uint8_t reg, uint8_t val)
+{
+    lsm6dso32_write_reg(dev, reg, val);
+}
+
+uint8_t lsm6dso32_read_reg_ext(lsm6dso32_t *dev, uint8_t reg)
+{
+    return lsm6dso32_read_reg(dev, reg);
 }
 
 void lsm6dso32_irq_handler(lsm6dso32_t *dev)
