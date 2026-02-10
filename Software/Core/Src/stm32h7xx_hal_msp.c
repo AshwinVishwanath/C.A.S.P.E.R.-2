@@ -546,7 +546,25 @@ void HAL_QSPI_MspInit(QSPI_HandleTypeDef* hqspi)
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
     /* USER CODE BEGIN QUADSPI_MspInit 1 */
+    // CubeMX sets GPIO_SPEED_FREQ_LOW — too slow for 27MHz QSPI.
+    // Re-init all QSPI pins with VERY_HIGH speed.
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
 
+    GPIO_InitStruct.Pin = GPIO_PIN_2;
+    GPIO_InitStruct.Alternate = GPIO_AF9_QUADSPI;
+    HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);   // PE2 = IO2
+
+    GPIO_InitStruct.Pin = GPIO_PIN_2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);   // PB2 = CLK
+
+    GPIO_InitStruct.Pin = GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);   // PD11=IO0, PD12=IO1, PD13=IO3
+
+    GPIO_InitStruct.Pin = GPIO_PIN_6;
+    GPIO_InitStruct.Alternate = GPIO_AF10_QUADSPI;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);   // PB6 = NCS
     /* USER CODE END QUADSPI_MspInit 1 */
 
   }

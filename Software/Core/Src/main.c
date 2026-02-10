@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "fatfs.h"
 #include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -25,9 +26,16 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#if (USB_MODE != 2)
 #include "usbd_cdc_if.h"
+#endif
 #include "ms5611.h"
 #include "lsm6dso32.h"
+#include "adxl372.h"
+#include "w25q512jv.h"
+#include "casper_ekf.h"
+#include "casper_gyro_int.h"
+#include "casper_quat.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -69,6 +77,10 @@ TIM_HandleTypeDef htim4;
 /* USER CODE BEGIN PV */
 ms5611_t baro;
 lsm6dso32_t imu;
+adxl372_t high_g;
+w25q512jv_t flash;
+casper_ekf_t ekf;
+casper_gyro_int_t gyro_int;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -160,7 +172,12 @@ int main(void)
   MX_TIM4_Init();
   MX_I2C3_Init();
   MX_SPI3_Init();
+
+  // Init flash BEFORE USB so MSC storage callbacks can respond during enumeration
+  w25q512jv_init(&flash, &hqspi);
+
   MX_USB_DEVICE_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   // Milestone 2: GPIO configured — turn on CONT_YN_2 (PB14)
   HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
@@ -212,6 +229,89 @@ int main(void)
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
+  // Init EKF and gyro integrator: read initial accel for gravity alignment
+  {
+    lsm6dso32_read(&imu);
+    float accel_init[3] = {
+      imu.accel_g[0] * 9.80665f,
+      imu.accel_g[1] * 9.80665f,
+      imu.accel_g[2] * 9.80665f
+    };
+    casper_gyro_int_init(&gyro_int, accel_init);
+    casper_ekf_init(&ekf);
+  }
+
+  // Init ADXL372 high-G accelerometer on SPI3
+  adxl372_init(&high_g, &hspi3, SPI3_CS_GPIO_Port, SPI3_CS_Pin);
+  if (high_g.device_id != ADXL372_DEVID_VAL) {
+    // DEVID mismatch — blink LED3+LED4 as warning but continue
+    for (int i = 0; i < 6; i++) {
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(200);
+    }
+  }
+
+  // Check flash init result (already initialized before USB)
+  bool flash_ok = false;
+  if (flash.jedec_id[0] != W25Q512JV_MANUFACTURER_ID) {
+    for (int i = 0; i < 6; i++) {
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(200);
+    }
+  } else {
+    flash_ok = true;
+  }
+  (void)flash_ok;  // suppress warning when FATFS block is compiled out
+
+#if (USB_MODE != 2)
+  // Mount FATFS on flash (CDC mode only — MSC lets the PC manage the filesystem)
+  bool fatfs_ok = false;
+  if (flash_ok) {
+    FRESULT fres = f_mount(&USERFatFS, USERPath, 1);
+    if (fres == FR_NO_FILESYSTEM) {
+      // First boot — format the flash with FAT
+      BYTE work[4096];
+      fres = f_mkfs(USERPath, FM_FAT, 0, work, sizeof(work));
+      if (fres == FR_OK)
+        fres = f_mount(&USERFatFS, USERPath, 1);
+    }
+    fatfs_ok = (fres == FR_OK);
+  }
+
+  // File I/O test: write a string, read it back, compare
+  bool file_test_ok = false;
+  if (fatfs_ok) {
+    const char test_str[] = "CASPER-2 FATFS OK";
+    char read_buf[32] = {0};
+    UINT bw = 0, br = 0;
+    FRESULT fr;
+
+    // Write test file
+    fr = f_open(&USERFile, "TEST.TXT", FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr == FR_OK) {
+      fr = f_write(&USERFile, test_str, sizeof(test_str) - 1, &bw);
+      f_close(&USERFile);
+    }
+
+    // Read it back
+    if (fr == FR_OK && bw == sizeof(test_str) - 1) {
+      fr = f_open(&USERFile, "TEST.TXT", FA_READ);
+      if (fr == FR_OK) {
+        fr = f_read(&USERFile, read_buf, sizeof(test_str) - 1, &br);
+        f_close(&USERFile);
+      }
+    }
+
+    // Verify
+    if (fr == FR_OK && br == sizeof(test_str) - 1 &&
+        memcmp(test_str, read_buf, br) == 0) {
+      file_test_ok = true;
+    }
+  }
+#endif /* USB_MODE != 2 */
+
   // Milestone 4: all done — turn on CONT_YN_4 (PE7)
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
   HAL_Delay(1000);  // USB enumeration time
@@ -222,17 +322,48 @@ int main(void)
   HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 
-  // Print WHO_AM_I on first few lines so terminal can capture it
+#if (USB_MODE != 2)
+  // Print status on first few lines so terminal can capture it
   {
-    char who_buf[40];
-    int who_len = snprintf(who_buf, sizeof(who_buf), ">who:0x%02X\r\n", imu.device_id);
+    char info_buf[120];
+    int info_len = snprintf(info_buf, sizeof(info_buf),
+        ">who:0x%02X,adxl:0x%02X,flash_id:0x%02X%02X%02X,fatfs:%s,file_test:%s\r\n",
+        imu.device_id, high_g.device_id,
+        flash.jedec_id[0], flash.jedec_id[1], flash.jedec_id[2],
+        fatfs_ok ? "OK" : "ERR",
+        file_test_ok ? "PASS" : "FAIL");
     for (int i = 0; i < 5; i++) {
-      CDC_Transmit_FS((uint8_t *)who_buf, who_len);
+      CDC_Transmit_FS((uint8_t *)info_buf, info_len);
       HAL_Delay(200);
     }
   }
+  // Print MS5611 raw PROM calibration coefficients
+  {
+    char prom_buf[100];
+    int prom_len = snprintf(prom_buf, sizeof(prom_buf),
+        ">PROM:C0=%u,C1=%u,C2=%u,C3=%u,C4=%u,C5=%u,C6=%u\r\n",
+        baro.prom[0], baro.prom[1], baro.prom[2],
+        baro.prom[3], baro.prom[4], baro.prom[5], baro.prom[6]);
+    for (int i = 0; i < 3; i++) {
+      CDC_Transmit_FS((uint8_t *)prom_buf, prom_len);
+      HAL_Delay(200);
+    }
+  }
+#endif /* USB_MODE != 2 */
 
-  uint32_t last_sensor_tick = 0;
+#if (USB_MODE == 2)
+  /* MSC mode: set alternating LED pairs so toggle creates ping-pong pattern */
+  HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+#endif
+
+  uint32_t last_imu_tick = 0;
+  uint32_t last_output_tick = 0;
+  const float EKF_DT = 0.002f;               /* 500 Hz */
+  const float G_CONST = 9.80665f;
+  const float DEG2RAD = 0.0174532925f;        /* pi / 180 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -242,22 +373,64 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (HAL_GetTick() - last_sensor_tick >= 10) {
-      ms5611_read(&baro);
-      float altitude = ms5611_get_altitude(&baro, 1013.25f);
-      lsm6dso32_read(&imu);
-
-      char buf[200];
-      int len = snprintf(buf, sizeof(buf),
-          ">altitude:%.2f,ax:%.2f,ay:%.2f,az:%.2f,gx:%.1f,gy:%.1f,gz:%.1f\r\n",
-          altitude,
-          imu.accel_g[0], imu.accel_g[1], imu.accel_g[2],
-          imu.gyro_dps[0], imu.gyro_dps[1], imu.gyro_dps[2]);
-      CDC_Transmit_FS((uint8_t *)buf, len);
-
+#if (USB_MODE == 2)
+    // MSC mode: alternating LED pairs (1+3 vs 2+4) to indicate USB drive mode
+    if (HAL_GetTick() - last_imu_tick >= 300) {
       HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
-      last_sensor_tick = HAL_GetTick();
+      HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      last_imu_tick = HAL_GetTick();
     }
+#else
+    {
+      uint32_t now = HAL_GetTick();
+
+      /* ── 500 Hz: IMU read + gyro integrator + EKF predict ── */
+      if (now - last_imu_tick >= 2) {
+        lsm6dso32_read(&imu);
+
+        float accel_ms2[3] = {
+          imu.accel_g[0] * G_CONST,
+          imu.accel_g[1] * G_CONST,
+          imu.accel_g[2] * G_CONST
+        };
+        float gyro_rads[3] = {
+          imu.gyro_dps[0] * DEG2RAD,
+          imu.gyro_dps[1] * DEG2RAD,
+          imu.gyro_dps[2] * DEG2RAD
+        };
+
+        casper_gyro_int_update(&gyro_int, gyro_rads, accel_ms2, EKF_DT);
+        casper_ekf_predict(&ekf, &gyro_int, accel_ms2, EKF_DT);
+
+        last_imu_tick = now;
+      }
+
+      /* ── Async baro: non-blocking state machine (~100 Hz output) ── */
+      if (ms5611_tick(&baro)) {
+        float altitude = ms5611_get_altitude(&baro, 1013.25f);
+        casper_ekf_update_baro(&ekf, altitude);
+      }
+
+      /* ── 50 Hz: USB serial output ── */
+      if (now - last_output_tick >= 20) {
+        float euler[3];
+        casper_quat_to_euler(gyro_int.q, euler);
+
+        char buf[256];
+        int len = snprintf(buf, sizeof(buf),
+            ">alt:%.2f,vel:%.2f,"
+            "roll:%.1f,pitch:%.1f,yaw:%.1f\r\n",
+            ekf.x[0], ekf.x[1],
+            euler[0], euler[1], euler[2]);
+        CDC_Transmit_FS((uint8_t *)buf, len);
+
+        HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+        last_output_tick = now;
+      }
+    }
+#endif
   }
   /* USER CODE END 3 */
 }
@@ -753,7 +926,15 @@ static void MX_QUADSPI_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN QUADSPI_Init 2 */
-
+  // CubeMX defaults are wrong for W25Q512JV 64MB flash.
+  // ClockPrescaler=255 (0.8MHz) → 7 (27MHz), FlashSize=1 → 25 (64MB),
+  // SampleShifting → HALFCYCLE, ChipSelectHighTime → 2 cycles.
+  hqspi.Init.ClockPrescaler = 7;
+  hqspi.Init.FifoThreshold = 4;
+  hqspi.Init.SampleShifting = QSPI_SAMPLE_SHIFTING_HALFCYCLE;
+  hqspi.Init.FlashSize = 25;
+  hqspi.Init.ChipSelectHighTime = QSPI_CS_HIGH_TIME_2_CYCLE;
+  HAL_QSPI_Init(&hqspi);
   /* USER CODE END QUADSPI_Init 2 */
 
 }
@@ -829,7 +1010,7 @@ static void MX_SPI2_Init(void)
   hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;  // PLL2P=84MHz /16 = 5.25MHz (LSM6DSO32 max 10MHz)
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -852,8 +1033,10 @@ static void MX_SPI2_Init(void)
   // LSM6DSO32 requires SPI Mode 3 (CPOL=1, CPHA=1).
   // MasterKeepIOState=ENABLE keeps SCK HIGH (CPOL=1 idle) between transactions,
   // preventing a spurious rising edge when HAL_SPI_TransmitReceive enables the peripheral.
+  // CubeMX also reverts BaudRatePrescaler to 2 (42MHz) — LSM6DSO32 max is 10MHz.
   hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;   // CPOL=1
   hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;        // CPHA=1
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;  // PLL2P=84MHz /16 = 5.25MHz
   hspi2.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
   hspi2.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
   HAL_SPI_Init(&hspi2);
@@ -904,7 +1087,12 @@ static void MX_SPI3_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN SPI3_Init 2 */
-
+  // CubeMX defaults DataSize to 4-bit and BaudRatePrescaler to 2 (42MHz).
+  // ADXL372 needs 8-bit data, max 10MHz SPI clock.
+  // PLL2P=84MHz / 16 = 5.25MHz — safe for ADXL372.
+  hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+  HAL_SPI_Init(&hspi3);
   /* USER CODE END SPI3_Init 2 */
 
 }
@@ -928,11 +1116,11 @@ static void MX_SPI4_Init(void)
   hspi4.Instance = SPI4;
   hspi4.Init.Mode = SPI_MODE_MASTER;
   hspi4.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi4.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi4.Init.DataSize = SPI_DATASIZE_4BIT;
   hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi4.Init.NSS = SPI_NSS_SOFT;
-  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;  // PLL2P=84MHz /8 = 10.5MHz → actual ~13.5MHz APB (MS5611 max 20MHz)
+  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
   hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi4.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi4.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -952,7 +1140,11 @@ static void MX_SPI4_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN SPI4_Init 2 */
-
+  // CubeMX reverts DataSize to 4-bit and BaudRatePrescaler to 2 (42MHz).
+  // MS5611 needs 8-bit data, max 20MHz SPI clock.
+  hspi4.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;  // PLL2P=84MHz /8 = 10.5MHz
+  HAL_SPI_Init(&hspi4);
   /* USER CODE END SPI4_Init 2 */
 
 }
@@ -1088,8 +1280,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, RADIO_NRST_Pin|I2C_3_INT_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(SPI2_CS_GPIO_Port, SPI2_CS_Pin, GPIO_PIN_SET);  // CS idle HIGH
+  HAL_GPIO_WritePin(GPIOC, RADIO_NRST_Pin|SPI2_CS_Pin|I2C_3_INT_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, Radio_CS_Pin|CONT_YN_2_Pin|PY4_Pin, GPIO_PIN_RESET);
@@ -1185,7 +1376,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(I2C1_INT_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  // CubeMX groups SPI CS pins with other outputs and sets them LOW.
+  // All SPI CS pins must idle HIGH so sensors are deselected.
+  HAL_GPIO_WritePin(SPI2_CS_GPIO_Port, SPI2_CS_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(SPI3_CS_GPIO_Port, SPI3_CS_Pin, GPIO_PIN_SET);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
