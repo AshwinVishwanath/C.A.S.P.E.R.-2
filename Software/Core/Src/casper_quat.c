@@ -66,7 +66,7 @@ void casper_quat_from_accel(const float accel[3], float q[4])
      *
      * Euler (ZYX convention) to quaternion:
      */
-    float pitch = atan2f(-ax, az);
+    float pitch = atan2f(-ax, sqrtf(ay * ay + az * az));
     float roll  = atan2f( ay, az);
 
     float cp = cosf(pitch * 0.5f);
@@ -79,6 +79,20 @@ void casper_quat_from_accel(const float accel[3], float q[4])
     q[1] = cp * sr;           /* x */
     q[2] = sp * cr;           /* y */
     q[3] = -sp * sr;          /* z */
+
+    casper_quat_normalize(q);
+}
+
+void casper_quat_from_euler(float roll, float pitch, float yaw, float q[4])
+{
+    float cr = cosf(roll  * 0.5f), sr = sinf(roll  * 0.5f);
+    float cp = cosf(pitch * 0.5f), sp = sinf(pitch * 0.5f);
+    float cy = cosf(yaw   * 0.5f), sy = sinf(yaw   * 0.5f);
+
+    q[0] = cr*cp*cy + sr*sp*sy;   /* w */
+    q[1] = sr*cp*cy - cr*sp*sy;   /* x */
+    q[2] = cr*sp*cy + sr*cp*sy;   /* y */
+    q[3] = cr*cp*sy - sr*sp*cy;   /* z */
 
     casper_quat_normalize(q);
 }

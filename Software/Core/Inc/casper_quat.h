@@ -41,6 +41,16 @@ void casper_quat_to_rotmat(const float q[4], float R[9]);
 void casper_quat_from_accel(const float accel[3], float q[4]);
 
 /**
+ * Build quaternion from ZYX Euler angles (all in radians).
+ * @param roll_rad   Roll  (rotation about body X) in radians
+ * @param pitch_rad  Pitch (rotation about body Y) in radians
+ * @param yaw_rad    Yaw   (rotation about body Z) in radians
+ * @param q          Output quaternion [w, x, y, z], body-to-NED
+ */
+void casper_quat_from_euler(float roll_rad, float pitch_rad, float yaw_rad,
+                            float q[4]);
+
+/**
  * Convert quaternion to Euler angles (ZYX convention).
  * @param q    Input quaternion [w,x,y,z] (body-to-NED)
  * @param euler Output [roll, pitch, yaw] in degrees
