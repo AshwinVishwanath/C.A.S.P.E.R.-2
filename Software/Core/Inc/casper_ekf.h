@@ -14,7 +14,7 @@
 
 #include <stdbool.h>
 #include "arm_math.h"
-#include "casper_gyro_int.h"
+#include "casper_attitude.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -66,11 +66,11 @@ void casper_ekf_init(casper_ekf_t *ekf);
  * then propagates state and covariance.
  *
  * @param ekf         EKF state
- * @param gi          Gyro integrator (provides quaternion for rotation)
+ * @param att         Attitude estimator (provides quaternion for rotation)
  * @param accel_body  Body-frame accelerometer [ax,ay,az] in m/s^2
  * @param dt          Time step in seconds (should match pre-computed Phi, Q)
  */
-void casper_ekf_predict(casper_ekf_t *ekf, const casper_gyro_int_t *gi,
+void casper_ekf_predict(casper_ekf_t *ekf, const casper_attitude_t *att,
                         const float accel_body[3], float dt);
 
 /**

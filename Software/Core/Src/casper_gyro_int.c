@@ -9,7 +9,6 @@
 #include <string.h>
 
 #define G_ACCEL   9.80665f
-#define LAUNCH_G  3.0f          /* launch threshold in g */
 #define PI_F      3.14159265f
 
 /* qdot = 0.5 * q (x) [0; omega] */
@@ -31,6 +30,7 @@ void casper_gyro_int_init(casper_gyro_int_t *gi, const float accel_initial[3])
     casper_quat_from_accel(accel_initial, gi->q);
 
     gi->lpf_cutoff_hz = 50.0f;
+    gi->cal_samples = 25000;    /* ~30 seconds at 833 Hz */
 
     /* LSM6DSO32 characterization values */
     gi->gyro_arw[0] = 6.73e-05f;
@@ -50,16 +50,9 @@ void casper_gyro_int_update(casper_gyro_int_t *gi, const float gyro_raw[3],
                              + (1.0f - alpha) * gi->gyro_filtered[i];
     }
 
-    /* ── 2. Launch detection (|accel| > 3g) ── */
-    if (!gi->launched) {
-        float amag_sq = accel_raw[0]*accel_raw[0]
-                      + accel_raw[1]*accel_raw[1]
-                      + accel_raw[2]*accel_raw[2];
-        float thresh = LAUNCH_G * G_ACCEL;
-        if (amag_sq > thresh * thresh) {
-            gi->launched = true;
-            /* Bias is frozen — stop accumulating */
-        }
+    /* ── 2. Timed calibration: accumulate bias for cal_samples, then freeze ── */
+    if (!gi->launched && gi->bias_count >= gi->cal_samples) {
+        gi->launched = true;   /* calibration complete, bias frozen */
     }
 
     /* ── 3. On-pad gyro bias estimation ── */

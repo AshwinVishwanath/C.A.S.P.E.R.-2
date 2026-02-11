@@ -34,8 +34,14 @@
 #include "adxl372.h"
 #include "w25q512jv.h"
 #include "casper_ekf.h"
-#include "casper_gyro_int.h"
+#include "casper_attitude.h"
 #include "casper_quat.h"
+#include "max_m10m.h"
+#include "mmc5983ma.h"
+#include "mag_cal.h"
+#ifdef MAG_VAL
+#include "mag_val.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -80,7 +86,11 @@ lsm6dso32_t imu;
 adxl372_t high_g;
 w25q512jv_t flash;
 casper_ekf_t ekf;
-casper_gyro_int_t gyro_int;
+casper_attitude_t att;
+max_m10m_t gps;
+mmc5983ma_t mag;
+static float mag_cal_ut[3];
+static bool mag_new = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -229,15 +239,18 @@ int main(void)
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
-  // Init EKF and gyro integrator: read initial accel for gravity alignment
+  // Init attitude estimator and EKF
   {
-    lsm6dso32_read(&imu);
-    float accel_init[3] = {
-      imu.accel_g[0] * 9.80665f,
-      imu.accel_g[1] * 9.80665f,
-      imu.accel_g[2] * 9.80665f
+    casper_att_config_t att_cfg = {
+      .Kp_grav           = 1.0f,
+      .Kp_mag_pad        = 0.5f,
+      .Kp_mag_flight     = 0.3f,
+      .Ki                = 0.05f,
+      .gyro_lpf_cutoff_hz = 50.0f,
+      .mag_update_hz     = 10.0f,
+      .launch_accel_g    = 3.0f,
     };
-    casper_gyro_int_init(&gyro_int, accel_init);
+    casper_att_init(&att, &att_cfg);
     casper_ekf_init(&ekf);
   }
 
@@ -251,6 +264,40 @@ int main(void)
       HAL_Delay(200);
     }
   }
+
+  // Init MAX-M10M GPS on I2C1
+  if (!max_m10m_init(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
+    // I2C NAK — GPS module not responding — blink LED3+LED4 warning, continue
+    for (int i = 0; i < 6; i++) {
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(200);
+    }
+  }
+
+  // Reconfigure I2C_3_INT (PC8) from output to EXTI rising edge
+  {
+    GPIO_InitTypeDef gpio_fix = {0};
+    gpio_fix.Pin = I2C_3_INT_Pin;
+    gpio_fix.Mode = GPIO_MODE_IT_RISING;
+    gpio_fix.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(I2C_3_INT_GPIO_Port, &gpio_fix);
+  }
+
+  // Init MMC5983MA magnetometer on I2C3
+  mmc5983ma_init(&mag, &hi2c3);
+  if (mag.product_id != MMC5983MA_PROD_ID_VAL) {
+    // Product ID mismatch — blink LED3+LED4 as warning but continue
+    for (int i = 0; i < 6; i++) {
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(200);
+    }
+  }
+
+  // EXTI9_5 for MMC5983MA DRDY (PC8) — disabled, using polled reads instead
+  // HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+  // HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
@@ -325,13 +372,14 @@ int main(void)
 #if (USB_MODE != 2)
   // Print status on first few lines so terminal can capture it
   {
-    char info_buf[120];
+    char info_buf[160];
     int info_len = snprintf(info_buf, sizeof(info_buf),
-        ">who:0x%02X,adxl:0x%02X,flash_id:0x%02X%02X%02X,fatfs:%s,file_test:%s\r\n",
-        imu.device_id, high_g.device_id,
+        ">who:0x%02X,adxl:0x%02X,mag:0x%02X,flash_id:0x%02X%02X%02X,fatfs:%s,file_test:%s,gps:%s\r\n",
+        imu.device_id, high_g.device_id, mag.product_id,
         flash.jedec_id[0], flash.jedec_id[1], flash.jedec_id[2],
         fatfs_ok ? "OK" : "ERR",
-        file_test_ok ? "PASS" : "FAIL");
+        file_test_ok ? "PASS" : "FAIL",
+        gps.alive ? "OK" : "NO_ACK");
     for (int i = 0; i < 5; i++) {
       CDC_Transmit_FS((uint8_t *)info_buf, info_len);
       HAL_Delay(200);
@@ -357,17 +405,58 @@ int main(void)
   HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+#else
+  /* Clear all LEDs before calibration sequence */
+  HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 #endif
 
-  uint32_t last_imu_tick = 0;
+#if (USB_MODE == 2)
+  uint32_t last_led_tick = 0;
+#endif
   uint32_t last_output_tick = 0;
-  const float EKF_DT = 0.002f;               /* 500 Hz */
+  uint32_t last_mag_tick = 0;
+  const float EKF_DT = 0.0012f;              /* 833 Hz (IMU data-ready driven) */
   const float G_CONST = 9.80665f;
   const float DEG2RAD = 0.0174532925f;        /* pi / 180 */
+  float baro_ref = 0.0f;
+  bool init_done = false;       /* static init (accel+mag averaging) complete */
+  bool cal_done = false;        /* 30s init period complete, filter running */
+  uint8_t cal_pct_printed = 0;  /* last 10% milestone printed (0-10) */
+  uint32_t loop_start_tick = 0; /* HAL_GetTick() at main loop entry */
+
+#ifdef MAG_CAL
+  mag_cal_t mcal;
+  if (!mag_cal_init(&mcal)) {
+    /* File open failed — rapid blink all LEDs */
+    while (1) {
+      HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(100);
+    }
+  }
+#endif
+#ifdef MAG_VAL
+  mag_val_t mval;
+  if (!mag_val_init(&mval)) {
+    while (1) {
+      HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(100);
+    }
+  }
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  loop_start_tick = HAL_GetTick();
   while (1)
   {
     /* USER CODE END WHILE */
@@ -375,19 +464,83 @@ int main(void)
     /* USER CODE BEGIN 3 */
 #if (USB_MODE == 2)
     // MSC mode: alternating LED pairs (1+3 vs 2+4) to indicate USB drive mode
-    if (HAL_GetTick() - last_imu_tick >= 300) {
+    if (HAL_GetTick() - last_led_tick >= 300) {
       HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
       HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
       HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
-      last_imu_tick = HAL_GetTick();
+      last_led_tick = HAL_GetTick();
+    }
+#elif defined(MAG_CAL)
+    {
+      uint32_t now = HAL_GetTick();
+
+      /* 100 Hz mag read + calibration tick */
+      if (now - last_mag_tick >= 10) {
+        mmc5983ma_read(&mag);
+        mag_cal_tick(&mcal, &mag, now);
+        last_mag_tick = now;
+      }
+
+      /* Done: all LEDs solid, print final message, idle forever */
+      if (mag_cal_is_done(&mcal)) {
+        HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+        char done_buf[64];
+        int done_len = snprintf(done_buf, sizeof(done_buf),
+            ">mag_cal: DONE (%lu samples)\r\n", mcal.sample_count);
+        for (int i = 0; i < 5; i++) {
+          CDC_Transmit_FS((uint8_t *)done_buf, done_len);
+          HAL_Delay(200);
+        }
+        while (1) { HAL_Delay(1000); }
+      }
+    }
+#elif defined(MAG_VAL)
+    {
+      uint32_t now = HAL_GetTick();
+
+      /* 100 Hz mag read + validation tick */
+      if (now - last_mag_tick >= 10) {
+        mmc5983ma_read(&mag);
+        mag_val_tick(&mval, &mag, now);
+        last_mag_tick = now;
+      }
+
+      /* Done: all LEDs solid, print final message, idle forever */
+      if (mag_val_is_done(&mval)) {
+        HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+        char done_buf[64];
+        int done_len = snprintf(done_buf, sizeof(done_buf),
+            ">mag_val: DONE (%lu samples)\r\n", mval.sample_count);
+        for (int i = 0; i < 5; i++) {
+          CDC_Transmit_FS((uint8_t *)done_buf, done_len);
+          HAL_Delay(200);
+        }
+        while (1) { HAL_Delay(1000); }
+      }
     }
 #else
     {
       uint32_t now = HAL_GetTick();
 
-      /* ── 500 Hz: IMU read + gyro integrator + EKF predict ── */
-      if (now - last_imu_tick >= 2) {
+      /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
+      if (now - last_mag_tick >= 10) {
+        mmc5983ma_read(&mag);
+        last_mag_tick = now;
+        /* Frame mapping (sensor → common frame) + hard/soft-iron cal */
+        float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
+        mag_cal_apply(mag_raw, mag_cal_ut);
+        mag_new = true;
+      }
+
+      /* ── 833 Hz: IMU read + attitude estimator (interrupt-driven) ── */
+      if (imu.data_ready) {
         lsm6dso32_read(&imu);
 
         float accel_ms2[3] = {
@@ -401,34 +554,109 @@ int main(void)
           imu.gyro_dps[2] * DEG2RAD
         };
 
-        casper_gyro_int_update(&gyro_int, gyro_rads, accel_ms2, EKF_DT);
-        casper_ekf_predict(&ekf, &gyro_int, accel_ms2, EKF_DT);
+        const float *mag_ptr = mag_new ? mag_cal_ut : NULL;
 
-        last_imu_tick = now;
+        if (!cal_done) {
+          /* ── Phase 1: 30s init (static init + complementary filter + gyro bias) ── */
+          if (!init_done) {
+            /* Sub-phase A: accumulate 500 mag samples for initial quaternion */
+            if (casper_att_static_init(&att, accel_ms2, mag_ptr)) {
+              init_done = true;
+              /* Turn off init progress LEDs */
+              HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+            } else {
+              /* LED loading bar based on mag sample count */
+              uint32_t mc = att.mag_count;
+              if (mc >= 125)
+                HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+              if (mc >= 250)
+                HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+              if (mc >= 375)
+                HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+              if (mc >= 500)
+                HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+            }
+          } else {
+            /* Sub-phase B: full complementary filter (accel+gyro+mag) + gyro bias */
+            casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
+          }
+
+          /* Check 30s timer for transition */
+          if (init_done && (now - loop_start_tick) >= 30000) {
+            att.launched = true;
+            att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
+            cal_done = true;
+            HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+          }
+        } else {
+          /* ── Phase 2: Running — gyro+mag filter (no gravity correction) ── */
+          casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
+        }
+
+        mag_new = false;
       }
 
-      /* ── Async baro: non-blocking state machine (~100 Hz output) ── */
-      if (ms5611_tick(&baro)) {
-        float altitude = ms5611_get_altitude(&baro, 1013.25f);
+      /* ── Async baro: always tick (warms up during init), feed EKF after launch ── */
+      if (ms5611_tick(&baro) && cal_done) {
+        float altitude = ms5611_get_altitude(&baro, 1013.25f) - baro_ref;
         casper_ekf_update_baro(&ekf, altitude);
       }
 
+      /* ── GPS: non-blocking poll (10 Hz NAV-PVT) ── */
+      if (max_m10m_tick(&gps) && cal_done) {
+        if (max_m10m_has_3d_fix(&gps)) {
+          casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
+          casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
+        }
+      }
+
+#ifdef CDC_OUTPUT
       /* ── 50 Hz: USB serial output ── */
       if (now - last_output_tick >= 20) {
-        float euler[3];
-        casper_quat_to_euler(gyro_int.q, euler);
-
-        char buf[256];
-        int len = snprintf(buf, sizeof(buf),
-            ">alt:%.2f,vel:%.2f,"
-            "roll:%.1f,pitch:%.1f,yaw:%.1f\r\n",
-            ekf.x[0], ekf.x[1],
-            euler[0], euler[1], euler[2]);
-        CDC_Transmit_FS((uint8_t *)buf, len);
-
-        HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+        if (!cal_done) {
+          if (!init_done) {
+            /* Print static init progress */
+            uint8_t pct = (uint8_t)(att.mag_count * 100 / 500);
+            if (pct > cal_pct_printed * 10) {
+              cal_pct_printed = pct / 10;
+              char cal_buf[40];
+              int cal_len = snprintf(cal_buf, sizeof(cal_buf),
+                  ">init %d%%\r\n", pct);
+              CDC_Transmit_FS((uint8_t *)cal_buf, cal_len);
+            }
+          } else {
+            /* Pad: complementary filter converging */
+            char buf[128];
+            float euler[3];
+            casper_quat_to_euler(att.q, euler);
+            uint32_t remaining = 0;
+            if ((now - loop_start_tick) < 30000)
+              remaining = (30000 - (now - loop_start_tick)) / 1000;
+            int len = snprintf(buf, sizeof(buf),
+                ">pad roll:%.1f,pitch:%.1f,yaw:%.1f,t:%lu\r\n",
+                euler[0], euler[1], euler[2], remaining);
+            CDC_Transmit_FS((uint8_t *)buf, len);
+          }
+        } else {
+          /* Running: gyro+mag attitude output */
+          char buf[128];
+          float euler[3];
+          casper_quat_to_euler(att.q, euler);
+          int len = snprintf(buf, sizeof(buf),
+              ">att roll:%.1f,pitch:%.1f,yaw:%.1f,hsig:%.4f\r\n",
+              euler[0], euler[1], euler[2], att.heading_sigma);
+          CDC_Transmit_FS((uint8_t *)buf, len);
+          HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+        }
         last_output_tick = now;
       }
+#endif /* CDC_OUTPUT */
     }
 #endif
   }
@@ -1388,6 +1616,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == SPI2_INT_Pin) {  /* PC15 = LSM6DSO32 INT2 */
     lsm6dso32_irq_handler(&imu);
+  }
+  if (GPIO_Pin == I2C1_INT_Pin) {  /* PE0 = GPS data ready (NVIC not enabled yet) */
+    max_m10m_irq_handler(&gps);
+  }
+  if (GPIO_Pin == I2C_3_INT_Pin) {  /* PC8 = MMC5983MA DRDY */
+    mmc5983ma_irq_handler(&mag);
   }
 }
 /* USER CODE END 4 */

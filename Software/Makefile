@@ -84,8 +84,12 @@ Core/Src/lsm6dso32.c \
 Core/Src/adxl372.c \
 Core/Src/w25q512jv.c \
 Core/Src/casper_quat.c \
-Core/Src/casper_gyro_int.c \
+Core/Src/casper_attitude.c \
 Core/Src/casper_ekf.c \
+Core/Src/max_m10m.c \
+Core/Src/mmc5983ma.c \
+Core/Src/mag_cal.c \
+Core/Src/mag_val.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_init_f32.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_mult_f32.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_trans_f32.c \
@@ -159,6 +163,7 @@ C_DEFS =  \
 -DSTM32H750xx \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
+-DCDC_OUTPUT \
 -DMSC_MEDIA_PACKET=4096
 
 

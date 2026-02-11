@@ -10,6 +10,33 @@
 
 #define G_ACCEL  9.80665f
 
+/* ═══════════════════════════════════════════════════════════════════
+ *  EKF TUNING KNOBS — edit these to tune filter behavior
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Predict rate */
+#define EKF_DT              0.0012f     /* s  (833 Hz IMU rate)               */
+
+/* Initial covariance P0 diagonal — how uncertain each state is at boot     */
+#define P0_ALT              0.1f       /* m^2       (sigma = 0.1 m)          */
+#define P0_VEL              0.001f     /* (m/s)^2   (sigma = 0.01 m/s)      */
+#define P0_ACCEL_BIAS       0.025f     /* (m/s^2)^2 (sigma = 0.05 m/s^2)   */
+#define P0_BARO_BIAS        0.75f        /* m^2       (sigma = 1.0 m)          */
+
+/* Process noise Q source parameters (from MATLAB Allan variance)            */
+#define ACCEL_VRW           2.162545e-03f   /* m/s/sqrt(s)   — velocity random walk  */
+#define ACCEL_BI_SIGMA      1.953783e-04f   /* m/s^2/sqrt(s) — accel bias instability */
+#define BARO_BI_SIGMA       1.000000e-03f   /* m/sqrt(s)     — baro bias instability  */
+
+/* Measurement noise R — larger = less trust in sensor                       */
+#define R_BARO              0.08f       /* m^2  (sigma ~ 0.32 m)              */
+
+/* Transonic baro gating thresholds                                          */
+#define MACH_GATE_ON        0.40f       /* gate baro above this Mach          */
+#define MACH_GATE_OFF       0.35f       /* un-gate baro below this Mach       */
+
+/* ═══════════════════════════════════════════════════════════════════ */
+
 /* Enforce symmetry: P = 0.5*(P + P') */
 static void symmetrize_4x4(float P[16])
 {
@@ -27,15 +54,14 @@ void casper_ekf_init(casper_ekf_t *ekf)
 {
     memset(ekf, 0, sizeof(*ekf));
 
-    float dt = 0.002f;  /* 500 Hz */
+    float dt = EKF_DT;
     ekf->dt = dt;
 
-    /* ── Initial covariance P0 = diag(0.01, 0.0001, 0.0025, 1.0) ── */
-    /*    (row-major 4x4)                                              */
-    ekf->P[0*4+0] = 0.01f;
-    ekf->P[1*4+1] = 0.0001f;
-    ekf->P[2*4+2] = 0.0025f;
-    ekf->P[3*4+3] = 1.0f;
+    /* ── Initial covariance P0 = diag(...) ── */
+    ekf->P[0*4+0] = P0_ALT;
+    ekf->P[1*4+1] = P0_VEL;
+    ekf->P[2*4+2] = P0_ACCEL_BIAS;
+    ekf->P[3*4+3] = P0_BARO_BIAS;
 
     /* ── State transition Phi (constant for fixed dt) ── */
     /*  [1   dt   -0.5*dt^2   0]                          */
@@ -61,22 +87,14 @@ void casper_ekf_init(casper_ekf_t *ekf)
     ekf->PhiT[3*4+3] = 1.0f;
 
     /* ── Process noise Q (constant for fixed dt) ── */
-    /* Noise parameters from LSM6DSO32 characterization:           */
-    /*   accel_vrw_vert  = 2.162545e-03 m/s/sqrt(s)                */
-    /*   accel_bi_sigma  = 1.953783e-04 m/s^2/sqrt(s)              */
-    /*   baro_bi_sigma   = 1.000000e-03 m/sqrt(s)                  */
-    float qa  = 4.676600e-06f;  /* accel_vrw_vert^2 */
-    float qab = 3.817246e-08f;  /* accel_bi_sigma^2 = (1.953783e-04)^2 */
-    float qbb = 1.000000e-06f;  /* baro_bi_sigma^2  = (1.000000e-03)^2 */
+    float qa  = ACCEL_VRW * ACCEL_VRW;
+    float qab = ACCEL_BI_SIGMA * ACCEL_BI_SIGMA;
+    float qbb = BARO_BI_SIGMA * BARO_BI_SIGMA;
 
-    float dt3_3 = qa * dt * dt * dt / 3.0f;
-    float dt2_2 = qa * dt * dt / 2.0f;
-    float dt1   = qa * dt;
-
-    ekf->Q[0*4+0] = dt3_3;
-    ekf->Q[0*4+1] = dt2_2;
-    ekf->Q[1*4+0] = dt2_2;
-    ekf->Q[1*4+1] = dt1;
+    ekf->Q[0*4+0] = qa * dt * dt * dt / 3.0f;
+    ekf->Q[0*4+1] = qa * dt * dt / 2.0f;
+    ekf->Q[1*4+0] = qa * dt * dt / 2.0f;
+    ekf->Q[1*4+1] = qa * dt;
     ekf->Q[2*4+2] = qab * dt;
     ekf->Q[3*4+3] = qbb * dt;
 
@@ -89,18 +107,18 @@ void casper_ekf_init(casper_ekf_t *ekf)
     arm_mat_init_f32(&ekf->tmp_b_mat, 4, 4, ekf->tmp_b);
 
     /* ── Measurement noise ── */
-    ekf->R_baro = 0.25f;   /* sigma = 0.5 m → R = 0.25 m^2 */
+    ekf->R_baro = R_BARO;
     ekf->baro_gated = false;
 }
 
-void casper_ekf_predict(casper_ekf_t *ekf, const casper_gyro_int_t *gi,
+void casper_ekf_predict(casper_ekf_t *ekf, const casper_attitude_t *att,
                         const float accel_body[3], float dt)
 {
     int i;
 
     /* ── 1. Rotate body-frame accel into NED ── */
     float R[9];
-    casper_quat_to_rotmat(gi->q, R);
+    casper_quat_to_rotmat(att->q, R);
 
     /* f_ned = R * accel_body  (3x3 * 3x1, manual — too small for CMSIS-DSP) */
     float f_ned[3];
@@ -110,8 +128,9 @@ void casper_ekf_predict(casper_ekf_t *ekf, const casper_gyro_int_t *gi,
                  + R[i*3+2] * accel_body[2];
     }
 
-    /* NED Z is down → negate to get "up".  Subtract gravity and accel bias. */
-    float a_up = -f_ned[2] - G_ACCEL - ekf->x[2];
+    /* f_ned[2] is positive-up per casper_quat_from_accel convention.
+     * Subtract gravity and accel bias to get true vertical acceleration. */
+    float a_up = f_ned[2] - G_ACCEL - ekf->x[2];
 
     /* ── 2. Propagate state ── */
     ekf->x[0] += ekf->x[1] * dt + 0.5f * a_up * dt * dt;
@@ -133,9 +152,9 @@ void casper_ekf_predict(casper_ekf_t *ekf, const casper_gyro_int_t *gi,
     float a_sound = sqrtf(1.4f * 287.058f * T_K);
     float mach = speed / a_sound;
 
-    if (!ekf->baro_gated && mach > 0.40f)
+    if (!ekf->baro_gated && mach > MACH_GATE_ON)
         ekf->baro_gated = true;
-    if (ekf->baro_gated && mach < 0.35f)
+    if (ekf->baro_gated && mach < MACH_GATE_OFF)
         ekf->baro_gated = false;
 }
 

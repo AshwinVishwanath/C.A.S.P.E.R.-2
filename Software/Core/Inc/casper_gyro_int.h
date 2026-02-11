@@ -24,13 +24,14 @@ typedef struct {
     float gyro_filtered[3];     /* rad/s, filtered output */
     float lpf_cutoff_hz;        /* tuneable cutoff (default 50 Hz) */
 
-    /* Gyro bias (estimated on-pad, frozen at launch) */
+    /* Gyro bias (estimated during timed calibration, then frozen) */
     float gyro_bias[3];         /* rad/s */
     double bias_sum[3];         /* accumulator (double for precision) */
     uint32_t bias_count;
+    uint32_t cal_samples;       /* target sample count for calibration */
 
-    /* Launch detection */
-    bool launched;
+    /* Calibration state */
+    bool launched;              /* true once calibration complete */
 
     /* Open-loop attitude uncertainty per-axis */
     float att_sigma[3];         /* rad */
