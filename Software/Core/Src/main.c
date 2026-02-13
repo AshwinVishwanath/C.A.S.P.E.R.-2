@@ -39,6 +39,7 @@
 #include "max_m10m.h"
 #include "mmc5983ma.h"
 #include "mag_cal.h"
+#include "casper_pyro.h"
 #ifdef MAG_VAL
 #include "mag_val.h"
 #endif
@@ -51,6 +52,16 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+/* ── Serial output toggles (uncomment to enable) ───────────────── */
+#ifdef CDC_OUTPUT
+  //#define OUT_ATTITUDE     /* roll, pitch, yaw, heading_sigma       */
+  //#define OUT_EKF          /* altitude, velocity, biases             */
+  //#define OUT_GPS          /* lat, lon, alt, vel_d, fix, sats        */
+  // #define OUT_MAG       /* calibrated magnetometer field (uT)     */
+  // #define OUT_IMU_RAW   /* raw accel (g) + gyro (dps)             */
+  // #define OUT_BARO      /* barometric altitude AGL (m)            */
+#endif
 
 /* USER CODE END PD */
 
@@ -91,6 +102,7 @@ max_m10m_t gps;
 mmc5983ma_t mag;
 static float mag_cal_ut[3];
 static bool mag_new = false;
+casper_pyro_t pyro;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -299,6 +311,9 @@ int main(void)
   // HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
   // HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
+  // Init pyro channels: ADC calibration, force all MOSFETs off
+  casper_pyro_init(&pyro, &hadc1, &hadc2, &hadc3);
+
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
   if (flash.jedec_id[0] != W25Q512JV_MANUFACTURER_ID) {
@@ -400,10 +415,10 @@ int main(void)
 #endif /* USB_MODE != 2 */
 
 #if (USB_MODE == 2)
-  /* MSC mode: set alternating LED pairs so toggle creates ping-pong pattern */
-  HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+  /* MSC mode: LEDs now driven by pyro_tick for continuity — all off initially */
+  HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 #else
   /* Clear all LEDs before calibration sequence */
@@ -413,9 +428,6 @@ int main(void)
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 #endif
 
-#if (USB_MODE == 2)
-  uint32_t last_led_tick = 0;
-#endif
   uint32_t last_output_tick = 0;
   uint32_t last_mag_tick = 0;
   const float EKF_DT = 0.0012f;              /* 833 Hz (IMU data-ready driven) */
@@ -463,13 +475,13 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 #if (USB_MODE == 2)
-    // MSC mode: alternating LED pairs (1+3 vs 2+4) to indicate USB drive mode
-    if (HAL_GetTick() - last_led_tick >= 300) {
-      HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
-      HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
-      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
-      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
-      last_led_tick = HAL_GetTick();
+    // MSC mode: pyro continuity LEDs at 10 Hz (replaces old ping-pong)
+    {
+      static uint32_t last_pyro_tick = 0;
+      if (HAL_GetTick() - last_pyro_tick >= 100) {
+        casper_pyro_tick(&pyro);
+        last_pyro_tick = HAL_GetTick();
+      }
     }
 #elif defined(MAG_CAL)
     {
@@ -644,19 +656,74 @@ int main(void)
             CDC_Transmit_FS((uint8_t *)buf, len);
           }
         } else {
-          /* Running: gyro+mag attitude output */
-          char buf[128];
-          float euler[3];
-          casper_quat_to_euler(att.q, euler);
-          int len = snprintf(buf, sizeof(buf),
-              ">att roll:%.1f,pitch:%.1f,yaw:%.1f,hsig:%.4f\r\n",
-              euler[0], euler[1], euler[2], att.heading_sigma);
-          CDC_Transmit_FS((uint8_t *)buf, len);
+          /* Running: toggle-gated telemetry output */
+          char buf[256];
+          int pos = 0;
+          bool sep = false;     /* pipe separator between sections */
+          pos += snprintf(buf + pos, sizeof(buf) - pos, ">");
+
+#ifdef OUT_ATTITUDE
+          {
+            float euler[3];
+            casper_quat_to_euler(att.q, euler);
+            if (sep) buf[pos++] = '|';
+            sep = true;
+            pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "att:%.1f,%.1f,%.1f,%.4f",
+                euler[0], euler[1], euler[2], att.heading_sigma);
+          }
+#endif
+#ifdef OUT_EKF
+          if (sep) buf[pos++] = '|';
+          sep = true;
+          pos += snprintf(buf + pos, sizeof(buf) - pos,
+              "ekf:%.2f,%.2f,%.3f,%.3f",
+              ekf.x[0], ekf.x[1], ekf.x[2], ekf.x[3]);
+#endif
+#ifdef OUT_GPS
+          if (sep) buf[pos++] = '|';
+          sep = true;
+          pos += snprintf(buf + pos, sizeof(buf) - pos,
+              "gps:%.6f,%.6f,%.1f,%.2f,%u,%u",
+              gps.lat_deg, gps.lon_deg, gps.alt_msl_m,
+              gps.vel_d_m_s, gps.fix_type, gps.num_sv);
+#endif
+#ifdef OUT_MAG
+          if (sep) buf[pos++] = '|';
+          sep = true;
+          pos += snprintf(buf + pos, sizeof(buf) - pos,
+              "mag:%.2f,%.2f,%.2f",
+              mag_cal_ut[0], mag_cal_ut[1], mag_cal_ut[2]);
+#endif
+#ifdef OUT_IMU_RAW
+          if (sep) buf[pos++] = '|';
+          sep = true;
+          pos += snprintf(buf + pos, sizeof(buf) - pos,
+              "imu:%.3f,%.3f,%.3f,%.1f,%.1f,%.1f",
+              imu.accel_g[0], imu.accel_g[1], imu.accel_g[2],
+              imu.gyro_dps[0], imu.gyro_dps[1], imu.gyro_dps[2]);
+#endif
+#ifdef OUT_BARO
+          if (sep) buf[pos++] = '|';
+          sep = true;
+          pos += snprintf(buf + pos, sizeof(buf) - pos,
+              "bar:%.2f",
+              ms5611_get_altitude(&baro, 1013.25f) - baro_ref);
+#endif
+
+          pos += snprintf(buf + pos, sizeof(buf) - pos, "\r\n");
+          CDC_Transmit_FS((uint8_t *)buf, pos);
           HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
         }
         last_output_tick = now;
       }
 #endif /* CDC_OUTPUT */
+
+      /* ── Keep all pyro gate pins high ── */
+      HAL_GPIO_WritePin(PY1_GPIO_Port, PY1_Pin, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(PY2_GPIO_Port, PY2_Pin, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(PY3_GPIO_Port, PY3_Pin, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(PY4_GPIO_Port, PY4_Pin, GPIO_PIN_SET);
     }
 #endif
   }
