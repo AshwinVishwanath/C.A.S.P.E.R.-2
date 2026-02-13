@@ -90,6 +90,7 @@ Core/Src/max_m10m.c \
 Core/Src/mmc5983ma.c \
 Core/Src/mag_cal.c \
 Core/Src/mag_val.c \
+Core/Src/casper_pyro.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_init_f32.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_mult_f32.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_trans_f32.c \

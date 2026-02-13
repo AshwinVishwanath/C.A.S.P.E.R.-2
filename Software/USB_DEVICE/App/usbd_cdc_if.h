@@ -94,7 +94,9 @@
 extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
 
 /* USER CODE BEGIN EXPORTED_VARIABLES */
-
+extern volatile uint8_t  cdc_rx_ready;
+extern volatile uint32_t cdc_rx_len;
+extern uint8_t UserRxBufferFS[];
 /* USER CODE END EXPORTED_VARIABLES */
 
 /**
