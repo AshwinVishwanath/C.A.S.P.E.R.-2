@@ -105,20 +105,24 @@ bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
 
 int lsm6dso32_read(lsm6dso32_t *dev)
 {
-    uint8_t buf[12];
+    uint8_t buf[14];
 
-    /* Burst-read 12 bytes: OUTX_L_G (0x22) through OUTZ_H_A (0x2D) */
-    lsm6dso32_read_burst(dev, LSM6DSO32_OUTX_L_G, buf, 12);
+    /* Burst-read 14 bytes: OUT_TEMP_L (0x20) through OUTZ_H_A (0x2D) */
+    lsm6dso32_read_burst(dev, LSM6DSO32_OUT_TEMP_L, buf, 14);
 
-    /* Gyroscope: bytes 0-5 (little-endian int16) */
-    int16_t gx = (int16_t)((uint16_t)buf[1] << 8 | buf[0]);
-    int16_t gy = (int16_t)((uint16_t)buf[3] << 8 | buf[2]);
-    int16_t gz = (int16_t)((uint16_t)buf[5] << 8 | buf[4]);
+    /* Temperature: bytes 0-1 (little-endian int16, 256 LSB/°C, 0 = 25°C) */
+    dev->raw_temp = (int16_t)((uint16_t)buf[1] << 8 | buf[0]);
+    dev->temp_c   = (float)dev->raw_temp / 256.0f + 25.0f;
 
-    /* Accelerometer: bytes 6-11 (little-endian int16) */
-    int16_t ax = (int16_t)((uint16_t)buf[7]  << 8 | buf[6]);
-    int16_t ay = (int16_t)((uint16_t)buf[9]  << 8 | buf[8]);
-    int16_t az = (int16_t)((uint16_t)buf[11] << 8 | buf[10]);
+    /* Gyroscope: bytes 2-7 (little-endian int16) */
+    int16_t gx = (int16_t)((uint16_t)buf[3] << 8 | buf[2]);
+    int16_t gy = (int16_t)((uint16_t)buf[5] << 8 | buf[4]);
+    int16_t gz = (int16_t)((uint16_t)buf[7] << 8 | buf[6]);
+
+    /* Accelerometer: bytes 8-13 (little-endian int16) */
+    int16_t ax = (int16_t)((uint16_t)buf[9]  << 8 | buf[8]);
+    int16_t ay = (int16_t)((uint16_t)buf[11] << 8 | buf[10]);
+    int16_t az = (int16_t)((uint16_t)buf[13] << 8 | buf[12]);
 
     /* Convert to physical units */
     /* ±32g: sensitivity = 0.976 mg/LSB → g = raw * 0.000976 */
