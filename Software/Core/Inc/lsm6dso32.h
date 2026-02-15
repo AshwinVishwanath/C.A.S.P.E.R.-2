@@ -35,6 +35,7 @@ typedef struct {
     int16_t            raw_accel[3];  /* Raw accelerometer register values */
     int16_t            raw_gyro[3];   /* Raw gyroscope register values */
     int16_t            raw_temp;      /* Raw temperature (256 LSB/°C, 0 = 25°C) */
+    float              temp_c;        /* Die temperature in °C */
     volatile bool      data_ready;    /* Set by EXTI ISR */
     uint8_t            device_id;
 } lsm6dso32_t;

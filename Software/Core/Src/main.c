@@ -55,12 +55,21 @@
 
 /* ── Serial output toggles (uncomment to enable) ───────────────── */
 #ifdef CDC_OUTPUT
-  //#define OUT_ATTITUDE     /* roll, pitch, yaw, heading_sigma       */
+  #define OUT_ATTITUDE     /* roll, pitch, yaw, heading_sigma       */
   //#define OUT_EKF          /* altitude, velocity, biases             */
   //#define OUT_GPS          /* lat, lon, alt, vel_d, fix, sats        */
   // #define OUT_MAG       /* calibrated magnetometer field (uT)     */
   // #define OUT_IMU_RAW   /* raw accel (g) + gyro (dps)             */
   // #define OUT_BARO      /* barometric altitude AGL (m)            */
+  #define OUT_IMU_TEMP  /* IMU die temperature (°C)               */
+#endif
+
+/* ── Gyro temperature compensation (slope-only linear model) ── */
+#ifdef GYRO_TEMP_COMP
+#define GYRO_TC_T0       32.485f       /* Reference temperature (°C)    */
+#define GYRO_TC_SLOPE_X  9.3745e-04f   /* rad/s per °C, X axis          */
+#define GYRO_TC_SLOPE_Y  2.3098e-04f   /* rad/s per °C, Y axis          */
+#define GYRO_TC_SLOPE_Z  2.8388e-04f   /* rad/s per °C, Z axis          */
 #endif
 
 /* USER CODE END PD */
@@ -555,15 +564,31 @@ int main(void)
       if (imu.data_ready) {
         lsm6dso32_read(&imu);
 
-        float accel_ms2[3] = {
-          imu.accel_g[0] * G_CONST,
-          imu.accel_g[1] * G_CONST,
-          imu.accel_g[2] * G_CONST
-        };
-        float gyro_rads[3] = {
+        /* ── Temp comp in sensor frame (slopes characterized per-sensor-axis) ── */
+        float gyro_sensor[3] = {
           imu.gyro_dps[0] * DEG2RAD,
           imu.gyro_dps[1] * DEG2RAD,
           imu.gyro_dps[2] * DEG2RAD
+        };
+#ifdef GYRO_TEMP_COMP
+        {
+          float dT = imu.temp_c - GYRO_TC_T0;
+          gyro_sensor[0] -= GYRO_TC_SLOPE_X * dT;
+          gyro_sensor[1] -= GYRO_TC_SLOPE_Y * dT;
+          gyro_sensor[2] -= GYRO_TC_SLOPE_Z * dT;
+        }
+#endif
+
+        /* ── Remap sensor → vehicle body frame (Xv=Zs, Yv=Xs, Zv=Ys) ── */
+        float accel_ms2[3] = {
+          imu.accel_g[2] * G_CONST,    /* Vehicle X = Sensor Z */
+          imu.accel_g[0] * G_CONST,    /* Vehicle Y = Sensor X */
+          imu.accel_g[1] * G_CONST     /* Vehicle Z = Sensor Y */
+        };
+        float gyro_rads[3] = {
+          gyro_sensor[2],               /* Vehicle X = Sensor Z */
+          gyro_sensor[0],               /* Vehicle Y = Sensor X */
+          gyro_sensor[1]                /* Vehicle Z = Sensor Y */
         };
 
         const float *mag_ptr = mag_new ? mag_cal_ut : NULL;
@@ -659,29 +684,29 @@ int main(void)
           /* Running: toggle-gated telemetry output */
           char buf[256];
           int pos = 0;
-          bool sep = false;     /* pipe separator between sections */
+          bool sep = false;     /* comma separator between fields */
           pos += snprintf(buf + pos, sizeof(buf) - pos, ">");
 
 #ifdef OUT_ATTITUDE
           {
             float euler[3];
             casper_quat_to_euler(att.q, euler);
-            if (sep) buf[pos++] = '|';
+            if (sep) buf[pos++] = ',';
             sep = true;
             pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "att:%.1f,%.1f,%.1f,%.4f",
+                "roll:%.1f,pitch:%.1f,yaw:%.1f,hdg_sig:%.4f",
                 euler[0], euler[1], euler[2], att.heading_sigma);
           }
 #endif
 #ifdef OUT_EKF
-          if (sep) buf[pos++] = '|';
+          if (sep) buf[pos++] = ',';
           sep = true;
           pos += snprintf(buf + pos, sizeof(buf) - pos,
               "ekf:%.2f,%.2f,%.3f,%.3f",
               ekf.x[0], ekf.x[1], ekf.x[2], ekf.x[3]);
 #endif
 #ifdef OUT_GPS
-          if (sep) buf[pos++] = '|';
+          if (sep) buf[pos++] = ',';
           sep = true;
           pos += snprintf(buf + pos, sizeof(buf) - pos,
               "gps:%.6f,%.6f,%.1f,%.2f,%u,%u",
@@ -689,14 +714,14 @@ int main(void)
               gps.vel_d_m_s, gps.fix_type, gps.num_sv);
 #endif
 #ifdef OUT_MAG
-          if (sep) buf[pos++] = '|';
+          if (sep) buf[pos++] = ',';
           sep = true;
           pos += snprintf(buf + pos, sizeof(buf) - pos,
               "mag:%.2f,%.2f,%.2f",
               mag_cal_ut[0], mag_cal_ut[1], mag_cal_ut[2]);
 #endif
 #ifdef OUT_IMU_RAW
-          if (sep) buf[pos++] = '|';
+          if (sep) buf[pos++] = ',';
           sep = true;
           pos += snprintf(buf + pos, sizeof(buf) - pos,
               "imu:%.3f,%.3f,%.3f,%.1f,%.1f,%.1f",
@@ -704,11 +729,17 @@ int main(void)
               imu.gyro_dps[0], imu.gyro_dps[1], imu.gyro_dps[2]);
 #endif
 #ifdef OUT_BARO
-          if (sep) buf[pos++] = '|';
+          if (sep) buf[pos++] = ',';
           sep = true;
           pos += snprintf(buf + pos, sizeof(buf) - pos,
               "bar:%.2f",
               ms5611_get_altitude(&baro, 1013.25f) - baro_ref);
+#endif
+#ifdef OUT_IMU_TEMP
+          if (sep) buf[pos++] = ',';
+          sep = true;
+          pos += snprintf(buf + pos, sizeof(buf) - pos,
+              "imu_temp:%.2f", imu.temp_c);
 #endif
 
           pos += snprintf(buf + pos, sizeof(buf) - pos, "\r\n");

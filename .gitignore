@@ -77,3 +77,7 @@ nul
 
 # Claude Code
 .claude/
+
+# Mission Control webapp — downloaded/generated files
+casper-mc-local/node_modules/
+casper-mc-local/package-lock.json
