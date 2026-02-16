@@ -111,7 +111,8 @@ extern uint8_t UserRxBufferFS[];
 uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 
 /* USER CODE BEGIN EXPORTED_FUNCTIONS */
-
+uint16_t cdc_ring_available(void);
+uint8_t  cdc_ring_read_byte(void);
 /* USER CODE END EXPORTED_FUNCTIONS */
 
 /**

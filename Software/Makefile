@@ -107,7 +107,18 @@ Middlewares/ST/STM32_USB_Device_Library/Class/MSC/Src/usbd_msc.c \
 Middlewares/ST/STM32_USB_Device_Library/Class/MSC/Src/usbd_msc_bot.c \
 Middlewares/ST/STM32_USB_Device_Library/Class/MSC/Src/usbd_msc_scsi.c \
 Middlewares/ST/STM32_USB_Device_Library/Class/MSC/Src/usbd_msc_data.c \
-USB_DEVICE/App/usbd_msc_storage_if.c
+USB_DEVICE/App/usbd_msc_storage_if.c \
+App/telemetry/cobs.c \
+App/telemetry/crc32_hw.c \
+App/telemetry/tlm_manager.c \
+App/pack/quat_pack.c \
+App/pack/status_pack.c \
+App/pyro/pyro_manager.c \
+App/fsm/flight_fsm.c \
+App/command/cmd_router.c \
+App/command/cac_handler.c \
+App/command/cfg_manager.c \
+App/diag/self_test.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -188,7 +199,13 @@ C_INCLUDES =  \
 -IDrivers/CMSIS/DSP/PrivateInclude \
 -IFATFS/Target \
 -IFATFS/App \
--IMiddlewares/Third_Party/FatFs/src
+-IMiddlewares/Third_Party/FatFs/src \
+-IApp/telemetry \
+-IApp/pack \
+-IApp/pyro \
+-IApp/fsm \
+-IApp/command \
+-IApp/diag
 
 
 # compile gcc flags

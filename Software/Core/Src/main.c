@@ -43,6 +43,15 @@
 #ifdef MAG_VAL
 #include "mag_val.h"
 #endif
+/* ── MC Testing / Telemetry modules ── */
+#include "crc32_hw.h"
+#include "tlm_manager.h"
+#include "cmd_router.h"
+#include "cac_handler.h"
+#include "cfg_manager.h"
+#include "flight_fsm.h"
+#include "pyro_manager.h"
+#include "self_test.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -322,6 +331,15 @@ int main(void)
 
   // Init pyro channels: ADC calibration, force all MOSFETs off
   casper_pyro_init(&pyro, &hadc1, &hadc2, &hadc3);
+
+  // Init MC telemetry + command subsystems
+  crc32_hw_init();
+  tlm_init();
+  cmd_router_init();
+  cac_init();
+  cfg_manager_init();
+  flight_fsm_init();
+  pyro_mgr_init();
 
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
@@ -646,8 +664,11 @@ int main(void)
       }
 
       /* ── GPS: non-blocking poll (10 Hz NAV-PVT) ── */
-      if (max_m10m_tick(&gps) && cal_done) {
-        if (max_m10m_has_3d_fix(&gps)) {
+      static bool gps_new_fix = false;
+      gps_new_fix = false;
+      if (max_m10m_tick(&gps)) {
+        gps_new_fix = true;
+        if (cal_done && max_m10m_has_3d_fix(&gps)) {
           casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
           casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
         }
@@ -755,6 +776,66 @@ int main(void)
       HAL_GPIO_WritePin(PY2_GPIO_Port, PY2_Pin, GPIO_PIN_SET);
       HAL_GPIO_WritePin(PY3_GPIO_Port, PY3_Pin, GPIO_PIN_SET);
       HAL_GPIO_WritePin(PY4_GPIO_Port, PY4_Pin, GPIO_PIN_SET);
+
+      /* ── MC Telemetry: populate state + 10 Hz binary COBS packets ── */
+      {
+        /* Build telemetry state from current sensor values */
+        fc_telem_state_t tstate;
+        tstate.alt_m        = ekf.x[0];
+        tstate.vel_mps      = ekf.x[1];
+        tstate.quat[0]      = att.q[0];
+        tstate.quat[1]      = att.q[1];
+        tstate.quat[2]      = att.q[2];
+        tstate.quat[3]      = att.q[3];
+        tstate.batt_v       = 7.4f;  /* TODO: ADC battery sensing */
+        tstate.flight_time_s = flight_fsm_get_time_s();
+
+        /* Build pyro state */
+        pyro_state_t pstate;
+        pstate.armed[0]     = (pyro_mgr_get_arm_bitmap() & 0x01) != 0;
+        pstate.armed[1]     = (pyro_mgr_get_arm_bitmap() & 0x02) != 0;
+        pstate.armed[2]     = (pyro_mgr_get_arm_bitmap() & 0x04) != 0;
+        pstate.armed[3]     = (pyro_mgr_get_arm_bitmap() & 0x08) != 0;
+        pstate.continuity[0] = pyro.continuity[0];
+        pstate.continuity[1] = pyro.continuity[1];
+        pstate.continuity[2] = pyro.continuity[2];
+        pstate.continuity[3] = pyro.continuity[3];
+        pstate.fired        = pyro_mgr_is_firing();
+
+        /* If sim flight active, override alt/vel/quat with sim values */
+        if (flight_fsm_sim_active()) {
+          flight_fsm_sim_get_state(&tstate);
+          tstate.batt_v = 7.4f;
+        }
+
+        fsm_state_t fsm = flight_fsm_tick(&tstate);
+        tlm_tick(&tstate, &pstate, fsm);
+      }
+
+      /* ── GPS telemetry on new fix ── */
+      if (gps_new_fix) {
+        fc_gps_state_t gstate;
+        /* TODO: compute delta lat/lon from pad position */
+        gstate.dlat_m    = 0;
+        gstate.dlon_m    = 0;
+        gstate.alt_msl_m = gps.alt_msl_m;
+        gstate.fix_type  = gps.fix_type;
+        gstate.sat_count = gps.num_sv;
+        gstate.pdop      = (float)gps.pDOP / 100.0f;
+        gstate.new_fix   = true;
+        tlm_send_gps(&gstate);
+      }
+
+      /* ── Process incoming CDC commands ── */
+      if (cdc_ring_available() > 0) {
+        cmd_router_process();
+      }
+
+      /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
+      pyro_mgr_tick();
+
+      /* ── CAC confirm timeout check ── */
+      cac_tick();
     }
 #endif
   }
