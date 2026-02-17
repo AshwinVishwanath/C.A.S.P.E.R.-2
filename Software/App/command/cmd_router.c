@@ -17,6 +17,7 @@ extern void cac_handle_abort(const uint8_t *data, int len);
 extern void cfg_handle_upload(const uint8_t *data, int len);
 extern void cfg_handle_readlog(const uint8_t *data, int len);
 extern void cfg_handle_eraselog(const uint8_t *data, int len);
+extern void cfg_handle_readsummary(const uint8_t *data, int len);
 extern int  self_test_run_and_send(void);
 extern uint32_t cfg_get_active_hash(void);
 
@@ -100,6 +101,7 @@ static void dispatch_frame(const uint8_t *decoded, int len)
     case MSG_ID_DIAG:          cmd_handle_diag();                    break;
     case MSG_ID_READLOG:       cfg_handle_readlog(decoded, len);     break;
     case MSG_ID_ERASELOG:      cfg_handle_eraselog(decoded, len);     break;
+    case MSG_ID_READSUMMARY:   cfg_handle_readsummary(decoded, len); break;
     case MSG_ID_SIM_FLIGHT:    cmd_handle_sim_flight(decoded, len);  break;
 
     default:

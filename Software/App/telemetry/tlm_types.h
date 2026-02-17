@@ -20,6 +20,7 @@
 #define MSG_ID_DIAG          0xC2
 #define MSG_ID_READLOG       0xC3
 #define MSG_ID_ERASELOG      0xC4
+#define MSG_ID_READSUMMARY   0xC5
 #define MSG_ID_CONFIRM       0xF0
 #define MSG_ID_ABORT         0xF1
 #define MSG_ID_NACK          0xE0

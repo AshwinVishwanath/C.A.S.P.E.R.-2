@@ -1,12 +1,17 @@
 #include "cfg_manager.h"
+#include "flight_config.h"
 #include "crc32_hw.h"
 #include "tlm_manager.h"
+#include "flight_readout.h"
+#include "flight_log.h"
 #include <string.h>
 
 /* ── Private state ──────────────────────────────────────────────── */
 static flight_config_t s_config;
 static uint32_t        s_config_hash;
 static bool            s_config_valid;
+
+static flight_config_full_t s_full_config;
 
 /* ── Public API ─────────────────────────────────────────────────── */
 
@@ -15,6 +20,8 @@ void cfg_manager_init(void)
     memset(&s_config, 0, sizeof(s_config));
     s_config_hash = 0;
     s_config_valid = false;
+
+    flight_config_default(&s_full_config);
 
     /* TODO: Load config from QSPI flash via FATFS if present */
 }
@@ -65,14 +72,28 @@ void cfg_handle_readlog(const uint8_t *data, int len)
 {
     (void)data;
     (void)len;
-    /* TODO: Read flight log from QSPI flash and stream over CDC */
+    /* Stream raw flight log entries over USB CDC.
+     * The readout protocol sends a header followed by all entries
+     * and a trailing CRC.  See flight_readout.h for format details. */
+    flight_readout_stream_raw();
 }
 
 void cfg_handle_eraselog(const uint8_t *data, int len)
 {
     (void)data;
     (void)len;
-    /* TODO: Erase flight log sectors on QSPI flash */
+    /* Erase all flight log data (data + summary regions).
+     * WARNING: This triggers a full chip erase which takes up to 400s. */
+    flight_log_erase_all();
+}
+
+void cfg_handle_readsummary(const uint8_t *data, int len)
+{
+    (void)data;
+    (void)len;
+    /* Stream summary events over USB CDC.
+     * See flight_readout.h for format details. */
+    flight_readout_stream_summary();
 }
 
 uint32_t cfg_get_active_hash(void)
@@ -86,4 +107,9 @@ const flight_config_t *cfg_get_active(void)
         return (const flight_config_t *)0;
     }
     return &s_config;
+}
+
+const flight_config_full_t *cfg_get_full_config(void)
+{
+    return &s_full_config;
 }

@@ -115,6 +115,10 @@ App/pack/quat_pack.c \
 App/pack/status_pack.c \
 App/pyro/pyro_manager.c \
 App/fsm/flight_fsm.c \
+App/flight/pyro_logic.c \
+App/flight/flight_config.c \
+App/flight/flight_log.c \
+App/flight/flight_readout.c \
 App/command/cmd_router.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
@@ -204,7 +208,9 @@ C_INCLUDES =  \
 -IApp/pyro \
 -IApp/fsm \
 -IApp/command \
--IApp/diag
+-IApp/diag \
+-IApp/flight \
+-IApp/test
 
 
 # compile gcc flags

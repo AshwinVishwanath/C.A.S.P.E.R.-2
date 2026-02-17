@@ -3,21 +3,31 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "flight_context.h"
 #include "tlm_types.h"
 
 /**
  * Initialize the flight state machine. Starts in PAD state.
+ *
+ * @param motors_expected  1 for single stage, 2 for two stage.
  */
-void flight_fsm_init(void);
+void flight_fsm_init(uint8_t motors_expected);
 
 /**
- * Tick the FSM. Call every superloop iteration.
- * Handles simulated flight progression and state transitions.
+ * Tick the FSM. Call at sensor rate (833 Hz from IMU data-ready).
+ * When sim is active, uses sim script (existing behavior).
+ * When sim is NOT active, uses real sensor data from `input`.
+ * Does NOT fire pyros -- that is pyro_logic's job.
  *
- * @param state  Current telemetry state (used for sensor-based transitions — TODO)
+ * @param input  Current sensor snapshot
  * @return       Current FSM state
  */
-fsm_state_t flight_fsm_tick(const fc_telem_state_t *state);
+fsm_state_t flight_fsm_tick(const sensor_input_t *input);
+
+/**
+ * Get read-only pointer to flight context (for telemetry, pyro_logic, etc.)
+ */
+const flight_context_t *flight_fsm_get_context(void);
 
 /**
  * Get current FSM state.
@@ -37,25 +47,27 @@ float flight_fsm_get_time_s(void);
 void flight_fsm_force_state(fsm_state_t new_state);
 
 /**
- * Start simulated flight sequence (0xD0 debug command).
- * Scripted PAD→BOOST→COAST→APOGEE→DROGUE→MAIN→RECOVERY→LANDED.
+ * Notification from pyro_logic when a channel fires.
+ * Used for DROGUE->MAIN transition.
+ *
+ * @param pyro_role  0=Apogee, 2=Main, 4=Ignition
+ * @param now_ms     Current timestamp
  */
+void flight_fsm_notify_pyro_event(uint8_t pyro_role, uint32_t now_ms);
+
+/* -- Sim flight (preserved from existing code) -- */
 void flight_fsm_sim_start(void);
-
-/**
- * Stop simulated flight and return to PAD.
- */
 void flight_fsm_sim_stop(void);
-
-/**
- * Check if a simulated flight is active.
- */
 bool flight_fsm_sim_active(void);
+void flight_fsm_sim_get_state(fc_telem_state_t *out);
 
 /**
- * Get simulated flight telemetry values.
- * Only valid when sim is active. Fills alt_m, vel_mps, quat.
+ * Compute tilt from vertical in degrees from a quaternion.
+ * Body +Z is the nose axis.
+ *
+ * @param q  Quaternion [w, x, y, z]
+ * @return   Tilt angle in degrees (0 = vertical nose-up, 90 = horizontal)
  */
-void flight_fsm_sim_get_state(fc_telem_state_t *out);
+float flight_fsm_tilt_from_quat(const float q[4]);
 
 #endif /* APP_FSM_FLIGHT_FSM_H */

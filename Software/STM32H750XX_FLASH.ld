@@ -196,7 +196,14 @@ SECTIONS
     . = ALIGN(8);
   } >DTCMRAM
 
-
+  /* Flight log buffers in AXI SRAM (0x24000000, 512KB) */
+  .axi_sram (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.axi_sram)
+    *(.axi_sram*)
+    . = ALIGN(4);
+  } >RAM
 
   /* Remove information from the standard libraries */
   /DISCARD/ :
