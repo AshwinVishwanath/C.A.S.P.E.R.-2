@@ -46,6 +46,9 @@ static void transition_to(fsm_state_t new_state)
     s_state = new_state;
     s_state_entry_ms = HAL_GetTick();
     tlm_queue_event(FC_EVT_STATE, (uint16_t)new_state);
+    if (new_state == FSM_STATE_APOGEE) {
+        tlm_queue_event(FC_EVT_APOGEE, 0);
+    }
 }
 
 static float lerp(float a, float b, float t)

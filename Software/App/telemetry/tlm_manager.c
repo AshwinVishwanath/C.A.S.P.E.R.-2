@@ -64,49 +64,52 @@ int tlm_tick(const fc_telem_state_t *state, const pyro_state_t *pyro,
     }
     s_last_fast_ms = now;
 
-    /* Build FC_MSG_FAST (19 bytes) per PRD Section 3.1 */
+    /* Build FC_MSG_FAST (20 bytes) per PRD Section 3.1 */
     uint8_t *p = s_raw_buf;
 
-    /* Bytes 0–1: FC_TLM_STATUS */
+    /* Byte 0: message ID */
+    *p++ = MSG_ID_FAST;
+
+    /* Bytes 1–2: FC_TLM_STATUS */
     status_pack_build(p, pyro, fsm, false);
     p += 2;
 
-    /* Bytes 2–3: altitude in decametres, uint16 LE */
-    float alt_dam = state->alt_m / ALT_SCALE_DAM;
+    /* Bytes 3–4: altitude in decametres, uint16 LE */
+    float alt_dam = state->alt_m / ALT_SCALE_M;
     if (alt_dam < 0.0f) alt_dam = 0.0f;
     if (alt_dam > 65535.0f) alt_dam = 65535.0f;
     put_le16(p, (uint16_t)alt_dam);
     p += 2;
 
-    /* Bytes 4–5: velocity in dm/s, int16 LE */
+    /* Bytes 5–6: velocity in dm/s, int16 LE */
     float vel_dms = state->vel_mps / VEL_SCALE_DMS;
     if (vel_dms > 32767.0f) vel_dms = 32767.0f;
     if (vel_dms < -32768.0f) vel_dms = -32768.0f;
     put_le16(p, (uint16_t)(int16_t)vel_dms);
     p += 2;
 
-    /* Bytes 6–10: quaternion packed (5 bytes) */
+    /* Bytes 7–11: quaternion packed (5 bytes) */
     quat_pack_smallest_three(p, state->quat);
     p += 5;
 
-    /* Bytes 11–12: flight time in 0.1s ticks, uint16 LE */
+    /* Bytes 12–13: flight time in 0.1s ticks, uint16 LE */
     float time_ds = state->flight_time_s / TIME_SCALE_100MS;
     if (time_ds < 0.0f) time_ds = 0.0f;
     if (time_ds > 65535.0f) time_ds = 65535.0f;
     put_le16(p, (uint16_t)time_ds);
     p += 2;
 
-    /* Byte 13: battery voltage, uint8 */
+    /* Byte 14: battery voltage, uint8 */
     float batt_encoded = (state->batt_v - BATT_OFFSET_V) / BATT_STEP_V;
     if (batt_encoded < 0.0f) batt_encoded = 0.0f;
     if (batt_encoded > 255.0f) batt_encoded = 255.0f;
     *p++ = (uint8_t)batt_encoded;
 
-    /* Byte 14: sequence counter */
+    /* Byte 15: sequence counter */
     *p++ = s_seq++;
 
-    /* Bytes 15–18: CRC-32 over bytes 0–14 */
-    uint32_t crc = crc32_hw_compute(s_raw_buf, 15);
+    /* Bytes 16–19: CRC-32 over bytes 0–15 */
+    uint32_t crc = crc32_hw_compute(s_raw_buf, 16);
     put_le32(p, crc);
 
     return cobs_encode_and_send(s_raw_buf, SIZE_FC_MSG_FAST);
@@ -114,34 +117,37 @@ int tlm_tick(const fc_telem_state_t *state, const pyro_state_t *pyro,
 
 int tlm_send_gps(const fc_gps_state_t *gps_state)
 {
+    /* FC_MSG_GPS: 17 bytes per INTERFACE_SPEC §5.2
+     * [0]=0x02 [1-4]=dlat_mm(i32) [5-8]=dlon_mm(i32)
+     * [9-10]=alt_msl(u16) [11]=fix_type [12]=sat_count [13-16]=CRC */
     uint8_t *p = s_raw_buf;
 
-    /* Bytes 0–1: dlat_m, int16 LE */
-    put_le16(p, (uint16_t)(int16_t)gps_state->dlat_m);
-    p += 2;
+    /* Byte 0: message ID */
+    *p++ = MSG_ID_GPS;
 
-    /* Bytes 2–3: dlon_m, int16 LE */
-    put_le16(p, (uint16_t)(int16_t)gps_state->dlon_m);
-    p += 2;
+    /* Bytes 1–4: dlat_mm, int32 LE (millimetres from pad) */
+    put_le32(p, (uint32_t)gps_state->dlat_mm);
+    p += 4;
 
-    /* Bytes 4–5: alt_msl in decametres, uint16 LE */
-    float alt_dam = gps_state->alt_msl_m / ALT_SCALE_DAM;
+    /* Bytes 5–8: dlon_mm, int32 LE (millimetres from pad) */
+    put_le32(p, (uint32_t)gps_state->dlon_mm);
+    p += 4;
+
+    /* Bytes 9–10: alt_msl in decametres, uint16 LE */
+    float alt_dam = gps_state->alt_msl_m / ALT_SCALE_M;
     if (alt_dam < 0.0f) alt_dam = 0.0f;
     if (alt_dam > 65535.0f) alt_dam = 65535.0f;
     put_le16(p, (uint16_t)alt_dam);
     p += 2;
 
-    /* Byte 6: fix_type [7:6] | sat_count [5:0] */
-    *p++ = (uint8_t)((gps_state->fix_type << 6) | (gps_state->sat_count & 0x3F));
+    /* Byte 11: fix_type */
+    *p++ = gps_state->fix_type;
 
-    /* Byte 7: PDOP * 10 */
-    float pdop_enc = gps_state->pdop * 10.0f;
-    if (pdop_enc > 255.0f) pdop_enc = 255.0f;
-    if (pdop_enc < 0.0f) pdop_enc = 0.0f;
-    *p++ = (uint8_t)pdop_enc;
+    /* Byte 12: sat_count */
+    *p++ = gps_state->sat_count;
 
-    /* Bytes 8–11: CRC-32 over bytes 0–7 */
-    uint32_t crc = crc32_hw_compute(s_raw_buf, 8);
+    /* Bytes 13–16: CRC-32 over bytes 0–12 */
+    uint32_t crc = crc32_hw_compute(s_raw_buf, 13);
     put_le32(p, crc);
 
     return cobs_encode_and_send(s_raw_buf, SIZE_FC_MSG_GPS);
@@ -149,16 +155,21 @@ int tlm_send_gps(const fc_gps_state_t *gps_state)
 
 int tlm_queue_event(uint8_t type, uint16_t data)
 {
+    /* FC_MSG_EVENT: 11 bytes per INTERFACE_SPEC §5.3
+     * [0]=0x03 [1]=type [2-3]=data [4-5]=time [6]=rsvd [7-10]=CRC */
     uint8_t *p = s_raw_buf;
 
-    /* Byte 0: event type */
+    /* Byte 0: message ID */
+    *p++ = MSG_ID_EVENT;
+
+    /* Byte 1: event type */
     *p++ = type;
 
-    /* Bytes 1–2: event data, uint16 LE */
+    /* Bytes 2–3: event data, uint16 LE */
     put_le16(p, data);
     p += 2;
 
-    /* Bytes 3–4: event time (0.1s ticks), uint16 LE */
+    /* Bytes 4–5: event time (0.1s ticks), uint16 LE */
     extern float flight_fsm_get_time_s(void);
     float time_ds = flight_fsm_get_time_s() / TIME_SCALE_100MS;
     if (time_ds < 0.0f) time_ds = 0.0f;
@@ -166,8 +177,11 @@ int tlm_queue_event(uint8_t type, uint16_t data)
     put_le16(p, (uint16_t)time_ds);
     p += 2;
 
-    /* Bytes 5–8: CRC-32 over bytes 0–4 */
-    uint32_t crc = crc32_hw_compute(s_raw_buf, 5);
+    /* Byte 6: reserved */
+    *p++ = 0x00;
+
+    /* Bytes 7–10: CRC-32 over bytes 0–6 */
+    uint32_t crc = crc32_hw_compute(s_raw_buf, 7);
     put_le32(p, crc);
 
     return cobs_encode_and_send(s_raw_buf, SIZE_FC_MSG_EVENT);

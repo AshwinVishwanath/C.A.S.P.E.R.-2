@@ -29,7 +29,7 @@
 #define CAC_MAGIC_1          0xCA
 #define CAC_MAGIC_2          0x5A
 #define CAC_ACTION_ARM       0x01
-#define CAC_ACTION_DISARM    0x02
+#define CAC_ACTION_DISARM    0x00
 
 /* ── NACK error codes ────────────────────────────────────────────── */
 #define NACK_ERR_CRC_FAIL       0x01
@@ -67,14 +67,17 @@
 #define FSM_STATE_TUMBLE     0xA
 #define FSM_STATE_LANDED     0xB
 
-/* ── Packet sizes ────────────────────────────────────────────────── */
-#define SIZE_FC_MSG_FAST     19
-#define SIZE_FC_MSG_GPS      12
-#define SIZE_FC_MSG_EVENT    9
-#define SIZE_CMD_ARM         12
-#define SIZE_CMD_FIRE        13
-#define SIZE_CONFIRM         9
-#define SIZE_NACK            9
+/* ── Packet sizes (byte-counted per INTERFACE_SPEC.md) ───────────── */
+#define SIZE_FC_MSG_FAST     20  /* [ID:1][STATUS:2][ALT:2][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 20 */
+#define SIZE_FC_MSG_GPS      17  /* [ID:1][DLAT:4][DLON:4][ALT:2][FIX:1][SAT:1][CRC:4] = 17 */
+#define SIZE_FC_MSG_EVENT    11  /* [ID:1][TYPE:1][DATA:2][TIME:2][RSVD:1][CRC:4] = 11 */
+#define SIZE_CMD_ARM         12  /* [ID:1][MAG:2][NONCE:2][CH:1][ACT:1][~CH:1][CRC:4] = 12 */
+#define SIZE_CMD_FIRE        13  /* [ID:1][MAG:2][NONCE:2][CH:1][DUR:1][~CH:1][~DUR:1][CRC:4] = 13 */
+#define SIZE_CONFIRM         9   /* [ID:1][MAG:2][NONCE:2][CRC:4] = 9 */
+#define SIZE_NACK            10  /* [ID:1][NONCE:2][ERR:1][RSVD:2][CRC:4] = 10 */
+#define SIZE_ACK_ARM         12  /* [ID:1][NONCE:2][CH:1][ACT:1][ARM:1][CONT:1][RSVD:1][CRC:4] = 12 */
+#define SIZE_ACK_FIRE        13  /* [ID:1][NONCE:2][CH:1][DUR:1][FLAGS:1][CONT:1][RSVD:2][CRC:4] = 13 */
+#define SIZE_ACK_CFG         13  /* [ID:1][NONCE:2][HASH:4][VER:1][RSVD:1][CRC:4] = 13 */
 #define SIZE_HANDSHAKE_RESP  13
 
 /* ── Timeouts ────────────────────────────────────────────────────── */
@@ -95,7 +98,7 @@
 /* ── Encoding scales ─────────────────────────────────────────────── */
 #define BATT_OFFSET_V        6.0f
 #define BATT_STEP_V          0.012f
-#define ALT_SCALE_DAM        10.0f
+#define ALT_SCALE_M          1.0f
 #define VEL_SCALE_DMS        0.1f
 #define TIME_SCALE_100MS     0.1f
 
@@ -111,13 +114,11 @@ typedef struct {
 } fc_telem_state_t;
 
 typedef struct {
-    int16_t dlat_m;
-    int16_t dlon_m;
+    int32_t dlat_mm;        /* delta latitude from pad, millimetres (spec: ÷1000 → m) */
+    int32_t dlon_mm;        /* delta longitude from pad, millimetres */
     float alt_msl_m;
     uint8_t fix_type;
     uint8_t sat_count;
-    float pdop;
-    bool new_fix;
 } fc_gps_state_t;
 
 typedef struct {

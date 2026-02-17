@@ -59,56 +59,57 @@ static uint32_t get_le32(const uint8_t *src)
                       ((uint32_t)src[2] << 16) | ((uint32_t)src[3] << 24));
 }
 
-/* ── Send NACK packet (9 bytes) ───────────────────────────────── */
+/* ── Send NACK packet (10 bytes) per INTERFACE_SPEC §8.3 ─────── */
+/* [0]=0xE0 [1-2]=nonce [3]=error_code [4-5]=rsvd [6-9]=CRC      */
 static void send_nack(uint16_t nonce, uint8_t error_code)
 {
     uint8_t pkt[SIZE_NACK];
     pkt[0] = MSG_ID_NACK;       /* 0xE0 */
-    pkt[1] = CAC_MAGIC_1;       /* 0xCA */
-    pkt[2] = CAC_MAGIC_2;       /* 0x5A */
-    put_le16(&pkt[3], nonce);
-    pkt[5] = error_code;
+    put_le16(&pkt[1], nonce);
+    pkt[3] = error_code;
+    pkt[4] = 0x00;              /* reserved */
+    pkt[5] = 0x00;              /* reserved */
     uint32_t crc = crc32_hw_compute(pkt, 6);
-    put_le32(&pkt[6], crc);     /* Bytes 6-9 — wait, that's 10. */
-
-    /* NACK: [0xE0][0xCA][0x5A][nonce:2][err:1][CRC-32:4] = 10 bytes
-     * But SIZE_NACK = 9. Let me re-check the spec... */
-    /* Level-5 spec: offset 6-9 = CRC-32 over bytes 0-5 → 10 bytes total.
-     * SIZE_NACK=9 in tlm_types.h might be wrong. Use actual byte count. */
-    tlm_send_response(pkt, 10);
+    put_le32(&pkt[6], crc);
+    tlm_send_response(pkt, SIZE_NACK);
 }
 
-/* ── Send ARM ACK packet (13 bytes) ───────────────────────────── */
+/* ── Send ARM ACK packet (12 bytes) per INTERFACE_SPEC §8.1 ──── */
+/* [0]=0xA0 [1-2]=nonce [3]=ch [4]=act [5]=arm [6]=cont [7]=rsvd  */
+/* [8-11]=CRC                                                      */
 static void send_arm_ack(uint16_t nonce, uint8_t channel, uint8_t action)
 {
-    uint8_t pkt[13];
+    uint8_t pkt[SIZE_ACK_ARM];
     pkt[0] = MSG_ID_ACK_ARM;    /* 0xA0 */
-    pkt[1] = CAC_MAGIC_1;
-    pkt[2] = CAC_MAGIC_2;
-    put_le16(&pkt[3], nonce);
-    pkt[5] = channel;
-    pkt[6] = action;
-    pkt[7] = pyro_mgr_get_arm_bitmap();
-    pkt[8] = pyro_mgr_get_cont_bitmap();
-    uint32_t crc = crc32_hw_compute(pkt, 9);
-    put_le32(&pkt[9], crc);
-    tlm_send_response(pkt, 13);
+    put_le16(&pkt[1], nonce);
+    pkt[3] = channel;
+    pkt[4] = action;
+    pkt[5] = pyro_mgr_get_arm_bitmap();
+    pkt[6] = pyro_mgr_get_cont_bitmap();
+    pkt[7] = 0x00;              /* reserved */
+    uint32_t crc = crc32_hw_compute(pkt, 8);
+    put_le32(&pkt[8], crc);
+    tlm_send_response(pkt, SIZE_ACK_ARM);
 }
 
-/* ── Send FIRE ACK packet (13 bytes) ──────────────────────────── */
-static void send_fire_ack(uint16_t nonce, uint8_t channel, uint16_t duration_ms)
+/* ── Send FIRE ACK packet (13 bytes) per INTERFACE_SPEC §8.2 ─── */
+/* [0]=0xA1 [1-2]=nonce [3]=ch [4]=dur [5]=flags [6]=cont         */
+/* [7-8]=rsvd [9-12]=CRC                                          */
+static void send_fire_ack(uint16_t nonce, uint8_t channel,
+                           uint8_t duration, uint8_t flags)
 {
-    uint8_t pkt[13];
+    uint8_t pkt[SIZE_ACK_FIRE];
     pkt[0] = MSG_ID_ACK_FIRE;   /* 0xA1 */
-    pkt[1] = CAC_MAGIC_1;
-    pkt[2] = CAC_MAGIC_2;
-    put_le16(&pkt[3], nonce);
-    pkt[5] = channel;
-    put_le16(&pkt[6], duration_ms);
-    pkt[8] = pyro_mgr_get_cont_bitmap();
+    put_le16(&pkt[1], nonce);
+    pkt[3] = channel;
+    pkt[4] = duration;
+    pkt[5] = flags;             /* bit0=test_mode, bit1=channel_armed */
+    pkt[6] = pyro_mgr_get_cont_bitmap();
+    pkt[7] = 0x00;              /* reserved */
+    pkt[8] = 0x00;              /* reserved */
     uint32_t crc = crc32_hw_compute(pkt, 9);
     put_le32(&pkt[9], crc);
-    tlm_send_response(pkt, 13);
+    tlm_send_response(pkt, SIZE_ACK_FIRE);
 }
 
 /* ── Public API ───────────────────────────────────────────────── */
@@ -143,24 +144,22 @@ void cac_tick(void)
     }
 }
 
-/* ── ARM / DISARM handler ─────────────────────────────────────── */
+/* ── ARM / DISARM handler ──── per INTERFACE_SPEC §7.1 ────────── */
+/* CMD_ARM (12 bytes): [0]=0x80 [1]=0xCA [2]=0x5A [3-4]=nonce     */
+/* [5]=channel [6]=action [7]=~channel [8-11]=CRC-32(0..7)        */
 void cac_handle_arm(const uint8_t *data, int len)
 {
-    /* ARM packet (level-5 spec): 13 bytes
-     * [0]=0x80 [1]=0xCA [2]=0x5A [3-4]=nonce [5]=channel
-     * [6]=action [7]=~channel [8]=~action [9-12]=CRC-32(0..8) */
-    if (len < 13) return;
+    if (len < SIZE_CMD_ARM) return;
 
     /* Check magic */
     if (data[1] != CAC_MAGIC_1 || data[2] != CAC_MAGIC_2) return;
 
-    /* Check complements */
+    /* Check complement: channel vs ~channel */
     if ((data[5] ^ data[7]) != 0xFF) return;
-    if ((data[6] ^ data[8]) != 0xFF) return;
 
-    /* Validate CRC-32 over bytes 0-8 */
-    uint32_t received_crc = get_le32(&data[9]);
-    if (crc32_hw_compute(data, 9) != received_crc) return;
+    /* Validate CRC-32 over bytes 0-7 */
+    uint32_t received_crc = get_le32(&data[8]);
+    if (crc32_hw_compute(data, 8) != received_crc) return;
 
     uint16_t nonce   = get_le16(&data[3]);
     uint8_t  channel = data[5];     /* 0-indexed in spec */
@@ -199,18 +198,19 @@ void cac_handle_arm(const uint8_t *data, int len)
     send_arm_ack(nonce, channel, action);
 }
 
-/* ── FIRE handler ─────────────────────────────────────────────── */
+/* ── FIRE handler ──────────── per INTERFACE_SPEC §7.2 ────────── */
+/* CMD_FIRE (13 bytes): [0]=0x81 [1]=0xCA [2]=0x5A [3-4]=nonce    */
+/* [5]=channel [6]=duration(u8) [7]=~channel [8]=~duration         */
+/* [9-12]=CRC-32(0..8)                                             */
 void cac_handle_fire(const uint8_t *data, int len)
 {
-    /* FIRE packet: 13 bytes
-     * [0]=0x81 [1]=0xCA [2]=0x5A [3-4]=nonce [5]=channel
-     * [6-7]=duration_ms [8]=~channel [9-12]=CRC-32(0..8) */
-    if (len < 13) return;
+    if (len < SIZE_CMD_FIRE) return;
 
     if (data[1] != CAC_MAGIC_1 || data[2] != CAC_MAGIC_2) return;
 
-    /* Complement check: channel vs ~channel */
-    if ((data[5] ^ data[8]) != 0xFF) return;
+    /* Complement checks: channel and duration */
+    if ((data[5] ^ data[7]) != 0xFF) return;
+    if ((data[6] ^ data[8]) != 0xFF) return;
 
     /* CRC-32 over bytes 0-8 */
     uint32_t received_crc = get_le32(&data[9]);
@@ -218,14 +218,20 @@ void cac_handle_fire(const uint8_t *data, int len)
 
     uint16_t nonce       = get_le16(&data[3]);
     uint8_t  channel     = data[5];
-    uint16_t duration_ms = get_le16(&data[6]);
+    uint8_t  duration    = data[6];     /* u8 clamped 0–255 */
+    uint16_t duration_ms = (uint16_t)duration;
 
     uint8_t ch1 = channel + 1;
+
+    /* Build flags byte for ACK: bit0=test_mode, bit1=channel_armed */
+    uint8_t flags = 0;
+    if (s_test_mode) flags |= 0x01;
+    if (pyro_mgr_get_arm_bitmap() & (1u << channel)) flags |= 0x02;
 
     /* Idempotent retry */
     if (s_phase == CAC_AWAITING_CONFIRM && nonce == s_pending_nonce &&
         s_pending_type == PENDING_FIRE) {
-        send_fire_ack(nonce, channel, duration_ms);
+        send_fire_ack(nonce, channel, duration, flags);
         return;
     }
 
@@ -241,7 +247,7 @@ void cac_handle_fire(const uint8_t *data, int len)
     }
 
     /* FIRE requires channel armed */
-    if (!(pyro_mgr_get_arm_bitmap() & (1u << channel))) {
+    if (!(flags & 0x02)) {
         send_nack(nonce, NACK_ERR_NOT_ARMED);
         return;
     }
@@ -260,7 +266,7 @@ void cac_handle_fire(const uint8_t *data, int len)
     s_pending_duration = duration_ms;
     s_confirm_deadline = HAL_GetTick() + CAC_CONFIRM_TIMEOUT_MS;
 
-    send_fire_ack(nonce, channel, duration_ms);
+    send_fire_ack(nonce, channel, duration, flags);
 }
 
 /* ── TESTMODE handler ─────────────────────────────────────────── */
@@ -269,8 +275,11 @@ void cac_handle_testmode(const uint8_t *data, int len)
     (void)data;
     (void)len;
 
-    /* Must be on PAD */
-    if (flight_fsm_get_state() != FSM_STATE_PAD) return;
+    /* Must be on PAD — NACK if not */
+    if (flight_fsm_get_state() != FSM_STATE_PAD) {
+        send_nack(0, NACK_ERR_BAD_STATE);
+        return;
+    }
 
     if (s_test_mode) {
         /* Already active — toggle off */
@@ -281,23 +290,32 @@ void cac_handle_testmode(const uint8_t *data, int len)
         s_test_mode_deadline = HAL_GetTick() + TEST_MODE_TIMEOUT_MS;
         pyro_mgr_set_test_mode(true);
     }
+
+    /* Send EVENT so MC sees the state change immediately */
+    tlm_queue_event(FC_EVT_STATE, (uint16_t)flight_fsm_get_state());
 }
 
-/* ── CONFIG POLL handler ──────────────────────────────────────── */
+/* ── CONFIG POLL handler ─────── per INTERFACE_SPEC §8.4 ─────── */
+/* ACK_CONFIG (13 bytes): [0]=0xA3 [1-2]=nonce [3-6]=hash         */
+/* [7]=proto_ver [8]=rsvd [9-12]=CRC                               */
 void cac_handle_config_poll(const uint8_t *data, int len)
 {
-    (void)data;
-    (void)len;
+    /* Extract nonce from poll command if available (bytes 1-2) */
+    uint16_t nonce = 0;
+    if (len >= 3) {
+        nonce = get_le16(&data[1]);
+    }
 
-    /* Response: [0xA3][config_hash:4][protocol_version:1][CRC-32:4] = 10 bytes */
-    uint8_t pkt[10];
+    uint8_t pkt[SIZE_ACK_CFG];
     pkt[0] = MSG_ID_ACK_CFG;
+    put_le16(&pkt[1], nonce);
     uint32_t hash = cfg_get_active_hash();
-    put_le32(&pkt[1], hash);
-    pkt[5] = PROTOCOL_VERSION;
-    uint32_t crc = crc32_hw_compute(pkt, 6);
-    put_le32(&pkt[6], crc);
-    tlm_send_response(pkt, 10);
+    put_le32(&pkt[3], hash);
+    pkt[7] = PROTOCOL_VERSION;
+    pkt[8] = 0x00;              /* reserved */
+    uint32_t crc = crc32_hw_compute(pkt, 9);
+    put_le32(&pkt[9], crc);
+    tlm_send_response(pkt, SIZE_ACK_CFG);
 }
 
 /* ── CONFIRM handler ──────────────────────────────────────────── */

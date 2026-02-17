@@ -1,5 +1,6 @@
 #include "pyro_manager.h"
 #include "casper_pyro.h"
+#include "flight_fsm.h"
 #include "tlm_types.h"
 #include "stm32h7xx_hal.h"
 
@@ -69,6 +70,11 @@ int pyro_mgr_fire(uint8_t channel, uint16_t duration_ms)
 
     /* Must have continuity */
     if (!pyro.continuity[idx]) {
+        return -1;
+    }
+
+    /* Must be in test mode or past PAD */
+    if (!s_test_mode && flight_fsm_get_state() == FSM_STATE_PAD) {
         return -1;
     }
 
