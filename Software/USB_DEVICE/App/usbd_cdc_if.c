@@ -32,6 +32,16 @@
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
+/* ── CDC RX ring buffer (SPSC: ISR writes, main loop reads) ─── */
+#define CDC_RING_SIZE 256
+static uint8_t  cdc_ring_buf[CDC_RING_SIZE];
+static volatile uint16_t cdc_ring_head;   /* ISR writes here  */
+static volatile uint16_t cdc_ring_tail;   /* main loop reads  */
+
+/* Legacy flags kept for backward compat with existing pyro serial code */
+volatile uint8_t  cdc_rx_ready = 0;
+volatile uint32_t cdc_rx_len   = 0;
+
 /* USER CODE END PV */
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY
@@ -94,8 +104,7 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
-volatile uint8_t  cdc_rx_ready = 0;
-volatile uint32_t cdc_rx_len   = 0;
+
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -262,8 +271,20 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  /* Copy received bytes into ring buffer (ISR context, single producer) */
+  uint32_t len = *Len;
+  for (uint32_t i = 0; i < len; i++) {
+      uint16_t next = (cdc_ring_head + 1) % CDC_RING_SIZE;
+      if (next != cdc_ring_tail) {          /* drop byte on overflow */
+          cdc_ring_buf[cdc_ring_head] = Buf[i];
+          cdc_ring_head = next;
+      }
+  }
+
+  /* Legacy flag — kept for existing pyro serial code in main.c */
   cdc_rx_len   = *Len;
   cdc_rx_ready = 1;
+
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
@@ -319,6 +340,23 @@ static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
 }
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
+
+uint16_t cdc_ring_available(void)
+{
+    uint16_t h = cdc_ring_head;
+    uint16_t t = cdc_ring_tail;
+    return (uint16_t)((h - t + CDC_RING_SIZE) % CDC_RING_SIZE);
+}
+
+uint8_t cdc_ring_read_byte(void)
+{
+    if (cdc_ring_head == cdc_ring_tail) {
+        return 0;   /* empty — caller must check cdc_ring_available() first */
+    }
+    uint8_t byte = cdc_ring_buf[cdc_ring_tail];
+    cdc_ring_tail = (cdc_ring_tail + 1) % CDC_RING_SIZE;
+    return byte;
+}
 
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 

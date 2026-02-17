@@ -427,6 +427,84 @@ make clean && make -j8
 | SPI4 | MS5611 | PE12 | PE14 | PE13 | PE11 | — |
 | QUADSPI | W25Q512JV | PB2 (CLK) | PD11-13, PE2, PB6 | — | — | — |
 
+## Rev 4 — MC Testing: msgset v5 Telemetry Protocol
+
+### Overview
+
+Added 11 firmware modules enabling the FC to speak the msgset v5 binary telemetry protocol over USB CDC. This allows direct bench testing with the Mission Control Electron app without LoRa hardware — the FC acts as if it's connected end-to-end.
+
+All new code lives in `Software/App/` (separate from CubeMX-managed `Core/`). Build size: 87.7 KB (up from ~80 KB, within 128 KB flash).
+
+### Telemetry Stack
+
+**COBS Framing (`cobs.c/h`):** Consistent Overhead Byte Stuffing for zero-free packet transport over CDC. 0x00 delimiter between frames.
+
+**Hardware CRC-32 (`crc32_hw.c/h`):** Standard reflected CRC-32 (poly 0x04C11DB7, reflected I/O, final XOR 0xFFFFFFFF) via the STM32 CRC peripheral. Reconfigures the peripheral at init since CubeMX defaults differ.
+
+**Telemetry Manager (`tlm_manager.c/h`):** Builds and sends three packet types:
+- **FC_MSG_FAST** (19B, 10 Hz): status(2) + alt_dam(2) + vel_dms(2) + quat_packed(5) + time_ds(2) + batt(1) + seq(1) + CRC-32(4)
+- **FC_MSG_GPS** (12B, on fix): dlat(2) + dlon(2) + alt_dam(2) + fixsat(1) + pdop(1) + CRC-32(4)
+- **FC_MSG_EVENT** (9B, on event): type(1) + data(2) + time(2) + CRC-32(4)
+
+**Quaternion Packing (`quat_pack.c/h`):** Smallest-three encoding — drop largest component, pack remaining 3 as int12 into 5 bytes. Bit layout: `[drop:2][rsvd:2][qa:12][qb:12][qc:12]`.
+
+**Status Packing (`status_pack.c/h`):** 2-byte FC_TLM_STATUS bitmap — byte 0: `[ARM4..1][CNT4..1]`, byte 1: `[FSM_STATE:4][FIRED][ERROR][RSVD:2]`.
+
+### Command System
+
+**CDC Ring Buffer (`usbd_cdc_if.c` mod):** Replaced flag-based CDC RX with 256-byte SPSC ring buffer. ISR writes, main loop reads. Legacy `cdc_rx_ready`/`cdc_rx_len` flags preserved for backward compatibility.
+
+**Command Router (`cmd_router.c/h`):** COBS frame accumulation from ring buffer. On 0x00 delimiter, COBS-decodes and dispatches by message ID to 12 handlers (ARM, FIRE, TESTMODE, CONFIG_POLL, CONFIRM, ABORT, HANDSHAKE, UPLOAD, DIAG, READLOG, ERASELOG, SIM_FLIGHT).
+
+**CAC Handler (`cac_handler.c/h`):** Three-phase Command-Acknowledge-Confirm protocol for ARM/FIRE:
+- Magic bytes 0xCA 0x5A + complement validation + CRC-32
+- Nonce-based idempotency (duplicate nonce → re-send ACK)
+- 5-second confirm timeout
+- Test mode: 60s timeout, PAD-only, caps fire to 50ms
+- 10 NACK error codes (CRC_FAIL, BAD_STATE, NOT_ARMED, NO_TESTMODE, etc.)
+
+**Handshake (0xC0):** Returns protocol v5, FW version 0.1.0, config hash.
+
+### Flight State Machine
+
+**Flight FSM (`flight_fsm.c/h`):** 12 states: PAD→BOOST→COAST→COAST_1→SUSTAIN→COAST_2→APOGEE→DROGUE→MAIN→RECOVERY→TUMBLE→LANDED.
+
+**Simulated Flight (0xD0):** Scripted profile for bench testing — PAD(T+0) → BOOST(T+0.5s) → COAST(T+3s) → APOGEE(T+12s) → DROGUE(T+12.5s) → MAIN(T+45s) → RECOVERY(T+90s) → LANDED(T+180s). Linear interpolation of alt/vel between waypoints + slowly rotating test quaternion.
+
+Every state transition emits an FC_EVT_STATE event.
+
+### Pyro Manager
+
+**Pyro Manager (`pyro_manager.c/h`):** Wraps existing `casper_pyro.c` — adds per-channel arm state, continuity prechecks, fire duration caps (2000ms max, 50ms in test mode), test mode toggle, disarm-all. Does not duplicate hardware access.
+
+### Diagnostics
+
+**Config Manager (`cfg_manager.c/h`):** Config upload + hash tracking. Flash persistence via FATFS (stubbed).
+
+**Self-Test (`self_test.c/h`):** 7 diagnostic tests: IMU WHO_AM_I, mag product ID, baro PROM CRC, EKF init, attitude quat norm, flash write/read, config hash. Response sent as COBS-framed diagnostic packet (0xC2).
+
+### New Files (Rev 4)
+
+| Directory | Files |
+|-----------|-------|
+| `App/telemetry/` | `tlm_types.h`, `cobs.c/h`, `crc32_hw.c/h`, `tlm_manager.c/h` |
+| `App/pack/` | `quat_pack.c/h`, `status_pack.c/h` |
+| `App/pyro/` | `pyro_manager.c/h` |
+| `App/fsm/` | `flight_fsm.c/h` |
+| `App/command/` | `cmd_router.c/h`, `cac_handler.c/h`, `cfg_manager.c/h` |
+| `App/diag/` | `self_test.c/h` |
+
+### Modified Files (Rev 4)
+
+| File | Change |
+|------|--------|
+| `USB_DEVICE/App/usbd_cdc_if.c` | CDC RX ring buffer (256B SPSC) |
+| `USB_DEVICE/App/usbd_cdc_if.h` | `cdc_ring_available()`, `cdc_ring_read_byte()` exports |
+| `Core/Src/main.c` | Init calls for CRC/TLM/CMD/CAC/CFG/FSM/PYRO_MGR + superloop telemetry state population + command processing |
+| `Makefile` | 11 new C_SOURCES, 6 new C_INCLUDES for App/ subdirectories |
+
+---
+
 ## Next Steps
 
 - [x] Fix power supply and clock configuration
@@ -439,10 +517,17 @@ make clean && make -j8
 - [x] MATLAB sensor noise characterization
 - [x] EKF navigation stack (altitude + velocity + attitude)
 - [x] Non-blocking barometer reads
-- [ ] Flash & verify EKF on hardware (desk test + tilt test + shake test)
-- [ ] Remaining sensors: MMC5983MA (magnetometer)
-- [ ] GPS (U-blox M10M via UART4) + EKF GPS updates
-- [ ] Bidirectional USB CDC command interface
-- [ ] Flight state machine & pyro control
+- [x] MMC5983MA magnetometer (I2C3, 100Hz continuous, DRDY on PC8)
+- [x] MAX-M10M GPS (I2C1, 10Hz, UBX-NAV-PVT)
+- [x] Pyro channels + continuity sensing (ADC, LEDs, serial fire commands)
+- [x] MC Testing: msgset v5 telemetry protocol over USB CDC
+- [x] Bidirectional USB CDC command interface (COBS-framed)
+- [x] Flight state machine (12-state FSM + simulated flight)
+- [x] CAC protocol (ARM/FIRE with 3-phase confirm)
+- [ ] Flash & verify telemetry on hardware (USB CDC → MC Electron app)
+- [ ] Implement real sensor-based FSM transitions (launch detect, apogee, etc.)
+- [ ] Implement EKF GPS update math (stubs ready)
+- [ ] Config persistence to QSPI flash
+- [ ] Flight log recording + readback
 - [ ] Servo PWM output (TIM2 CH1-4)
-- [ ] LoRa telemetry
+- [ ] LoRa radio telemetry

@@ -43,6 +43,15 @@
 #ifdef MAG_VAL
 #include "mag_val.h"
 #endif
+/* ── MC Testing / Telemetry modules ── */
+#include "crc32_hw.h"
+#include "tlm_manager.h"
+#include "cmd_router.h"
+#include "cac_handler.h"
+#include "cfg_manager.h"
+#include "flight_fsm.h"
+#include "pyro_manager.h"
+#include "self_test.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -323,6 +332,15 @@ int main(void)
   // Init pyro channels: ADC calibration, force all MOSFETs off
   casper_pyro_init(&pyro, &hadc1, &hadc2, &hadc3);
 
+  // Init MC telemetry + command subsystems
+  crc32_hw_init();
+  tlm_init();
+  cmd_router_init();
+  cac_init();
+  cfg_manager_init();
+  flight_fsm_init();
+  pyro_mgr_init();
+
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
   if (flash.jedec_id[0] != W25Q512JV_MANUFACTURER_ID) {
@@ -437,7 +455,10 @@ int main(void)
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 #endif
 
+#ifdef CDC_OUTPUT
   uint32_t last_output_tick = 0;
+  uint8_t cal_pct_printed = 0;  /* last 10% milestone printed (0-10) */
+#endif
   uint32_t last_mag_tick = 0;
   const float EKF_DT = 0.0012f;              /* 833 Hz (IMU data-ready driven) */
   const float G_CONST = 9.80665f;
@@ -445,7 +466,6 @@ int main(void)
   float baro_ref = 0.0f;
   bool init_done = false;       /* static init (accel+mag averaging) complete */
   bool cal_done = false;        /* 30s init period complete, filter running */
-  uint8_t cal_pct_printed = 0;  /* last 10% milestone printed (0-10) */
   uint32_t loop_start_tick = 0; /* HAL_GetTick() at main loop entry */
 
 #ifdef MAG_CAL
@@ -626,6 +646,8 @@ int main(void)
             att.launched = true;
             att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
             cal_done = true;
+            /* Anchor baro to 0 AGL — baro has been ticking for 30s, reading is stable */
+            baro_ref = ms5611_get_altitude(&baro, 1013.25f);
             HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
             HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
             HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
@@ -634,20 +656,28 @@ int main(void)
         } else {
           /* ── Phase 2: Running — gyro+mag filter (no gravity correction) ── */
           casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
+
+          /* ── EKF predict at IMU rate (833 Hz) ── */
+          casper_ekf_predict(&ekf, &att, accel_ms2, EKF_DT);
         }
 
         mag_new = false;
       }
 
       /* ── Async baro: always tick (warms up during init), feed EKF after launch ── */
+      static bool s_baro_fed_ekf = false;
       if (ms5611_tick(&baro) && cal_done) {
         float altitude = ms5611_get_altitude(&baro, 1013.25f) - baro_ref;
         casper_ekf_update_baro(&ekf, altitude);
+        s_baro_fed_ekf = true;
       }
 
       /* ── GPS: non-blocking poll (10 Hz NAV-PVT) ── */
-      if (max_m10m_tick(&gps) && cal_done) {
-        if (max_m10m_has_3d_fix(&gps)) {
+      static bool gps_new_fix = false;
+      gps_new_fix = false;
+      if (max_m10m_tick(&gps)) {
+        gps_new_fix = true;
+        if (cal_done && max_m10m_has_3d_fix(&gps)) {
           casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
           casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
         }
@@ -750,11 +780,78 @@ int main(void)
       }
 #endif /* CDC_OUTPUT */
 
-      /* ── Keep all pyro gate pins high ── */
-      HAL_GPIO_WritePin(PY1_GPIO_Port, PY1_Pin, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(PY2_GPIO_Port, PY2_Pin, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(PY3_GPIO_Port, PY3_Pin, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(PY4_GPIO_Port, PY4_Pin, GPIO_PIN_SET);
+      /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
+      pyro_mgr_tick();
+
+      /* ── EKF diagnostic LEDs (override pyro LEDs after init) ── */
+      if (cal_done) {
+        /* LED1: EKF heartbeat — blinks at 1 Hz */
+        static uint32_t ekf_led_tick = 0;
+        if (now - ekf_led_tick >= 500) {
+          HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+          ekf_led_tick = now;
+        }
+        /* LED4: solid ON once baro has fed EKF at least once */
+        if (s_baro_fed_ekf) {
+          HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+        }
+      }
+
+      /* ── MC Telemetry: populate state + 10 Hz binary COBS packets ── */
+      {
+        /* Build telemetry state from current sensor values */
+        fc_telem_state_t tstate;
+        tstate.alt_m        = ekf.x[0];
+        tstate.vel_mps      = ekf.x[1];
+        tstate.quat[0]      = att.q[0];
+        tstate.quat[1]      = att.q[1];
+        tstate.quat[2]      = att.q[2];
+        tstate.quat[3]      = att.q[3];
+        tstate.batt_v       = 7.4f;  /* TODO: ADC battery sensing */
+        tstate.flight_time_s = flight_fsm_get_time_s();
+
+        /* Build pyro state */
+        pyro_state_t pstate = {0};
+        uint8_t arm_bm = pyro_mgr_get_arm_bitmap();
+        pstate.armed[0] = (arm_bm & 0x01) != 0;
+        pstate.armed[1] = (arm_bm & 0x02) != 0;
+        pstate.armed[2] = (arm_bm & 0x04) != 0;
+        pstate.armed[3] = (arm_bm & 0x08) != 0;
+        pstate.continuity[0] = pyro.continuity[0];
+        pstate.continuity[1] = pyro.continuity[1];
+        pstate.continuity[2] = pyro.continuity[2];
+        pstate.continuity[3] = pyro.continuity[3];
+        pstate.fired = pyro_mgr_is_firing();
+
+        /* If sim flight active, override alt/vel/quat with sim values */
+        if (flight_fsm_sim_active()) {
+          flight_fsm_sim_get_state(&tstate);
+          tstate.batt_v = 7.4f;
+        }
+
+        fsm_state_t fsm = flight_fsm_tick(&tstate);
+        tlm_tick(&tstate, &pstate, fsm);
+      }
+
+      /* ── GPS telemetry on new fix ── */
+      if (gps_new_fix) {
+        fc_gps_state_t gstate;
+        /* TODO: compute delta lat/lon from pad position in mm */
+        gstate.dlat_mm   = 0;
+        gstate.dlon_mm   = 0;
+        gstate.alt_msl_m = gps.alt_msl_m;
+        gstate.fix_type  = gps.fix_type;
+        gstate.sat_count = gps.num_sv;
+        tlm_send_gps(&gstate);
+      }
+
+      /* ── Process incoming CDC commands ── */
+      if (cdc_ring_available() > 0) {
+        cmd_router_process();
+      }
+
+      /* ── CAC confirm timeout check ── */
+      cac_tick();
     }
 #endif
   }
