@@ -1,15 +1,17 @@
 /**
- * flight_log.c - Flight data logging to QSPI flash
+ * flight_log.c - Dual-rate flight data logging to QSPI flash
  *
  * Architecture:
- *   PAD phase:    Ring buffer in AXI SRAM (last 5s at 100Hz)
- *   Launch:       Commit ring buffer to flash in chronological order
- *   Flight:       Double-buffered writes to flash (erase-ahead)
- *   Landing:      Flush partial buffer, write summary
+ *   PAD phase:    Separate ring buffers for HR (5s @ 250Hz) and LR (10s @ 10Hz)
+ *   Launch:       Commit both ring buffers to flash in chronological order
+ *   Flight:       Double-buffered sector writes with erase-ahead
+ *   Landing:      Flush partial buffers, write final summary
  *
  * Flash layout:
- *   0x00000000 - 0x03EFFFFF  (63 MB) flight data log
- *   0x03F00000 - 0x03FFFFFF  (1 MB)  summary events
+ *   0x00000000 - 0x037FFFFF  (56 MB) high-rate log
+ *   0x03800000 - 0x03DFFFFF  (6 MB)  low-rate log
+ *   0x03E00000 - 0x03EFFFFF  (1 MB)  summary events
+ *   0x03F00000 - 0x03F00FFF  (4 KB)  config storage
  */
 
 #ifndef HOST_TEST
@@ -19,336 +21,534 @@
 
 #include "flight_log.h"
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 
-/* ── Flash device handle (defined in main.c) ────────── */
+/* ── Flash device handle (defined in main.c) ────────────────────── */
 #ifndef HOST_TEST
 extern w25q512jv_t flash;
 #endif
 
-/* ── CPU clock for DWT timestamp conversion ─────────── */
+/* ── CPU clock for DWT timestamp conversion ──────────────────────── */
 #define SYSCLK_HZ  432000000UL
 
-/* ── Buffers in AXI SRAM ────────────────────────────── */
+/* ── Ring buffers in AXI SRAM ────────────────────────────────────── */
 #ifndef HOST_TEST
-__attribute__((section(".axi_sram")))
-static flight_log_entry_t s_ring_buffer[FLIGHT_LOG_RING_SIZE];   /* 16 KB */
 
 __attribute__((section(".axi_sram")))
-static flight_log_entry_t s_buf_a[FLIGHT_LOG_BUF_SIZE];          /* 4 KB */
+static highrate_entry_t hr_ring[HR_RING_ENTRIES];    /* 1250 * 64 = 80 KB */
 
 __attribute__((section(".axi_sram")))
-static flight_log_entry_t s_buf_b[FLIGHT_LOG_BUF_SIZE];          /* 4 KB */
+static lowrate_entry_t  lr_ring[LR_RING_ENTRIES];    /* 100 * 64 = 6.4 KB */
+
 #else
-static flight_log_entry_t s_ring_buffer[FLIGHT_LOG_RING_SIZE];
-static flight_log_entry_t s_buf_a[FLIGHT_LOG_BUF_SIZE];
-static flight_log_entry_t s_buf_b[FLIGHT_LOG_BUF_SIZE];
+
+static highrate_entry_t hr_ring[HR_RING_ENTRIES];
+static lowrate_entry_t  lr_ring[LR_RING_ENTRIES];
+
 #endif
 
-/* ── State variables ────────────────────────────────── */
-static uint32_t s_ring_head;          /* next write index in ring buffer */
-static uint32_t s_ring_count;         /* total entries ever written to ring */
+static uint32_t hr_ring_head  = 0;
+static uint32_t hr_ring_count = 0;
 
-static flight_log_entry_t *s_active_buf;  /* current write buffer (a or b) */
-static flight_log_entry_t *s_flush_buf;   /* buffer being flushed to flash */
-static uint32_t s_active_idx;         /* next write index in active buffer */
-static bool     s_flush_pending;      /* flush_buf has data to write */
+static uint32_t lr_ring_head  = 0;
+static uint32_t lr_ring_count = 0;
 
-static uint32_t s_flash_write_addr;   /* current flash write address */
-static uint32_t s_summary_write_addr; /* current summary write address */
-static uint32_t s_entry_count;        /* total entries written to flash */
-static uint32_t s_dropped;            /* entries dropped due to buffer full */
-static bool     s_committed;          /* true after ring buffer committed (launch) */
-static bool     s_flushed;            /* true after final flush (landing) */
-static uint32_t s_next_erase_addr;    /* next sector address to erase ahead */
+/* ── Double buffers (one sector each = 64 entries = 4096 bytes) ─── */
+static highrate_entry_t hr_buf_a[HR_ENTRIES_PER_SECTOR];
+static highrate_entry_t hr_buf_b[HR_ENTRIES_PER_SECTOR];
+static highrate_entry_t *hr_active = hr_buf_a;
+static highrate_entry_t *hr_flush  = hr_buf_b;
+static uint32_t hr_buf_idx     = 0;
+static bool     hr_flush_pending = false;
 
-/* ── Flash write helpers ────────────────────────────── */
+static lowrate_entry_t lr_buf_a[LR_ENTRIES_PER_SECTOR];
+static lowrate_entry_t lr_buf_b[LR_ENTRIES_PER_SECTOR];
+static lowrate_entry_t *lr_active = lr_buf_a;
+static lowrate_entry_t *lr_flush  = lr_buf_b;
+static uint32_t lr_buf_idx     = 0;
+static bool     lr_flush_pending = false;
 
-/**
- * Erase sectors ahead as needed so that the region
- * [s_flash_write_addr, s_flash_write_addr + bytes) is erased.
- */
-static void erase_ahead_if_needed(uint32_t bytes)
+/* ── Write pointers & counters ───────────────────────────────────── */
+static uint32_t hr_write_addr      = FLASH_HR_START;
+static uint32_t lr_write_addr      = FLASH_LR_START;
+static uint32_t summary_write_addr = FLASH_SUMMARY_START;
+
+static uint32_t hr_entry_count = 0;
+static uint32_t lr_entry_count = 0;
+static uint32_t hr_dropped     = 0;
+static uint32_t lr_dropped     = 0;
+
+static bool logging_active = false;
+
+/* ── Erase-ahead tracking ────────────────────────────────────────── */
+static uint32_t hr_erased_up_to      = FLASH_HR_START;
+static uint32_t lr_erased_up_to      = FLASH_LR_START;
+static uint32_t summary_erased_up_to = FLASH_SUMMARY_START;
+
+/* ── Internal helpers ────────────────────────────────────────────── */
+
+static void ensure_erased(uint32_t addr, uint32_t *erased_up_to)
 {
 #ifndef HOST_TEST
-    while (s_flash_write_addr + bytes > s_next_erase_addr) {
-        if (s_next_erase_addr < FLIGHT_LOG_FLASH_END) {
-            w25q512jv_erase_sector(&flash, s_next_erase_addr);
-        }
-        s_next_erase_addr += FLIGHT_LOG_SECTOR_SIZE;
+    while (*erased_up_to <= addr) {
+        w25q512jv_erase_sector(&flash, *erased_up_to);
+        *erased_up_to += FLOG_SECTOR_SIZE;
     }
 #else
-    (void)bytes;
+    (void)addr;
+    (void)erased_up_to;
 #endif
 }
 
-/**
- * Write a buffer of log entries to flash at s_flash_write_addr.
- * Advances s_flash_write_addr and s_entry_count.
- */
-static void flush_buffer_to_flash(const flight_log_entry_t *buf, uint32_t count)
-{
-    if (count == 0) {
-        return;
-    }
+/* ── Public API ──────────────────────────────────────────────────── */
 
-    uint32_t bytes = count * sizeof(flight_log_entry_t);
-
-    /* Bounds check: don't write past the data region */
-    if (s_flash_write_addr + bytes > FLIGHT_LOG_FLASH_END) {
-        s_dropped += count;
-        return;
-    }
-
-    /* Erase ahead if needed */
-    erase_ahead_if_needed(bytes);
-
-    /* Write to flash */
-#ifndef HOST_TEST
-    w25q512jv_write(&flash, s_flash_write_addr, (const uint8_t *)buf, bytes);
-#endif
-
-    s_flash_write_addr += bytes;
-    s_entry_count += count;
-}
-
-/* ── Public API ─────────────────────────────────────── */
-
-void flight_log_init(void)
+int flight_log_init(void)
 {
 #ifndef HOST_TEST
     /* Enable DWT cycle counter for microsecond timestamps */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-
-    /* Pre-erase sectors for fast initial writes */
-    for (uint32_t i = 0; i < FLIGHT_LOG_PRE_ERASE_SECTORS; i++) {
-        w25q512jv_erase_sector(&flash, i * FLIGHT_LOG_SECTOR_SIZE);
-    }
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 #endif
 
-    /* Initialize state */
-    s_ring_head = 0;
-    s_ring_count = 0;
-    s_active_buf = s_buf_a;
-    s_flush_buf = s_buf_b;
-    s_active_idx = 0;
-    s_flush_pending = false;
-    s_flash_write_addr = FLIGHT_LOG_FLASH_BASE;
-    s_summary_write_addr = FLIGHT_LOG_SUMMARY_BASE;
-    s_entry_count = 0;
-    s_dropped = 0;
-    s_committed = false;
-    s_flushed = false;
-    s_next_erase_addr = FLIGHT_LOG_PRE_ERASE_SECTORS * FLIGHT_LOG_SECTOR_SIZE;
+    /* Zero state */
+    hr_ring_head  = 0;
+    hr_ring_count = 0;
+    lr_ring_head  = 0;
+    lr_ring_count = 0;
 
-    memset(s_ring_buffer, 0, sizeof(s_ring_buffer));
-    memset(s_buf_a, 0, sizeof(s_buf_a));
-    memset(s_buf_b, 0, sizeof(s_buf_b));
+    hr_active = hr_buf_a;
+    hr_flush  = hr_buf_b;
+    hr_buf_idx = 0;
+    hr_flush_pending = false;
+
+    lr_active = lr_buf_a;
+    lr_flush  = lr_buf_b;
+    lr_buf_idx = 0;
+    lr_flush_pending = false;
+
+    hr_write_addr      = FLASH_HR_START;
+    lr_write_addr      = FLASH_LR_START;
+    summary_write_addr = FLASH_SUMMARY_START;
+
+    hr_entry_count = 0;
+    lr_entry_count = 0;
+    hr_dropped     = 0;
+    lr_dropped     = 0;
+
+    logging_active = false;
+
+    hr_erased_up_to      = FLASH_HR_START;
+    lr_erased_up_to      = FLASH_LR_START;
+    summary_erased_up_to = FLASH_SUMMARY_START;
+
+    memset(hr_ring, 0, sizeof(hr_ring));
+    memset(lr_ring, 0, sizeof(lr_ring));
+    memset(hr_buf_a, 0, sizeof(hr_buf_a));
+    memset(hr_buf_b, 0, sizeof(hr_buf_b));
+    memset(lr_buf_a, 0, sizeof(lr_buf_a));
+    memset(lr_buf_b, 0, sizeof(lr_buf_b));
+
+    return 0;
 }
 
-void flight_log_write(const flight_log_entry_t *entry, fsm_state_t state)
+void flight_log_write_hr(const highrate_entry_t *entry, fsm_state_t state)
 {
-    if (s_flushed) {
-        return; /* logging stopped after landing */
-    }
+    if (state == FSM_STATE_LANDED) return;
+    if (hr_write_addr >= FLASH_HR_END) return;
 
-    if (state == FSM_STATE_LANDED) {
-        return; /* don't log in LANDED state */
-    }
-
-    if (!s_committed) {
-        /* PAD phase: write to ring buffer */
-        s_ring_buffer[s_ring_head] = *entry;
-        s_ring_head = (s_ring_head + 1) % FLIGHT_LOG_RING_SIZE;
-        if (s_ring_count < FLIGHT_LOG_RING_SIZE) {
-            s_ring_count++;
+    if (!logging_active) {
+        /* PAD phase: circular ring buffer */
+        hr_ring[hr_ring_head] = *entry;
+        hr_ring_head = (hr_ring_head + 1) % HR_RING_ENTRIES;
+        if (hr_ring_count < HR_RING_ENTRIES) {
+            hr_ring_count++;
         }
-        /* s_ring_count saturates at RING_SIZE to indicate buffer is full/wrapping */
         return;
     }
 
-    /* Flight phase: write to double buffer */
+    /* Flight phase: double-buffered sector writes */
+    hr_active[hr_buf_idx] = *entry;
+    hr_buf_idx++;
 
-    /* If flush is still pending, both buffers are in use.
-     * We can still write to active_buf if it has room. */
-    if (s_active_idx >= FLIGHT_LOG_BUF_SIZE) {
-        /* Active buffer is full. We need to swap. */
-        if (s_flush_pending) {
-            /* Both buffers full, drop this entry */
-            s_dropped++;
-            return;
+    if (hr_buf_idx >= HR_ENTRIES_PER_SECTOR) {
+        /* Sector full — swap buffers */
+        if (hr_flush_pending) {
+            /* Previous flush not yet processed — drop the sector */
+            hr_dropped += HR_ENTRIES_PER_SECTOR;
         }
 
-        /* Swap buffers: active becomes flush target, flush becomes active */
-        s_flush_pending = true;
-        flight_log_entry_t *tmp = s_active_buf;
-        s_active_buf = s_flush_buf;
-        s_flush_buf = tmp;
+        hr_flush_pending = true;
 
-        /* Write the full flush buffer to flash */
-        flush_buffer_to_flash(s_flush_buf, FLIGHT_LOG_BUF_SIZE);
-        s_flush_pending = false;
-
-        s_active_idx = 0;
+        highrate_entry_t *tmp = hr_active;
+        hr_active = hr_flush;
+        hr_flush  = tmp;
+        hr_buf_idx = 0;
     }
-
-    s_active_buf[s_active_idx] = *entry;
-    s_active_idx++;
 }
 
-void flight_log_commit_ring_buffer(void)
+void flight_log_write_lr(const lowrate_entry_t *entry, fsm_state_t state)
 {
-    if (s_committed) {
-        return; /* already committed */
-    }
+    if (state == FSM_STATE_LANDED) return;
+    if (lr_write_addr >= FLASH_LR_END) return;
 
-    s_committed = true;
-
-    if (s_ring_count == 0) {
-        return; /* nothing to commit */
-    }
-
-    /* Determine how many entries and where the oldest one is */
-    uint32_t entries_to_write;
-    uint32_t start_idx;
-
-    if (s_ring_count < FLIGHT_LOG_RING_SIZE) {
-        /* Ring never wrapped: entries are 0..ring_count-1 */
-        entries_to_write = s_ring_count;
-        start_idx = 0;
-    } else {
-        /* Ring wrapped: oldest entry is at s_ring_head */
-        entries_to_write = FLIGHT_LOG_RING_SIZE;
-        start_idx = s_ring_head;
-    }
-
-    /* Write entries in chronological order to flash.
-     * We write in two segments if the ring has wrapped. */
-    if (start_idx == 0) {
-        /* Contiguous: just write everything */
-        flush_buffer_to_flash(s_ring_buffer, entries_to_write);
-    } else {
-        /* Part 1: from start_idx to end of ring */
-        uint32_t first_chunk = FLIGHT_LOG_RING_SIZE - start_idx;
-        flush_buffer_to_flash(&s_ring_buffer[start_idx], first_chunk);
-
-        /* Part 2: from 0 to start_idx (the newer entries before head) */
-        if (start_idx > 0) {
-            flush_buffer_to_flash(&s_ring_buffer[0], start_idx);
+    if (!logging_active) {
+        /* PAD phase: circular ring buffer */
+        lr_ring[lr_ring_head] = *entry;
+        lr_ring_head = (lr_ring_head + 1) % LR_RING_ENTRIES;
+        if (lr_ring_count < LR_RING_ENTRIES) {
+            lr_ring_count++;
         }
+        return;
     }
 
-    /* Reset double buffer state for flight phase writes */
-    s_active_buf = s_buf_a;
-    s_flush_buf = s_buf_b;
-    s_active_idx = 0;
-    s_flush_pending = false;
+    /* Flight phase: double-buffered sector writes */
+    lr_active[lr_buf_idx] = *entry;
+    lr_buf_idx++;
+
+    if (lr_buf_idx >= LR_ENTRIES_PER_SECTOR) {
+        if (lr_flush_pending) {
+            lr_dropped += LR_ENTRIES_PER_SECTOR;
+        }
+
+        lr_flush_pending = true;
+
+        lowrate_entry_t *tmp = lr_active;
+        lr_active = lr_flush;
+        lr_flush  = tmp;
+        lr_buf_idx = 0;
+    }
+}
+
+void flight_log_commit_ring_buffers(void)
+{
+    if (logging_active) return;
+
+    /* ── Commit HR ring ─────────────────────────────────────────── */
+    if (hr_ring_count > 0) {
+        uint32_t entries = hr_ring_count;
+        uint32_t start_idx;
+
+        if (hr_ring_count < HR_RING_ENTRIES) {
+            start_idx = 0;
+        } else {
+            entries = HR_RING_ENTRIES;
+            start_idx = hr_ring_head; /* oldest entry */
+        }
+
+        /* Write page-by-page in chronological order.
+         * Accumulate 4 entries per page, then write. */
+        uint8_t page_buf[FLOG_PAGE_SIZE];
+        uint32_t page_count = 0;
+        uint32_t written = 0;
+
+        for (uint32_t i = 0; i < entries; i++) {
+            uint32_t idx = (start_idx + i) % HR_RING_ENTRIES;
+            memcpy(page_buf + (page_count * sizeof(highrate_entry_t)),
+                   &hr_ring[idx], sizeof(highrate_entry_t));
+            page_count++;
+
+            if (page_count == HR_ENTRIES_PER_PAGE) {
+                ensure_erased(hr_write_addr, &hr_erased_up_to);
+#ifndef HOST_TEST
+                w25q512jv_write(&flash, hr_write_addr, page_buf, FLOG_PAGE_SIZE);
+#endif
+                hr_write_addr += FLOG_PAGE_SIZE;
+                written += page_count;
+                page_count = 0;
+            }
+        }
+
+        /* Write any remaining partial page */
+        if (page_count > 0) {
+            /* Pad remainder with 0xFF */
+            memset(page_buf + (page_count * sizeof(highrate_entry_t)), 0xFF,
+                   FLOG_PAGE_SIZE - (page_count * sizeof(highrate_entry_t)));
+            ensure_erased(hr_write_addr, &hr_erased_up_to);
+#ifndef HOST_TEST
+            w25q512jv_write(&flash, hr_write_addr, page_buf, FLOG_PAGE_SIZE);
+#endif
+            hr_write_addr += FLOG_PAGE_SIZE;
+            written += page_count;
+        }
+
+        hr_entry_count += written;
+    }
+
+    /* ── Commit LR ring ─────────────────────────────────────────── */
+    if (lr_ring_count > 0) {
+        uint32_t entries = lr_ring_count;
+        uint32_t start_idx;
+
+        if (lr_ring_count < LR_RING_ENTRIES) {
+            start_idx = 0;
+        } else {
+            entries = LR_RING_ENTRIES;
+            start_idx = lr_ring_head;
+        }
+
+        uint8_t page_buf[FLOG_PAGE_SIZE];
+        uint32_t page_count = 0;
+        uint32_t written = 0;
+
+        for (uint32_t i = 0; i < entries; i++) {
+            uint32_t idx = (start_idx + i) % LR_RING_ENTRIES;
+            memcpy(page_buf + (page_count * sizeof(lowrate_entry_t)),
+                   &lr_ring[idx], sizeof(lowrate_entry_t));
+            page_count++;
+
+            if (page_count == LR_ENTRIES_PER_PAGE) {
+                ensure_erased(lr_write_addr, &lr_erased_up_to);
+#ifndef HOST_TEST
+                w25q512jv_write(&flash, lr_write_addr, page_buf, FLOG_PAGE_SIZE);
+#endif
+                lr_write_addr += FLOG_PAGE_SIZE;
+                written += page_count;
+                page_count = 0;
+            }
+        }
+
+        if (page_count > 0) {
+            memset(page_buf + (page_count * sizeof(lowrate_entry_t)), 0xFF,
+                   FLOG_PAGE_SIZE - (page_count * sizeof(lowrate_entry_t)));
+            ensure_erased(lr_write_addr, &lr_erased_up_to);
+#ifndef HOST_TEST
+            w25q512jv_write(&flash, lr_write_addr, page_buf, FLOG_PAGE_SIZE);
+#endif
+            lr_write_addr += FLOG_PAGE_SIZE;
+            written += page_count;
+        }
+
+        lr_entry_count += written;
+    }
+
+    /* Erase one sector ahead for both streams */
+    ensure_erased(hr_write_addr, &hr_erased_up_to);
+    ensure_erased(lr_write_addr, &lr_erased_up_to);
+
+    logging_active = true;
+}
+
+int flight_log_process(void)
+{
+    int pages_written = 0;
+
+    /* ── Flush HR double buffer ──────────────────────────────────── */
+    if (hr_flush_pending) {
+        if (hr_write_addr + FLOG_SECTOR_SIZE <= FLASH_HR_END) {
+            ensure_erased(hr_write_addr, &hr_erased_up_to);
+
+#ifndef HOST_TEST
+            /* Write one sector = 16 pages */
+            const uint8_t *src = (const uint8_t *)hr_flush;
+            for (uint32_t p = 0; p < (FLOG_SECTOR_SIZE / FLOG_PAGE_SIZE); p++) {
+                w25q512jv_write(&flash, hr_write_addr + (p * FLOG_PAGE_SIZE),
+                                src + (p * FLOG_PAGE_SIZE), FLOG_PAGE_SIZE);
+            }
+#endif
+            hr_entry_count += HR_ENTRIES_PER_SECTOR;
+            hr_write_addr  += FLOG_SECTOR_SIZE;
+            pages_written  += (FLOG_SECTOR_SIZE / FLOG_PAGE_SIZE);
+
+            /* Erase next sector ahead */
+            ensure_erased(hr_write_addr, &hr_erased_up_to);
+        } else {
+            hr_dropped += HR_ENTRIES_PER_SECTOR;
+        }
+
+        hr_flush_pending = false;
+    }
+
+    /* ── Flush LR double buffer ──────────────────────────────────── */
+    if (lr_flush_pending) {
+        if (lr_write_addr + FLOG_SECTOR_SIZE <= FLASH_LR_END) {
+            ensure_erased(lr_write_addr, &lr_erased_up_to);
+
+#ifndef HOST_TEST
+            const uint8_t *src = (const uint8_t *)lr_flush;
+            for (uint32_t p = 0; p < (FLOG_SECTOR_SIZE / FLOG_PAGE_SIZE); p++) {
+                w25q512jv_write(&flash, lr_write_addr + (p * FLOG_PAGE_SIZE),
+                                src + (p * FLOG_PAGE_SIZE), FLOG_PAGE_SIZE);
+            }
+#endif
+            lr_entry_count += LR_ENTRIES_PER_SECTOR;
+            lr_write_addr  += FLOG_SECTOR_SIZE;
+            pages_written  += (FLOG_SECTOR_SIZE / FLOG_PAGE_SIZE);
+
+            ensure_erased(lr_write_addr, &lr_erased_up_to);
+        } else {
+            lr_dropped += LR_ENTRIES_PER_SECTOR;
+        }
+
+        lr_flush_pending = false;
+    }
+
+    return pages_written;
+}
+
+void flight_log_summary(uint32_t timestamp_ms, const char *fmt, ...)
+{
+    if (fmt == NULL) return;
+    if (summary_write_addr >= FLASH_SUMMARY_END) return;
+
+    /* Format the message */
+    char msg_buf[251];
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(msg_buf, sizeof(msg_buf), fmt, ap);
+    va_end(ap);
+
+    if (len < 0) return;
+    if (len > 250) len = 250;
+
+    /* Build the entry: [timestamp_ms:4][msg_len:1][msg:N] */
+    uint8_t hdr[5];
+    hdr[0] = (uint8_t)(timestamp_ms & 0xFF);
+    hdr[1] = (uint8_t)((timestamp_ms >> 8) & 0xFF);
+    hdr[2] = (uint8_t)((timestamp_ms >> 16) & 0xFF);
+    hdr[3] = (uint8_t)((timestamp_ms >> 24) & 0xFF);
+    hdr[4] = (uint8_t)len;
+
+    uint32_t total_bytes = 5 + (uint32_t)len;
+
+    if (summary_write_addr + total_bytes > FLASH_SUMMARY_END) return;
+
+    /* Write using page-sized chunks, handling page boundaries */
+    ensure_erased(summary_write_addr, &summary_erased_up_to);
+
+    /* If the entry spans a sector boundary, ensure the next sector too */
+    uint32_t end_addr = summary_write_addr + total_bytes - 1;
+    if ((end_addr / FLOG_SECTOR_SIZE) != (summary_write_addr / FLOG_SECTOR_SIZE)) {
+        ensure_erased(end_addr, &summary_erased_up_to);
+    }
+
+#ifndef HOST_TEST
+    /* Write header */
+    w25q512jv_write(&flash, summary_write_addr, hdr, 5);
+    /* Write message body */
+    if (len > 0) {
+        w25q512jv_write(&flash, summary_write_addr + 5,
+                        (const uint8_t *)msg_buf, (uint32_t)len);
+    }
+#endif
+
+    summary_write_addr += total_bytes;
 }
 
 void flight_log_flush(void)
 {
-    if (s_flushed) {
-        return;
-    }
+    /* Flush any pending full-sector double buffer first */
+    flight_log_process();
 
-    /* Flush any partial active buffer */
-    if (s_active_idx > 0 && s_committed) {
-        flush_buffer_to_flash(s_active_buf, s_active_idx);
-        s_active_idx = 0;
-    }
+    /* ── Flush partial HR buffer ─────────────────────────────────── */
+    if (hr_buf_idx > 0 && logging_active) {
+        if (hr_write_addr + FLOG_SECTOR_SIZE <= FLASH_HR_END) {
+            /* Pad remaining entries with 0xFF */
+            memset(&hr_active[hr_buf_idx], 0xFF,
+                   (HR_ENTRIES_PER_SECTOR - hr_buf_idx) * sizeof(highrate_entry_t));
 
-    /* If a flush was pending (shouldn't normally happen at landing), write it too */
-    if (s_flush_pending) {
-        flush_buffer_to_flash(s_flush_buf, FLIGHT_LOG_BUF_SIZE);
-        s_flush_pending = false;
-    }
-
-    s_flushed = true;
-}
-
-void flight_log_summary(uint32_t timestamp_ms, const char *msg)
-{
-    if (msg == NULL) {
-        return;
-    }
-
-    uint32_t msg_len = 0;
-    while (msg[msg_len] != '\0' && msg_len < FLIGHT_LOG_SUMMARY_MAX_LEN - 1) {
-        msg_len++;
-    }
-
-    /* Build the summary entry on the stack */
-    flight_log_summary_entry_t entry;
-    memset(&entry, 0xFF, sizeof(entry)); /* flash-friendly default */
-    entry.timestamp_ms = timestamp_ms;
-    entry.type = 0; /* generic event */
-    entry.len = (uint8_t)msg_len;
-    memset(entry.text, 0, sizeof(entry.text));
-    memcpy(entry.text, msg, msg_len);
-    entry.text[msg_len] = '\0';
-
-    /* Actual bytes to write: header (6 bytes) + msg_len + 1 (null terminator) */
-    uint32_t write_len = sizeof(entry); /* fixed-size structure */
-
-    /* Bounds check */
-    if (s_summary_write_addr + write_len > FLIGHT_LOG_SUMMARY_END) {
-        return; /* summary region full */
-    }
+            ensure_erased(hr_write_addr, &hr_erased_up_to);
 
 #ifndef HOST_TEST
-    /* Erase sector if needed (summary region starts at 0x03F00000) */
-    uint32_t current_sector = s_summary_write_addr & ~(FLIGHT_LOG_SECTOR_SIZE - 1U);
-    uint32_t end_addr = s_summary_write_addr + write_len;
-    uint32_t end_sector = (end_addr - 1) & ~(FLIGHT_LOG_SECTOR_SIZE - 1U);
-
-    /* Erase any sectors we're about to write into if at sector boundary */
-    if (s_summary_write_addr == current_sector) {
-        w25q512jv_erase_sector(&flash, current_sector);
-    }
-    if (end_sector != current_sector && end_addr > end_sector) {
-        w25q512jv_erase_sector(&flash, end_sector);
-    }
-
-    w25q512jv_write(&flash, s_summary_write_addr,
-                    (const uint8_t *)&entry, write_len);
+            const uint8_t *src = (const uint8_t *)hr_active;
+            for (uint32_t p = 0; p < (FLOG_SECTOR_SIZE / FLOG_PAGE_SIZE); p++) {
+                w25q512jv_write(&flash, hr_write_addr + (p * FLOG_PAGE_SIZE),
+                                src + (p * FLOG_PAGE_SIZE), FLOG_PAGE_SIZE);
+            }
 #endif
+            hr_entry_count += hr_buf_idx;
+            hr_write_addr  += FLOG_SECTOR_SIZE;
+        }
+        hr_buf_idx = 0;
+    }
 
-    s_summary_write_addr += write_len;
+    /* ── Flush partial LR buffer ─────────────────────────────────── */
+    if (lr_buf_idx > 0 && logging_active) {
+        if (lr_write_addr + FLOG_SECTOR_SIZE <= FLASH_LR_END) {
+            memset(&lr_active[lr_buf_idx], 0xFF,
+                   (LR_ENTRIES_PER_SECTOR - lr_buf_idx) * sizeof(lowrate_entry_t));
+
+            ensure_erased(lr_write_addr, &lr_erased_up_to);
+
+#ifndef HOST_TEST
+            const uint8_t *src = (const uint8_t *)lr_active;
+            for (uint32_t p = 0; p < (FLOG_SECTOR_SIZE / FLOG_PAGE_SIZE); p++) {
+                w25q512jv_write(&flash, lr_write_addr + (p * FLOG_PAGE_SIZE),
+                                src + (p * FLOG_PAGE_SIZE), FLOG_PAGE_SIZE);
+            }
+#endif
+            lr_entry_count += lr_buf_idx;
+            lr_write_addr  += FLOG_SECTOR_SIZE;
+        }
+        lr_buf_idx = 0;
+    }
 }
 
-void flight_log_erase_all(void)
+int flight_log_erase_all(void)
 {
 #ifndef HOST_TEST
-    w25q512jv_erase_chip(&flash);
+    /* HR region: 56 MB / 64 KB = 896 blocks */
+    for (uint32_t addr = FLASH_HR_START; addr < FLASH_HR_END; addr += FLOG_BLOCK64_SIZE) {
+        int rc = w25q512jv_erase_block(&flash, addr);
+        if (rc != 0) return rc;
+    }
+
+    /* LR region: 6 MB / 64 KB = 96 blocks */
+    for (uint32_t addr = FLASH_LR_START; addr < FLASH_LR_END; addr += FLOG_BLOCK64_SIZE) {
+        int rc = w25q512jv_erase_block(&flash, addr);
+        if (rc != 0) return rc;
+    }
+
+    /* Summary region: 1 MB / 64 KB = 16 blocks */
+    for (uint32_t addr = FLASH_SUMMARY_START; addr < FLASH_SUMMARY_END; addr += FLOG_BLOCK64_SIZE) {
+        int rc = w25q512jv_erase_block(&flash, addr);
+        if (rc != 0) return rc;
+    }
 #endif
+
+    /* Reset all state */
+    hr_write_addr      = FLASH_HR_START;
+    lr_write_addr      = FLASH_LR_START;
+    summary_write_addr = FLASH_SUMMARY_START;
+
+    hr_entry_count = 0;
+    lr_entry_count = 0;
+    hr_dropped     = 0;
+    lr_dropped     = 0;
+
+    hr_erased_up_to      = FLASH_HR_START;
+    lr_erased_up_to      = FLASH_LR_START;
+    summary_erased_up_to = FLASH_SUMMARY_START;
+
+    hr_ring_head  = 0;
+    hr_ring_count = 0;
+    lr_ring_head  = 0;
+    lr_ring_count = 0;
+
+    hr_buf_idx = 0;
+    lr_buf_idx = 0;
+    hr_flush_pending = false;
+    lr_flush_pending = false;
+
+    logging_active = false;
+
+    return 0;
 }
 
-uint32_t flight_log_get_write_addr(void)
-{
-    return s_flash_write_addr;
-}
+/* ── Getters ─────────────────────────────────────────────────────── */
 
-uint32_t flight_log_get_entry_count(void)
-{
-    return s_entry_count;
-}
-
-uint32_t flight_log_get_dropped(void)
-{
-    return s_dropped;
-}
-
-bool flight_log_is_active(void)
-{
-    return s_committed && !s_flushed;
-}
+uint32_t flight_log_get_hr_addr(void)      { return hr_write_addr; }
+uint32_t flight_log_get_lr_addr(void)      { return lr_write_addr; }
+uint32_t flight_log_get_summary_addr(void) { return summary_write_addr; }
+uint32_t flight_log_get_hr_count(void)     { return hr_entry_count; }
+uint32_t flight_log_get_lr_count(void)     { return lr_entry_count; }
+uint32_t flight_log_get_dropped_hr(void)   { return hr_dropped; }
+uint32_t flight_log_get_dropped_lr(void)   { return lr_dropped; }
 
 uint32_t flight_log_get_timestamp_us(void)
 {
 #ifndef HOST_TEST
-    /* DWT->CYCCNT counts at SYSCLK (432 MHz).
-     * us = cycles / (SYSCLK / 1000000) = cycles / 432 */
     return DWT->CYCCNT / (SYSCLK_HZ / 1000000UL);
 #else
     return 0;

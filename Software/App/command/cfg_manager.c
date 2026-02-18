@@ -72,10 +72,10 @@ void cfg_handle_readlog(const uint8_t *data, int len)
 {
     (void)data;
     (void)len;
-    /* Stream raw flight log entries over USB CDC.
+    /* Stream high-rate flight log entries over USB CDC.
      * The readout protocol sends a header followed by all entries
      * and a trailing CRC.  See flight_readout.h for format details. */
-    flight_readout_stream_raw();
+    flight_readout_stream_hr();
 }
 
 void cfg_handle_eraselog(const uint8_t *data, int len)

@@ -118,6 +118,7 @@ App/fsm/flight_fsm.c \
 App/flight/pyro_logic.c \
 App/flight/flight_config.c \
 App/flight/flight_log.c \
+App/flight/flight_log_helpers.c \
 App/flight/flight_readout.c \
 App/command/cmd_router.c \
 App/command/cac_handler.c \

@@ -55,6 +55,8 @@
 /* ── Level 5: flight modules ── */
 #include "pyro_logic.h"
 #include "flight_log.h"
+#include "flight_log_helpers.h"
+#include "flight_readout.h"
 #include "flight_config.h"
 /* USER CODE END Includes */
 
@@ -127,7 +129,23 @@ static bool mag_new = false;
 casper_pyro_t pyro;
 /* ── Level 5: flight modules ── */
 static pyro_logic_t s_pyro_logic;
-static uint8_t s_log_decimation_counter;
+
+/* ── Dual-rate logging state ── */
+static uint32_t hr_log_counter = 0;
+static uint32_t lr_log_counter = 0;
+#define HR_LOG_EVERY  3   /* 833/250 ~ 3 IMU ticks per HR entry */
+#define LR_LOG_EVERY  83  /* 833/10 ~ 83 IMU ticks per LR entry */
+
+/* ── Sensor snapshots for logging ── */
+static imu_snapshot_t      snap_imu   = {0};
+static highg_snapshot_t    snap_highg = {0};
+static baro_snapshot_t     snap_baro  = {0};
+static ekf_snapshot_t      snap_ekf   = {0};
+static attitude_snapshot_t snap_att   = {0};
+static mag_snapshot_t      snap_mag   = {0};
+static gps_snapshot_t      snap_gps   = {0};
+static power_snapshot_t    snap_pwr   = {0};
+static radio_snapshot_t    snap_radio = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -156,26 +174,6 @@ static void MX_SPI3_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* ── Level 5: log decimation helper ── */
-static uint8_t get_log_decimation(fsm_state_t state, float vel_mps) {
-    switch (state) {
-        case FSM_STATE_PAD:
-        case FSM_STATE_BOOST:
-        case FSM_STATE_COAST:
-        case FSM_STATE_COAST_1:
-        case FSM_STATE_SUSTAIN:
-        case FSM_STATE_COAST_2:
-        case FSM_STATE_APOGEE:
-            return 8;    /* 833/8 ~ 104 Hz */
-        case FSM_STATE_DROGUE:
-        case FSM_STATE_MAIN:
-            return (vel_mps > 15.0f || vel_mps < -15.0f) ? 16 : 83;  /* 52 Hz or 10 Hz */
-        case FSM_STATE_LANDED:
-            return 255;  /* stopped */
-        default:
-            return 8;
-    }
-}
 
 /* USER CODE END 0 */
 
@@ -621,6 +619,13 @@ int main(void)
         float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
         mag_cal_apply(mag_raw, mag_cal_ut);
         mag_new = true;
+
+        /* ── Update mag snapshot for logging ── */
+        snap_mag.raw[0] = (int16_t)(mag.raw_mag[0] >> 2);
+        snap_mag.raw[1] = (int16_t)(mag.raw_mag[1] >> 2);
+        snap_mag.raw[2] = (int16_t)(mag.raw_mag[2] >> 2);
+        snap_mag.temp_c = -75.0f + (float)mag.raw_temp * 200.0f / 255.0f;
+        snap_mag.updated = true;
       }
 
       /* ── 833 Hz: IMU read + attitude estimator (interrupt-driven) ── */
@@ -653,6 +658,23 @@ int main(void)
           gyro_sensor[0],               /* Vehicle Y = Sensor X */
           gyro_sensor[1]                /* Vehicle Z = Sensor Y */
         };
+
+        /* ── Update IMU snapshot for logging ── */
+        snap_imu.accel_ms2[0] = accel_ms2[0];
+        snap_imu.accel_ms2[1] = accel_ms2[1];
+        snap_imu.accel_ms2[2] = accel_ms2[2];
+        snap_imu.gyro_raw[0] = imu.raw_gyro[0];
+        snap_imu.gyro_raw[1] = imu.raw_gyro[1];
+        snap_imu.gyro_raw[2] = imu.raw_gyro[2];
+        snap_imu.imu_temp_c = imu.temp_c;
+        snap_imu.updated = true;
+
+        /* ── Update high-G snapshot ── */
+        adxl372_read(&high_g);
+        snap_highg.accel_g[0] = high_g.accel_g[0];
+        snap_highg.accel_g[1] = high_g.accel_g[1];
+        snap_highg.accel_g[2] = high_g.accel_g[2];
+        snap_highg.updated = true;
 
         const float *mag_ptr = mag_new ? mag_cal_ut : NULL;
 
@@ -703,6 +725,18 @@ int main(void)
           /* ── EKF predict at IMU rate (833 Hz) ── */
           casper_ekf_predict(&ekf, &att, accel_ms2, EKF_DT);
 
+          /* ── Update EKF + attitude snapshots ── */
+          snap_ekf.alt_m = ekf.x[0];
+          snap_ekf.vel_mps = ekf.x[1];
+          snap_ekf.accel_bias = ekf.x[2];
+          snap_ekf.baro_bias = ekf.x[3];
+
+          snap_att.q[0] = att.q[0];
+          snap_att.q[1] = att.q[1];
+          snap_att.q[2] = att.q[2];
+          snap_att.q[3] = att.q[3];
+          snap_att.tilt_deg = flight_fsm_tilt_from_quat(att.q);
+
           /* ── Sensor-driven FSM tick (833 Hz) ──────────────── */
           if (!flight_fsm_sim_active()) {
             sensor_input_t si;
@@ -721,13 +755,18 @@ int main(void)
             flight_fsm_tick(&si);
             fsm_state_t new_state = flight_fsm_get_state();
 
-            /* On launch detection: commit ring buffer */
+            /* On launch detection: commit ring buffers + summary */
             if (prev_state == FSM_STATE_PAD && new_state == FSM_STATE_BOOST) {
-              flight_log_commit_ring_buffer();
+              flight_log_commit_ring_buffers();
+              flight_log_summary(HAL_GetTick(), "LAUNCH detected");
             }
 
-            /* On landing: flush log */
+            /* On landing: flush log + summary */
             if (new_state == FSM_STATE_LANDED && prev_state != FSM_STATE_LANDED) {
+              const flight_context_t *ctx = flight_fsm_get_context();
+              flight_log_summary(HAL_GetTick(),
+                  "LANDED maxAlt=%.1fm maxVel=%.1fm/s",
+                  ctx->max_altitude_m, ctx->max_velocity_mps);
               flight_log_flush();
             }
 
@@ -744,30 +783,36 @@ int main(void)
               }
             }
 
-            /* ── Flight log write (decimated) ─────────────── */
-            s_log_decimation_counter++;
-            uint8_t decimation = get_log_decimation(new_state, si.ekf_vel_mps);
-            if (decimation != 255 && s_log_decimation_counter >= decimation) {
-              s_log_decimation_counter = 0;
+            /* ── Dual-rate flight logging ───────────────── */
+            hr_log_counter++;
+            if (hr_log_counter >= HR_LOG_EVERY) {
+              hr_log_counter = 0;
+              highrate_entry_t hr_entry;
+              flight_log_populate_hr(&hr_entry,
+                  flight_log_get_timestamp_us(),
+                  new_state,
+                  &snap_imu, &snap_highg, &snap_baro,
+                  &snap_ekf, &snap_att,
+                  ekf.baro_gated);
+              flight_log_write_hr(&hr_entry, new_state);
+              snap_imu.updated = false;
+              snap_baro.updated = false;
+            }
 
-              flight_log_entry_t log_entry;
-              log_entry.timestamp_us = flight_log_get_timestamp_us();
-              log_entry.fsm_state = new_state;
-              log_entry.flags = si.baro_updated ? 0x01 : 0x00;
-              log_entry.accel_x_mg = (int16_t)(si.accel_body_ms2[0] * (1000.0f / 9.81f));
-              log_entry.accel_y_mg = (int16_t)(si.accel_body_ms2[1] * (1000.0f / 9.81f));
-              log_entry.accel_z_mg = (int16_t)(si.accel_body_ms2[2] * (1000.0f / 9.81f));
-              log_entry.gyro_x_mdps = (int16_t)(gyro_rads[0] * (1000.0f / DEG2RAD));
-              log_entry.gyro_y_mdps = (int16_t)(gyro_rads[1] * (1000.0f / DEG2RAD));
-              log_entry.gyro_z_mdps = (int16_t)(gyro_rads[2] * (1000.0f / DEG2RAD));
-              log_entry.alt_dm = (int16_t)(si.ekf_alt_m * 10.0f);
-              log_entry.vel_cmps = (int16_t)(si.ekf_vel_mps * 100.0f);
-              log_entry.baro_alt_dm = (int16_t)(si.baro_alt_agl_m * 10.0f);
-              log_entry.tilt_cdeg = (int16_t)(si.tilt_deg * 100.0f);
-              log_entry.batt_mv = 0;  /* TODO: wire battery ADC */
-              memset(log_entry.reserved, 0, sizeof(log_entry.reserved));
-
-              flight_log_write(&log_entry, new_state);
+            lr_log_counter++;
+            if (lr_log_counter >= LR_LOG_EVERY) {
+              lr_log_counter = 0;
+              lowrate_entry_t lr_entry;
+              flight_log_populate_lr(&lr_entry,
+                  flight_log_get_timestamp_us(),
+                  new_state,
+                  &snap_mag, &snap_gps, &snap_pwr, &snap_radio,
+                  pyro_mgr_get_arm_bitmap(),
+                  pyro_mgr_get_cont_bitmap(),
+                  pyro_mgr_is_firing(),
+                  pyro_mgr_is_test_mode(),
+                  flight_fsm_sim_active());
+              flight_log_write_lr(&lr_entry, new_state);
             }
           }
         }
@@ -783,6 +828,11 @@ int main(void)
         s_baro_fed_ekf = true;
         s_last_baro_agl = altitude;
         s_baro_new = true;
+
+        /* ── Update baro snapshot for logging ── */
+        snap_baro.pressure_pa = (uint32_t)baro.pressure;
+        snap_baro.temp_c = baro.temperature / 100.0f;
+        snap_baro.updated = true;
       }
 
       /* ── GPS: non-blocking poll (10 Hz NAV-PVT) ── */
@@ -794,6 +844,18 @@ int main(void)
           casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
           casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
         }
+
+        /* ── Update GPS snapshot for logging ── */
+        snap_gps.lat_deg7 = gps.lat_deg7;
+        snap_gps.lon_deg7 = gps.lon_deg7;
+        snap_gps.alt_dm = (int16_t)(gps.alt_msl_m * 10.0f);
+        snap_gps.vel_d_cmps = (int16_t)(gps.vel_d_m_s * 100.0f);
+        snap_gps.sats = gps.num_sv;
+        snap_gps.fix = gps.fix_type;
+        snap_gps.pdop = (uint8_t)(gps.pDOP / 10);
+        snap_gps.fresh = true;
+      } else {
+        snap_gps.fresh = false;
       }
 
 #ifdef CDC_OUTPUT
@@ -896,6 +958,9 @@ int main(void)
       /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
       pyro_mgr_tick();
 
+      /* ── Process pending flight log flash writes ── */
+      flight_log_process();
+
       /* ── EKF diagnostic LEDs (override pyro LEDs after init) ── */
       if (cal_done) {
         /* LED1: EKF heartbeat — blinks at 1 Hz */
@@ -970,6 +1035,13 @@ int main(void)
 
       /* ── CAC confirm timeout check ── */
       cac_tick();
+
+      /* TODO: wire battery/power ADC when INA219 driver is ready */
+      /* snap_pwr.batt_mv = read_batt_mv(); */
+      /* snap_pwr.cont_raw[0..3] = read_continuity_adc(0..3); */
+
+      /* TODO: wire LoRa radio stats when SX1276 driver is ready */
+      /* snap_radio.tx_seq = radio_get_tx_seq(); */
     }
 #endif
   }

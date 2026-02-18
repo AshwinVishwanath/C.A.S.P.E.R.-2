@@ -41,4 +41,15 @@ uint32_t crc32_hw_compute(const uint8_t *data, uint32_t len);
 int crc32_hw_validate(const uint8_t *data, uint32_t payload_len,
                       uint32_t received_crc);
 
+/**
+ * Continue CRC-32 computation from a previous value.
+ * Used for streaming CRC over multiple data chunks.
+ *
+ * @param prev_crc  Previous CRC value (pass 0 to start fresh)
+ * @param data      Input bytes for this chunk
+ * @param len       Number of bytes
+ * @return          Updated CRC-32 value
+ */
+uint32_t crc32_hw_compute_continue(uint32_t prev_crc, const uint8_t *data, uint32_t len);
+
 #endif /* APP_TELEMETRY_CRC32_HW_H */
