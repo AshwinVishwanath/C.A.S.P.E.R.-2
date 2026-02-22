@@ -58,4 +58,16 @@ bool flight_fsm_sim_active(void);
  */
 void flight_fsm_sim_get_state(fc_telem_state_t *out);
 
+/**
+ * Enable/disable bench test mode.
+ * When on, flight_fsm_tick() holds state (no auto-transitions).
+ * State can only be changed via flight_fsm_force_state().
+ */
+void flight_fsm_set_bench_mode(bool on);
+
+/**
+ * Check if bench test mode is active.
+ */
+bool flight_fsm_bench_active(void);
+
 #endif /* APP_FSM_FLIGHT_FSM_H */

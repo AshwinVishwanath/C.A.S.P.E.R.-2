@@ -128,6 +128,22 @@ int mmc5983ma_read(mmc5983ma_t *dev);
 int mmc5983ma_read_temp(mmc5983ma_t *dev);
 
 /**
+ * @brief  Initialise MMC5983MA in single-shot mode (no continuous measurement).
+ *         Same as mmc5983ma_init() but skips CTRL2 continuous mode setup.
+ *         Use with mmc5983ma_trigger_oneshot() for on-demand measurements.
+ * @return true if product ID matches 0x30
+ */
+bool mmc5983ma_init_oneshot(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c);
+
+/**
+ * @brief  Trigger a single magnetic measurement, poll for completion,
+ *         then read the result into dev->raw_mag[] and dev->mag_ut[].
+ *         Blocking: up to ~5 ms at BW=800Hz.
+ * @return MMC5983MA_OK on success, negative on I2C error or timeout.
+ */
+int mmc5983ma_trigger_oneshot(mmc5983ma_t *dev);
+
+/**
  * @brief  Call from EXTI callback when I2C_3_INT_Pin fires.
  */
 void mmc5983ma_irq_handler(mmc5983ma_t *dev);

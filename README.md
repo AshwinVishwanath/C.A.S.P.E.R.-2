@@ -121,16 +121,55 @@ Develop an **ultra-compact, GPS-aided, Mach-capable tracking, telemetry, and con
 
 ---
 
-## 💻 Section 2 — Software  
-*(To be populated in future revisions.)*  
-Planned subsections will include:  
-- System Architecture  
-- Sensor Fusion and EKF Implementation  
-- State Machine and Flight Phases  
-- Telemetry Encoding & Ground Link Protocol  
-- Logging and Diagnostics  
-- Firmware Update Procedure  
-- Error Handling and Redundancy Management
+## Section 2 — Software
+
+### 2.1 Current Firmware State
+- **432 MHz SYSCLK** via HSI (64 MHz) + PLL (HSE crystal dead, bypassed)
+- **Build size:** ~87 KB (within 128 KB flash)
+- **Flash method:** USB DFU only (no ST-Link debugger on this board)
+
+### 2.2 Active Modules
+- **4-state vertical EKF** (altitude, velocity, accel bias, baro bias) with CMSIS-DSP matrix ops
+- **Mahony complementary filter** attitude estimator (RK4 quaternion propagation, 833 Hz)
+- **6 sensor drivers:**
+  - LSM6DSO32 IMU (SPI2) — +/-32g accel, +/-2000 dps gyro, 833 Hz ODR
+  - ADXL372 high-g accel (SPI3) — +/-200g, FIFO streaming
+  - MS5611 barometer (SPI4) — 24-bit pressure/temperature
+  - W25Q512JV flash (QUADSPI) — 64 MB NOR
+  - MAX-M10M GPS (I2C1) — 10 Hz, UBX-NAV-PVT
+  - MMC5983MA magnetometer (I2C3) — 18-bit, 100 Hz continuous
+- **FATFS filesystem** on QSPI flash, USB MSC for PC access
+- **msgset v5 binary telemetry** — COBS-framed, CRC-32, 10 Hz
+- **CAC protocol** (Command-Acknowledge-Confirm) for pyro safety
+- **12-state flight FSM** with simulated flight mode for bench testing
+- **4-channel pyro manager** with ADC continuity sensing
+- **Compile-time USB_MODE switching:** CDC telemetry (1), MSC storage (2), data collection (3)
+
+### 2.3 Build
+
+```bash
+cd Software/
+make clean && make -j8
+```
+
+Output: `build/Casper2.elf`, `build/Casper2.hex`, `build/Casper2.bin`
+
+### 2.4 Flash via DFU
+
+1. Hold BOOT0, press RESET, release BOOT0
+2. Flash `build/Casper2.bin` to `0x08000000` via STM32CubeProgrammer
+3. Press RESET to run
+
+### 2.5 Spec Documents
+
+| Document | Description |
+|----------|-------------|
+| [EKF_SPEC.md](EKF_SPEC.md) | Extended Kalman Filter design and tuning |
+| [SENSOR_SPEC.md](SENSOR_SPEC.md) | Sensor configuration, noise models, bus mapping |
+| [ORIENTATION_SPEC.md](ORIENTATION_SPEC.md) | Body frame, sensor-to-body mapping, NED conventions |
+| [HARDWARE_SPEC.md](HARDWARE_SPEC.md) | Pin assignments, clock tree, peripheral configuration |
+| [INTERFACE_SPEC.md](INTERFACE_SPEC.md) | Telemetry protocol, command format, packet layouts |
+| [PYRO_SPEC.md](PYRO_SPEC.md) | Pyro channel hardware, safety interlocks, fire sequences |
 
 ---
 

@@ -191,3 +191,46 @@ void adxl372_irq_handler(adxl372_t *dev)
 {
     dev->data_ready = true;
 }
+
+void adxl372_wakeup_init(adxl372_t *dev, float threshold_g, uint8_t time_act)
+{
+    /* Go to standby before reconfiguring */
+    adxl372_write_reg(dev, ADXL372_POWER_CTL, ADXL372_OP_STANDBY);
+    HAL_Delay(1);
+
+    /* Activity threshold: 11-bit, 100 mg/LSB
+     * thresh_raw = threshold_g / 0.1
+     * THRESH_ACT_H = bits [10:3], THRESH_ACT_L = bits [2:0] << 5 */
+    uint16_t thresh_raw = (uint16_t)(threshold_g / 0.1f);
+    adxl372_write_reg(dev, ADXL372_THRESH_ACT_H, (uint8_t)((thresh_raw >> 3) & 0xFF));
+    adxl372_write_reg(dev, ADXL372_THRESH_ACT_L, (uint8_t)((thresh_raw & 0x07) << 5));
+
+    /* Activity time: consecutive samples above threshold */
+    adxl372_write_reg(dev, ADXL372_TIME_ACT, time_act);
+
+    /* Activity enable, referenced mode */
+    adxl372_write_reg(dev, ADXL372_ACT_INACT_CTL, 0x01);
+
+    /* Map activity to INT1 (PD2) */
+    adxl372_write_reg(dev, ADXL372_INT1_MAP, ADXL372_INT1_ACT);
+
+    /* Enter wake-up mode */
+    adxl372_write_reg(dev, ADXL372_POWER_CTL, ADXL372_OP_WAKE_UP);
+}
+
+bool adxl372_activity_detected(adxl372_t *dev)
+{
+    uint8_t status = adxl372_read_reg(dev, ADXL372_STATUS_2);
+    return (status & ADXL372_STATUS2_ACT) != 0;
+}
+
+void adxl372_enter_measurement(adxl372_t *dev)
+{
+    /* Transition back to full bandwidth measurement mode.
+     * Same configuration as adxl372_init(): low noise, 200Hz BW, 400Hz ODR */
+    adxl372_write_reg(dev, ADXL372_MEASURE,
+                      ADXL372_LOW_NOISE_EN | ADXL372_BW_200HZ);
+    adxl372_write_reg(dev, ADXL372_TIMING, ADXL372_ODR_400HZ);
+    adxl372_write_reg(dev, ADXL372_POWER_CTL,
+                      ADXL372_HPF_DISABLE | ADXL372_OP_FULL_BW_MEASUREMENT);
+}

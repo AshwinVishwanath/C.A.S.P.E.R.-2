@@ -39,9 +39,11 @@
 #include "max_m10m.h"
 #include "mmc5983ma.h"
 #include "mag_cal.h"
-#include "casper_pyro.h"
 #ifdef MAG_VAL
 #include "mag_val.h"
+#endif
+#ifdef GYRO_TEMP_CAL
+#include "temp_cal.h"
 #endif
 /* ── MC Testing / Telemetry modules ── */
 #include "crc32_hw.h"
@@ -52,6 +54,7 @@
 #include "flight_fsm.h"
 #include "pyro_manager.h"
 #include "self_test.h"
+#include "flight_loop.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,24 +64,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
-/* ── Serial output toggles (uncomment to enable) ───────────────── */
-#ifdef CDC_OUTPUT
-  #define OUT_ATTITUDE     /* roll, pitch, yaw, heading_sigma       */
-  //#define OUT_EKF          /* altitude, velocity, biases             */
-  //#define OUT_GPS          /* lat, lon, alt, vel_d, fix, sats        */
-  // #define OUT_MAG       /* calibrated magnetometer field (uT)     */
-  // #define OUT_IMU_RAW   /* raw accel (g) + gyro (dps)             */
-  // #define OUT_BARO      /* barometric altitude AGL (m)            */
-  #define OUT_IMU_TEMP  /* IMU die temperature (°C)               */
-#endif
-
-/* ── Gyro temperature compensation (slope-only linear model) ── */
-#ifdef GYRO_TEMP_COMP
-#define GYRO_TC_T0       32.485f       /* Reference temperature (°C)    */
-#define GYRO_TC_SLOPE_X  9.3745e-04f   /* rad/s per °C, X axis          */
-#define GYRO_TC_SLOPE_Y  2.3098e-04f   /* rad/s per °C, Y axis          */
-#define GYRO_TC_SLOPE_Z  2.8388e-04f   /* rad/s per °C, Z axis          */
+#if defined(MAG_CAL) + defined(MAG_VAL) + defined(GYRO_TEMP_CAL) > 1
+#error "Only one calibration mode may be defined at a time"
 #endif
 
 /* USER CODE END PD */
@@ -118,9 +105,6 @@ casper_ekf_t ekf;
 casper_attitude_t att;
 max_m10m_t gps;
 mmc5983ma_t mag;
-static float mag_cal_ut[3];
-static bool mag_new = false;
-casper_pyro_t pyro;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -236,7 +220,11 @@ int main(void)
       HAL_Delay(200);
     }
   }
-  ms5611_set_oversampling(&baro, MS5611_OSR_1024);
+#ifdef GYRO_TEMP_CAL
+  ms5611_set_oversampling(&baro, MS5611_OSR_4096);
+#else
+  ms5611_set_oversampling(&baro, MS5611_OSR_2048);
+#endif
 
   // Explicitly close PC2 analog switch for SPI2 MISO (PC2_C)
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE);
@@ -266,6 +254,7 @@ int main(void)
   }
 
   // Enable EXTI15 interrupt for LSM6DSO32 INT2 (PC15)
+  __HAL_GPIO_EXTI_CLEAR_IT(SPI2_INT_Pin);  // Clear stale pending bit from sensor init
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
@@ -273,8 +262,8 @@ int main(void)
   {
     casper_att_config_t att_cfg = {
       .Kp_grav           = 1.0f,
-      .Kp_mag_pad        = 0.5f,
-      .Kp_mag_flight     = 0.3f,
+      .Kp_mag_pad        = 0.0f,
+      .Kp_mag_flight     = 0.0f,
       .Ki                = 0.05f,
       .gyro_lpf_cutoff_hz = 50.0f,
       .mag_update_hz     = 10.0f,
@@ -295,6 +284,12 @@ int main(void)
     }
   }
 
+  /* Put ADXL372 in wake-up mode for launch detection (Item 9) */
+  if (high_g.device_id == ADXL372_DEVID_VAL) {
+    adxl372_wakeup_init(&high_g, ADXL_LAUNCH_G, 6);
+  }
+
+#ifndef GYRO_TEMP_CAL
   // Init MAX-M10M GPS on I2C1
   if (!max_m10m_init(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
     // I2C NAK — GPS module not responding — blink LED3+LED4 warning, continue
@@ -304,6 +299,7 @@ int main(void)
       HAL_Delay(200);
     }
   }
+#endif
 
   // Reconfigure I2C_3_INT (PC8) from output to EXTI rising edge
   {
@@ -315,7 +311,11 @@ int main(void)
   }
 
   // Init MMC5983MA magnetometer on I2C3
+#ifdef GYRO_TEMP_CAL
+  mmc5983ma_init_oneshot(&mag, &hi2c3);
+#else
   mmc5983ma_init(&mag, &hi2c3);
+#endif
   if (mag.product_id != MMC5983MA_PROD_ID_VAL) {
     // Product ID mismatch — blink LED3+LED4 as warning but continue
     for (int i = 0; i < 6; i++) {
@@ -329,9 +329,6 @@ int main(void)
   // HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
   // HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
-  // Init pyro channels: ADC calibration, force all MOSFETs off
-  casper_pyro_init(&pyro, &hadc1, &hadc2, &hadc3);
-
   // Init MC telemetry + command subsystems
   crc32_hw_init();
   tlm_init();
@@ -339,7 +336,7 @@ int main(void)
   cac_init();
   cfg_manager_init();
   flight_fsm_init();
-  pyro_mgr_init();
+  pyro_mgr_init(&hadc1, &hadc2, &hadc3);
 
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
@@ -455,19 +452,6 @@ int main(void)
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
 #endif
 
-#ifdef CDC_OUTPUT
-  uint32_t last_output_tick = 0;
-  uint8_t cal_pct_printed = 0;  /* last 10% milestone printed (0-10) */
-#endif
-  uint32_t last_mag_tick = 0;
-  const float EKF_DT = 0.0012f;              /* 833 Hz (IMU data-ready driven) */
-  const float G_CONST = 9.80665f;
-  const float DEG2RAD = 0.0174532925f;        /* pi / 180 */
-  float baro_ref = 0.0f;
-  bool init_done = false;       /* static init (accel+mag averaging) complete */
-  bool cal_done = false;        /* 30s init period complete, filter running */
-  uint32_t loop_start_tick = 0; /* HAL_GetTick() at main loop entry */
-
 #ifdef MAG_CAL
   mag_cal_t mcal;
   if (!mag_cal_init(&mcal)) {
@@ -492,12 +476,25 @@ int main(void)
       HAL_Delay(100);
     }
   }
+#elif defined(GYRO_TEMP_CAL)
+  temp_cal_t tcal;
+  if (!temp_cal_init(&tcal)) {
+    /* File open failed — rapid blink all LEDs */
+    while (1) {
+      HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(100);
+    }
+  }
+#else
+  flight_loop_init();
 #endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  loop_start_tick = HAL_GetTick();
   while (1)
   {
     /* USER CODE END WHILE */
@@ -508,12 +505,13 @@ int main(void)
     {
       static uint32_t last_pyro_tick = 0;
       if (HAL_GetTick() - last_pyro_tick >= 100) {
-        casper_pyro_tick(&pyro);
+        pyro_mgr_tick();
         last_pyro_tick = HAL_GetTick();
       }
     }
 #elif defined(MAG_CAL)
     {
+      static uint32_t last_mag_tick = 0;
       uint32_t now = HAL_GetTick();
 
       /* 100 Hz mag read + calibration tick */
@@ -541,6 +539,7 @@ int main(void)
     }
 #elif defined(MAG_VAL)
     {
+      static uint32_t last_mag_tick = 0;
       uint32_t now = HAL_GetTick();
 
       /* 100 Hz mag read + validation tick */
@@ -566,293 +565,28 @@ int main(void)
         while (1) { HAL_Delay(1000); }
       }
     }
-#else
+#elif defined(GYRO_TEMP_CAL)
     {
+      static uint32_t last_tcal_tick = 0;
       uint32_t now = HAL_GetTick();
 
-      /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
-      if (now - last_mag_tick >= 10) {
-        mmc5983ma_read(&mag);
-        last_mag_tick = now;
-        /* Frame mapping (sensor → common frame) + hard/soft-iron cal */
-        float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
-        mag_cal_apply(mag_raw, mag_cal_ut);
-        mag_new = true;
+      /* 10 Hz: sample all sensors + log to CSV */
+      if (now - last_tcal_tick >= 100) {
+        temp_cal_tick(&tcal, &imu, &baro, &mag, now);
+        last_tcal_tick = now;
       }
 
-      /* ── 833 Hz: IMU read + attitude estimator (interrupt-driven) ── */
-      if (imu.data_ready) {
-        lsm6dso32_read(&imu);
-
-        /* ── Temp comp in sensor frame (slopes characterized per-sensor-axis) ── */
-        float gyro_sensor[3] = {
-          imu.gyro_dps[0] * DEG2RAD,
-          imu.gyro_dps[1] * DEG2RAD,
-          imu.gyro_dps[2] * DEG2RAD
-        };
-#ifdef GYRO_TEMP_COMP
-        {
-          float dT = imu.temp_c - GYRO_TC_T0;
-          gyro_sensor[0] -= GYRO_TC_SLOPE_X * dT;
-          gyro_sensor[1] -= GYRO_TC_SLOPE_Y * dT;
-          gyro_sensor[2] -= GYRO_TC_SLOPE_Z * dT;
-        }
-#endif
-
-        /* ── Remap sensor → vehicle body frame (Xv=Zs, Yv=Xs, Zv=Ys) ── */
-        float accel_ms2[3] = {
-          imu.accel_g[2] * G_CONST,    /* Vehicle X = Sensor Z */
-          imu.accel_g[0] * G_CONST,    /* Vehicle Y = Sensor X */
-          imu.accel_g[1] * G_CONST     /* Vehicle Z = Sensor Y */
-        };
-        float gyro_rads[3] = {
-          gyro_sensor[2],               /* Vehicle X = Sensor Z */
-          gyro_sensor[0],               /* Vehicle Y = Sensor X */
-          gyro_sensor[1]                /* Vehicle Z = Sensor Y */
-        };
-
-        const float *mag_ptr = mag_new ? mag_cal_ut : NULL;
-
-        if (!cal_done) {
-          /* ── Phase 1: 30s init (static init + complementary filter + gyro bias) ── */
-          if (!init_done) {
-            /* Sub-phase A: accumulate 500 mag samples for initial quaternion */
-            if (casper_att_static_init(&att, accel_ms2, mag_ptr)) {
-              init_done = true;
-              /* Turn off init progress LEDs */
-              HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
-              HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-              HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
-              HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
-            } else {
-              /* LED loading bar based on mag sample count */
-              uint32_t mc = att.mag_count;
-              if (mc >= 125)
-                HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
-              if (mc >= 250)
-                HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
-              if (mc >= 375)
-                HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
-              if (mc >= 500)
-                HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
-            }
-          } else {
-            /* Sub-phase B: full complementary filter (accel+gyro+mag) + gyro bias */
-            casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
-          }
-
-          /* Check 30s timer for transition */
-          if (init_done && (now - loop_start_tick) >= 30000) {
-            att.launched = true;
-            att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
-            cal_done = true;
-            /* Anchor baro to 0 AGL — baro has been ticking for 30s, reading is stable */
-            baro_ref = ms5611_get_altitude(&baro, 1013.25f);
-            HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
-          }
-        } else {
-          /* ── Phase 2: Running — gyro+mag filter (no gravity correction) ── */
-          casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
-
-          /* ── EKF predict at IMU rate (833 Hz) ── */
-          casper_ekf_predict(&ekf, &att, accel_ms2, EKF_DT);
-        }
-
-        mag_new = false;
+      /* Stopped: all LEDs solid, idle forever */
+      if (temp_cal_is_stopped(&tcal)) {
+        HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+        while (1) { HAL_Delay(1000); }
       }
-
-      /* ── Async baro: always tick (warms up during init), feed EKF after launch ── */
-      static bool s_baro_fed_ekf = false;
-      if (ms5611_tick(&baro) && cal_done) {
-        float altitude = ms5611_get_altitude(&baro, 1013.25f) - baro_ref;
-        casper_ekf_update_baro(&ekf, altitude);
-        s_baro_fed_ekf = true;
-      }
-
-      /* ── GPS: non-blocking poll (10 Hz NAV-PVT) ── */
-      static bool gps_new_fix = false;
-      gps_new_fix = false;
-      if (max_m10m_tick(&gps)) {
-        gps_new_fix = true;
-        if (cal_done && max_m10m_has_3d_fix(&gps)) {
-          casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
-          casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
-        }
-      }
-
-#ifdef CDC_OUTPUT
-      /* ── 50 Hz: USB serial output ── */
-      if (now - last_output_tick >= 20) {
-        if (!cal_done) {
-          if (!init_done) {
-            /* Print static init progress */
-            uint8_t pct = (uint8_t)(att.mag_count * 100 / 500);
-            if (pct > cal_pct_printed * 10) {
-              cal_pct_printed = pct / 10;
-              char cal_buf[40];
-              int cal_len = snprintf(cal_buf, sizeof(cal_buf),
-                  ">init %d%%\r\n", pct);
-              CDC_Transmit_FS((uint8_t *)cal_buf, cal_len);
-            }
-          } else {
-            /* Pad: complementary filter converging */
-            char buf[128];
-            float euler[3];
-            casper_quat_to_euler(att.q, euler);
-            uint32_t remaining = 0;
-            if ((now - loop_start_tick) < 30000)
-              remaining = (30000 - (now - loop_start_tick)) / 1000;
-            int len = snprintf(buf, sizeof(buf),
-                ">pad roll:%.1f,pitch:%.1f,yaw:%.1f,t:%lu\r\n",
-                euler[0], euler[1], euler[2], remaining);
-            CDC_Transmit_FS((uint8_t *)buf, len);
-          }
-        } else {
-          /* Running: toggle-gated telemetry output */
-          char buf[256];
-          int pos = 0;
-          bool sep = false;     /* comma separator between fields */
-          pos += snprintf(buf + pos, sizeof(buf) - pos, ">");
-
-#ifdef OUT_ATTITUDE
-          {
-            float euler[3];
-            casper_quat_to_euler(att.q, euler);
-            if (sep) buf[pos++] = ',';
-            sep = true;
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "roll:%.1f,pitch:%.1f,yaw:%.1f,hdg_sig:%.4f",
-                euler[0], euler[1], euler[2], att.heading_sigma);
-          }
-#endif
-#ifdef OUT_EKF
-          if (sep) buf[pos++] = ',';
-          sep = true;
-          pos += snprintf(buf + pos, sizeof(buf) - pos,
-              "ekf:%.2f,%.2f,%.3f,%.3f",
-              ekf.x[0], ekf.x[1], ekf.x[2], ekf.x[3]);
-#endif
-#ifdef OUT_GPS
-          if (sep) buf[pos++] = ',';
-          sep = true;
-          pos += snprintf(buf + pos, sizeof(buf) - pos,
-              "gps:%.6f,%.6f,%.1f,%.2f,%u,%u",
-              gps.lat_deg, gps.lon_deg, gps.alt_msl_m,
-              gps.vel_d_m_s, gps.fix_type, gps.num_sv);
-#endif
-#ifdef OUT_MAG
-          if (sep) buf[pos++] = ',';
-          sep = true;
-          pos += snprintf(buf + pos, sizeof(buf) - pos,
-              "mag:%.2f,%.2f,%.2f",
-              mag_cal_ut[0], mag_cal_ut[1], mag_cal_ut[2]);
-#endif
-#ifdef OUT_IMU_RAW
-          if (sep) buf[pos++] = ',';
-          sep = true;
-          pos += snprintf(buf + pos, sizeof(buf) - pos,
-              "imu:%.3f,%.3f,%.3f,%.1f,%.1f,%.1f",
-              imu.accel_g[0], imu.accel_g[1], imu.accel_g[2],
-              imu.gyro_dps[0], imu.gyro_dps[1], imu.gyro_dps[2]);
-#endif
-#ifdef OUT_BARO
-          if (sep) buf[pos++] = ',';
-          sep = true;
-          pos += snprintf(buf + pos, sizeof(buf) - pos,
-              "bar:%.2f",
-              ms5611_get_altitude(&baro, 1013.25f) - baro_ref);
-#endif
-#ifdef OUT_IMU_TEMP
-          if (sep) buf[pos++] = ',';
-          sep = true;
-          pos += snprintf(buf + pos, sizeof(buf) - pos,
-              "imu_temp:%.2f", imu.temp_c);
-#endif
-
-          pos += snprintf(buf + pos, sizeof(buf) - pos, "\r\n");
-          CDC_Transmit_FS((uint8_t *)buf, pos);
-          HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
-        }
-        last_output_tick = now;
-      }
-#endif /* CDC_OUTPUT */
-
-      /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
-      pyro_mgr_tick();
-
-      /* ── EKF diagnostic LEDs (override pyro LEDs after init) ── */
-      if (cal_done) {
-        /* LED1: EKF heartbeat — blinks at 1 Hz */
-        static uint32_t ekf_led_tick = 0;
-        if (now - ekf_led_tick >= 500) {
-          HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
-          ekf_led_tick = now;
-        }
-        /* LED4: solid ON once baro has fed EKF at least once */
-        if (s_baro_fed_ekf) {
-          HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
-        }
-      }
-
-      /* ── MC Telemetry: populate state + 10 Hz binary COBS packets ── */
-      {
-        /* Build telemetry state from current sensor values */
-        fc_telem_state_t tstate;
-        tstate.alt_m        = ekf.x[0];
-        tstate.vel_mps      = ekf.x[1];
-        tstate.quat[0]      = att.q[0];
-        tstate.quat[1]      = att.q[1];
-        tstate.quat[2]      = att.q[2];
-        tstate.quat[3]      = att.q[3];
-        tstate.batt_v       = 7.4f;  /* TODO: ADC battery sensing */
-        tstate.flight_time_s = flight_fsm_get_time_s();
-
-        /* Build pyro state */
-        pyro_state_t pstate = {0};
-        uint8_t arm_bm = pyro_mgr_get_arm_bitmap();
-        pstate.armed[0] = (arm_bm & 0x01) != 0;
-        pstate.armed[1] = (arm_bm & 0x02) != 0;
-        pstate.armed[2] = (arm_bm & 0x04) != 0;
-        pstate.armed[3] = (arm_bm & 0x08) != 0;
-        pstate.continuity[0] = pyro.continuity[0];
-        pstate.continuity[1] = pyro.continuity[1];
-        pstate.continuity[2] = pyro.continuity[2];
-        pstate.continuity[3] = pyro.continuity[3];
-        pstate.fired = pyro_mgr_is_firing();
-
-        /* If sim flight active, override alt/vel/quat with sim values */
-        if (flight_fsm_sim_active()) {
-          flight_fsm_sim_get_state(&tstate);
-          tstate.batt_v = 7.4f;
-        }
-
-        fsm_state_t fsm = flight_fsm_tick(&tstate);
-        tlm_tick(&tstate, &pstate, fsm);
-      }
-
-      /* ── GPS telemetry on new fix ── */
-      if (gps_new_fix) {
-        fc_gps_state_t gstate;
-        /* TODO: compute delta lat/lon from pad position in mm */
-        gstate.dlat_mm   = 0;
-        gstate.dlon_mm   = 0;
-        gstate.alt_msl_m = gps.alt_msl_m;
-        gstate.fix_type  = gps.fix_type;
-        gstate.sat_count = gps.num_sv;
-        tlm_send_gps(&gstate);
-      }
-
-      /* ── Process incoming CDC commands ── */
-      if (cdc_ring_available() > 0) {
-        cmd_router_process();
-      }
-
-      /* ── CAC confirm timeout check ── */
-      cac_tick();
     }
+#else
+    flight_loop_tick();
 #endif
   }
   /* USER CODE END 3 */

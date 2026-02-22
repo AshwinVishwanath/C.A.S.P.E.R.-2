@@ -35,6 +35,10 @@
 #define ADXL372_OFFSET_X         0x20u
 #define ADXL372_OFFSET_Y         0x21u
 #define ADXL372_OFFSET_Z         0x22u
+#define ADXL372_THRESH_ACT_H     0x23u   /* Activity threshold high byte   */
+#define ADXL372_THRESH_ACT_L     0x24u   /* Activity threshold low byte    */
+#define ADXL372_TIME_ACT         0x25u   /* Activity time (samples)        */
+#define ADXL372_ACT_INACT_CTL    0x27u   /* Activity/inactivity control    */
 #define ADXL372_HPF              0x38u
 #define ADXL372_FIFO_SAMPLES     0x39u
 #define ADXL372_FIFO_CTL         0x3Au
@@ -105,6 +109,17 @@
 #define ADXL372_STATUS_FIFO_FULL 0x04u
 #define ADXL372_STATUS_FIFO_OVR  0x08u
 
+/* STATUS_2 flags */
+#define ADXL372_STATUS2_ACT      0x10u   /* Bit 4: activity detected */
+
+/* INT1_MAP activity bit */
+#define ADXL372_INT1_ACT         0x10u   /* Bit 4: map activity to INT1 */
+
+/* Wake-up mode launch threshold (build-time override via -DADXL_LAUNCH_G=X) */
+#ifndef ADXL_LAUNCH_G
+#define ADXL_LAUNCH_G            3.0f
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  Driver struct                                                      */
 /* ------------------------------------------------------------------ */
@@ -148,5 +163,18 @@ uint8_t adxl372_read_reg_ext(adxl372_t *dev, uint8_t reg);
 
 /* Call from HAL_GPIO_EXTI_Callback when INT pin fires (future use). */
 void adxl372_irq_handler(adxl372_t *dev);
+
+/* Configure ADXL372 for wake-up mode with activity detection.
+ * threshold_g: acceleration threshold in g (e.g. 3.0)
+ * time_act: number of consecutive samples above threshold (e.g. 6 → ~115ms @ 52Hz) */
+void adxl372_wakeup_init(adxl372_t *dev, float threshold_g, uint8_t time_act);
+
+/* Check if activity interrupt is asserted (reads STATUS_2 register).
+ * Returns true if sustained acceleration above threshold detected. */
+bool adxl372_activity_detected(adxl372_t *dev);
+
+/* Transition from wake-up mode back to full measurement mode.
+ * Call after launch detection to enable high-rate data logging. */
+void adxl372_enter_measurement(adxl372_t *dev);
 
 #endif /* ADXL372_H */

@@ -30,25 +30,25 @@ The FC uses the **NED** (North-East-Down) frame as its inertial reference:
 
 ### 1.2 Vehicle Body Frame
 
-The vehicle body frame is fixed to the rocket airframe. **+Z is the thrust/nose axis:**
+The vehicle body frame is fixed to the rocket airframe. **+Y is the thrust/nose axis:**
 
 ```
-         +Z (nose, thrust axis, UP on pad)
+         +Y (nose, thrust axis, UP on pad)
          ^
          |
          |
-         +-------> +Y (starboard)
+         +-------> +X (starboard)
         /
        v
-      +X (completes right-hand frame)
+      +Z (toward operator, completes RH frame)
 ```
 
-- **+Z** = Nose of the rocket (thrust axis, pointing UP when on the pad)
-- **+Y** = Starboard (right side when looking from behind the rocket toward the nose)
-- **+X** = Completes the right-hand coordinate system (perpendicular to Z and Y)
-- On the pad: body +Z points up (against gravity), body -Z points toward ground
+- **+X** = Starboard (right side when looking from behind the rocket toward the nose)
+- **+Y** = Nose of the rocket (thrust axis, pointing UP when on the pad)
+- **+Z** = Toward operator (completes the right-hand coordinate system)
+- On the pad: body +Y points up (against gravity), body -Y points toward ground
 
-**This is NOT the standard aerospace body frame** (which has X = nose). The Z-nose convention arises naturally from the sensor mounting and the axis remapping described in Section 2.
+The body frame is identical to the IMU sensor frame (identity mapping, no axis permutation).
 
 ### 1.3 LSM6DSO32 IMU Sensor Frame (Physical Mounting)
 
@@ -56,7 +56,7 @@ The LSM6DSO32 is mounted on the PCB with:
 
 - **Sensor +Y** = toward nose (UP on pad)
 - **Sensor +X** = starboard
-- **Sensor +Z** = right-hand completion (forward face of rocket)
+- **Sensor +Z** = toward operator (forward face of rocket)
 
 Raw driver outputs:
 - `imu.accel_g[0..2]` = Sensor X, Y, Z acceleration in g
@@ -80,39 +80,39 @@ This is why the firmware negates all three mag axes before use (Section 2.2).
 
 ---
 
-## 2. Sensor-to-Body Frame Remapping
+## 2. Sensor-to-Body Frame Mapping
 
-### 2.1 IMU (LSM6DSO32) Remapping
+### 2.1 IMU (LSM6DSO32) Mapping
 
-The firmware remaps from the sensor frame to the vehicle body frame:
+The sensor frame and vehicle body frame are identical — no axis permutation is needed:
 
 ```
-Vehicle Body X  =  Sensor Z
-Vehicle Body Y  =  Sensor X  (= starboard)
-Vehicle Body Z  =  Sensor Y  (= nose, up on pad)
+Vehicle Body X  =  Sensor X  (starboard)
+Vehicle Body Y  =  Sensor Y  (nose, up on pad)
+Vehicle Body Z  =  Sensor Z  (toward operator)
 ```
 
-In code (`main.c` lines 602-612):
+In code (`flight_loop.c`):
 
 ```c
 /* Accel: sensor g → body m/s² */
 float accel_ms2[3] = {
-    imu.accel_g[2] * 9.80665,   /* Body X = Sensor Z */
-    imu.accel_g[0] * 9.80665,   /* Body Y = Sensor X (starboard) */
-    imu.accel_g[1] * 9.80665    /* Body Z = Sensor Y (nose, up) */
+    imu.accel_g[0] * 9.80665,   /* Body X = Sensor X (starboard)       */
+    imu.accel_g[1] * 9.80665,   /* Body Y = Sensor Y (nose, up on pad) */
+    imu.accel_g[2] * 9.80665    /* Body Z = Sensor Z (toward operator) */
 };
 
 /* Gyro: sensor deg/s → body rad/s */
 float gyro_rads[3] = {
-    gyro_sensor[2],              /* Body X = Sensor Z */
-    gyro_sensor[0],              /* Body Y = Sensor X (starboard) */
-    gyro_sensor[1]               /* Body Z = Sensor Y (nose, up) */
+    gyro_sensor[0],              /* Body X = Sensor X (starboard)       */
+    gyro_sensor[1],              /* Body Y = Sensor Y (nose)            */
+    gyro_sensor[2]               /* Body Z = Sensor Z (toward operator) */
 };
 ```
 
-This is a cyclic permutation: `body[i] = sensor[(i+2) % 3]`, i.e. `(Xs, Ys, Zs) → (Zs, Xs, Ys)`.
+This is an identity mapping (no axis permutation needed).
 
-### 2.2 Magnetometer (MMC5983MA) Remapping
+### 2.2 Magnetometer (MMC5983MA) Mapping
 
 The magnetometer axes are opposite to the IMU, so the firmware negates all three axes to align them with the IMU sensor frame before applying calibration:
 
@@ -127,21 +127,15 @@ After negation:
 - `mag_raw[1]` = `-Mag_Y` = nose/up (matches IMU sensor Y)
 - `mag_raw[2]` = `-Mag_Z`
 
-The `mag_cal_apply()` function applies hard-iron offset subtraction and soft-iron matrix correction. The calibrated output `mag_cal_ut[3]` is in the IMU sensor frame (not the vehicle body frame — the body-frame remap is NOT applied to mag data before it enters the attitude estimator).
-
-> **Note:** The attitude estimator receives accel/gyro in the **vehicle body frame** but
-> magnetometer data in the **IMU sensor frame** (after negation + cal, but before the
-> cyclic remap). The static initialization computes the initial quaternion and mag
-> reference vector from this mixed-frame input, so the frame relationship is baked into
-> `m_ref_ned` and the cross-product corrections work correctly.
+The `mag_cal_apply()` function applies hard-iron offset subtraction and soft-iron matrix correction. The magnetometer data (after negation + calibration) is in the sensor/body frame (they are identical). No separate remap step is needed.
 
 ### 2.3 What the MC Sees
 
 The MC never sees raw sensor data — it only sees the quaternion. The key facts for MC:
 
 - The quaternion rotates from **vehicle body frame** to **NED**
-- Vehicle body **+Z = nose** (thrust axis, UP on the pad)
-- Vehicle body **+Y = starboard**
+- Vehicle body **+Y = nose** (thrust axis, UP on the pad)
+- Vehicle body **+X = starboard**
 - If the MC's 3D model has a different nose axis, apply a fixed rotation to the model mesh
 
 ---
@@ -185,19 +179,19 @@ Where `w = q[0], x = q[1], y = q[2], z = q[3]`.
 
 When the rocket is sitting vertical on the pad with the nose pointing up:
 
-- Body +Z (nose) points UP = NED **-Z** direction (NED Z is down, up = -Z)
-- Body -Z (tail) points DOWN = NED +Z direction
-- Gravity in body frame = `[0, 0, -g]` (pulls body -Z direction)
+- Body +Y (nose) points UP = NED **-Z** direction (NED Z is down, up = -Z)
+- Body -Y (tail) points DOWN = NED +Z direction
+- Accelerometer reads reaction to gravity in body frame = `[0, +g, 0]` (positive along nose/up direction)
 
-The **pad quaternion is NOT identity**. It must encode the rotation from a frame where +Z = nose (up) to NED where +Z = down. This is approximately a **180° rotation about a horizontal axis** (plus yaw for heading).
+The **pad quaternion is NOT identity**. It must encode the rotation from a frame where +Y = nose (up) to NED where +Z = down. This is approximately a **-90° rotation about the starboard axis (body X)** (plus yaw for heading).
 
 The firmware computes the exact pad quaternion from:
 - **Pitch and roll** from the averaged gravity vector (accelerometer)
 - **Yaw/heading** from the tilt-compensated magnetometer
 
 On a perfectly vertical rocket pointing North:
-- The body Z-axis (nose) must map to NED -Z (up)
-- The body Y-axis (starboard) must map to NED +Y (east) if heading is North
+- The body Y-axis (nose) must map to NED -Z (up)
+- The body X-axis (starboard) must map to NED +Y (east) if heading is North
 
 ### 3.4 Hamilton Product
 
@@ -424,37 +418,37 @@ The result is a unit quaternion `[w, x, y, z]` representing the **body-to-NED** 
 
 ### 6.5 Extract Euler Angles (ZYX Convention)
 
-These are the ZYX intrinsic Euler angles as computed by the firmware. Because the body frame has **Z = nose** (not the aerospace-standard X = nose), the physical meaning of each angle differs from standard aerospace conventions.
+These are the ZYX intrinsic Euler angles as computed by the firmware. Because the body frame has **Y = nose** and **X = starboard**, the physical meaning of each angle is described below.
 
 ```javascript
-// "Roll" — rotation about body X
+// "Roll" — rotation about body X (starboard)
 const sinr = 2.0 * (w*x + y*z);
 const cosr = 1.0 - 2.0 * (x*x + y*y);
 const euler_x_deg = Math.atan2(sinr, cosr) * (180 / Math.PI);
 
-// "Pitch" — rotation about body Y (starboard axis = nose up/down)
+// "Pitch" — rotation about body Y (nose/thrust axis)
 let sinp = 2.0 * (w*y - z*x);
 sinp = Math.max(-1, Math.min(1, sinp));
 const euler_y_deg = Math.asin(sinp) * (180 / Math.PI);
 
-// "Yaw" — rotation about body Z (nose/thrust axis = spin/roll)
+// "Yaw" — rotation about body Z (toward operator)
 const siny = 2.0 * (w*z + x*y);
 const cosy = 1.0 - 2.0 * (y*y + z*z);
 const euler_z_deg = Math.atan2(siny, cosy) * (180 / Math.PI);
 ```
 
-**Physical meaning of each angle for a rocket (Z = nose):**
+**Physical meaning of each angle for a rocket (Y = nose, X = starboard):**
 
 | Firmware Name | Body Axis | Physical Meaning (Rocket) | On Pad (vertical, heading North) |
 |---------------|-----------|--------------------------|----------------------------------|
-| euler_x | X | Tilt sideways (lean left/right) | ~0° |
-| euler_y | Y (starboard) | Nose up/down (pitch) | Large value (nose = up) |
-| euler_z | Z (nose) | Spin about thrust axis (aerodynamic roll) | ~heading |
+| euler_x | X (starboard) | Nose up/down tilt (aerospace pitch) | ~±90° (gimbal lock) |
+| euler_y | Y (nose) | Spin about thrust axis (aerospace roll) | ~0° |
+| euler_z | Z (toward operator) | Heading/yaw | ~heading |
 
 > **Mapping to standard aerospace terms:**
-> - **Aerospace pitch** (nose above/below horizon) ≈ `euler_y`
-> - **Aerospace roll** (spin about longitudinal/nose axis) ≈ `euler_z`
-> - **Aerospace yaw** (heading change) ≈ `euler_x` (but coupled with tilt)
+> - **Aerospace pitch** (nose above/below horizon) ≈ `euler_x`
+> - **Aerospace roll** (spin about longitudinal/nose axis) ≈ `euler_y`
+> - **Aerospace yaw** (heading change) ≈ `euler_z`
 >
 > For a 3D visualization, **use the quaternion directly** (Section 7) rather than
 > Euler angles. The Euler decomposition is only useful for simple numeric displays.
@@ -505,10 +499,10 @@ Three.js Z =  NED X (North)
    );
    ```
 
-3. **Model mesh alignment:** Your rocket 3D model's mesh must have its nose pointing along **+Z in the body frame** (since body +Z = nose). If your model was built with +Y as nose (common in 3D modeling tools), pre-rotate the mesh geometry by -90° about X to align it before applying the telemetry quaternion.
+3. **Model mesh alignment:** Your rocket 3D model's mesh must have its nose pointing along **+Y in the body frame** (since body +Y = nose). If your model was built with +Z as nose (common in some 3D modeling tools), pre-rotate the mesh geometry by +90° about X to align it before applying the telemetry quaternion.
 
 4. **Verify with pad condition:**
-   - On the pad, the rocket nose (+Z body) points UP in the scene
+   - On the pad, the rocket nose (+Y body) points UP in the scene
    - Heading should match: if heading is North, the nose-up rocket should face the Three.js +Z direction (which = NED North)
 
 ### 7.3 2D Gauges
@@ -517,12 +511,12 @@ For simple 2D attitude displays:
 
 | Gauge | Value | Range | On Pad (vertical) |
 |-------|-------|-------|-----|
-| Pitch (nose up/down) | `euler_y` | -90° to +90° | Large (nose straight up) |
-| Roll (spin about nose) | `euler_z` | -180° to +180° | ~heading |
-| Lateral tilt | `euler_x` | -180° to +180° | ~0° |
+| Pitch (nose up/down) | `euler_x` | -90° to +90° | ~±90° (gimbal lock) |
+| Roll (spin about nose) | `euler_y` | -180° to +180° | ~0° |
+| Heading/yaw | `euler_z` | -180° to +180° | ~heading |
 
 > **Gimbal lock warning:** When the rocket is vertical (nose straight up or down),
-> `euler_y ≈ ±90°` and `euler_x` / `euler_z` become degenerate. This is inherent
+> `euler_x ≈ ±90°` and `euler_y` / `euler_z` become degenerate. This is inherent
 > to Euler angles — the quaternion itself is always well-defined.
 > Use the quaternion for 3D display; use Euler angles only for numeric readouts.
 
@@ -544,7 +538,7 @@ Components in the range (0.500, 0.707] will be **clipped to 0.4998**. In practic
 
 ### 8.3 Gimbal Lock
 
-The Euler angle extraction has a singularity when `euler_y = ±90°` (which is the **pad condition** for a vertical rocket). At exactly ±90°, `euler_x` and `euler_z` become degenerate. The firmware clamps `sin(pitch)` to [-1, 1] to prevent NaN. **The quaternion itself has no singularity** — only the Euler angle representation does. For 3D visualization, always use the quaternion directly (Section 7.2), not Euler angles.
+The Euler angle extraction has a singularity when `euler_x = ±90°` (which is the **pad condition** for a vertical rocket). At exactly ±90°, `euler_y` and `euler_z` become degenerate. The firmware clamps `sin(pitch)` to [-1, 1] to prevent NaN. **The quaternion itself has no singularity** — only the Euler angle representation does. For 3D visualization, always use the quaternion directly (Section 7.2), not Euler angles.
 
 ---
 
@@ -565,10 +559,10 @@ Using the INTERFACE_SPEC values will produce **incorrect quaternion decoding** a
 
 **FC sends:** Body-to-NED quaternion `[w, x, y, z]`, Hamilton, scalar-first.
 
-**Body frame:** +Z = nose (up on pad), +Y = starboard, +X = right-hand completion.
+**Body frame:** +Y = nose (up on pad), +X = starboard, +Z = toward operator.
 
 **Scale:** 4096.0 (NOT 2895.27).
 
 **Byte order:** Little-endian (byte 0 = LSB = C_lo, byte 4 = MSB = drop index).
 
-**On the pad:** Quaternion is NOT identity. Nose (body +Z) maps to NED -Z (up). Euler `euler_y ≈ ±90°` (gimbal lock — use quaternion for visualization, not Euler).
+**On the pad:** Quaternion is NOT identity. Nose (body +Y) maps to NED -Z (up). Euler `euler_x ≈ ±90°` (gimbal lock — use quaternion for visualization, not Euler).

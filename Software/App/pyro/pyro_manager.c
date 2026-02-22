@@ -4,15 +4,16 @@
 #include "tlm_types.h"
 #include "stm32h7xx_hal.h"
 
-/* Reference to the global casper_pyro_t declared in main.c */
-extern casper_pyro_t pyro;
-
 /* ── Private state ──────────────────────────────────────────────── */
+static casper_pyro_t pyro;
 static bool s_armed[PYRO_MGR_NUM_CHANNELS];
 static bool s_test_mode;
 
-void pyro_mgr_init(void)
+void pyro_mgr_init(ADC_HandleTypeDef *hadc1,
+                    ADC_HandleTypeDef *hadc2,
+                    ADC_HandleTypeDef *hadc3)
 {
+    casper_pyro_init(&pyro, hadc1, hadc2, hadc3);
     for (int i = 0; i < PYRO_MGR_NUM_CHANNELS; i++) {
         s_armed[i] = false;
     }

@@ -261,10 +261,15 @@ Byte 4:  [C_lo:8]
 
 - `drop_idx` (2 bits): Index of dropped (largest) component. 0=w, 1=x, 2=y, 3=z
 - Components A, B, C are 12-bit signed integers (two's complement)
-- Scale factor: `QUAT_SCALE = 2047.0 × √2 ≈ 2895.27`
+- Scale factor: `QUAT_SCALE = 4096.0` (see ORIENTATION_SPEC.md §5 for ground truth)
 - Decode: `component = raw_12bit / QUAT_SCALE`
 - Reconstruct dropped: `dropped = √(1 − A² − B² − C²)` (always positive)
 - Result: unit quaternion `[w, x, y, z]`
+
+> **ERRATA:** The scale factor was previously documented as `2047.0 × √2 ≈ 2895.27` and byte
+> order as MSB-first. The actual firmware uses **4096.0** scale and **LSB-first** byte order.
+> See ORIENTATION_SPEC.md §5 for the authoritative encoding specification.
+> The body frame convention is **+Y = nose** (not +Z). See ORIENTATION_SPEC.md §1.2.
 
 ### 5.6 Flight State Machine (FSM) States
 

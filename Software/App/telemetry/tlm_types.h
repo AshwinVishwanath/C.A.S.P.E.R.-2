@@ -111,6 +111,11 @@ typedef struct {
     float quat[4];
     float batt_v;
     float flight_time_s;
+    /* v2.1 additions for FSM launch/landing detection */
+    float accel_mag_g;      /* |accel| from LSM6DSO32, in g          */
+    float baro_alt_m;       /* barometric altitude AGL (for landing) */
+    bool  adxl_activity;    /* ADXL372 activity INT asserted         */
+    bool  adxl_available;   /* ADXL372 passed init (degraded mode)   */
 } fc_telem_state_t;
 
 typedef struct {
