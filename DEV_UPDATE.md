@@ -2,7 +2,7 @@
 
 **Date:** February 2026
 **Board:** C.A.S.P.E.R.-2 Rev 1 (STM32H750VBT6, LQFP100)
-**Firmware:** CubeMX HAL + USB CDC/MSC, 432 MHz SYSCLK (HSI+PLL), 4 sensors + EKF navigation
+**Firmware:** CubeMX HAL + USB CDC/MSC, 432 MHz SYSCLK (HSI+PLL), 6 sensors + EKF + attitude + telemetry (~87 KB)
 
 ---
 
@@ -505,6 +505,123 @@ Every state transition emits an FC_EVT_STATE event.
 
 ---
 
+## Rev 5 — Navigation Stack Rewrite & Sensor Expansion
+
+### Casper Attitude Estimator (`casper_attitude.c/h`)
+
+Replaced the standalone gyro integrator as the primary attitude module. Implements a Mahony complementary filter with:
+- Gravity vector correction and magnetometer correction on pad (Kp_mag currently set to 0.0 pending field calibration)
+- RK4 quaternion propagation at 833 Hz
+- Static initialization from accelerometer + magnetometer readings
+- Launch detection at 3g threshold, bias freeze at launch
+- Ignition gating for motor burn phases (suppresses accel corrections during thrust)
+
+### MMC5983MA Magnetometer (I2C3)
+
+Brought up the Memsic MMC5983MA 3-axis magnetometer on I2C3:
+- Range: +/-8 Gauss, 18-bit resolution, 100 Hz continuous mode
+- Auto SET/RESET for offset cancellation, BW = 800 Hz
+- DRDY interrupt on PC8 (EXTI9_5), I2C address 0x30, Product ID 0x30
+- Conversion: `field_G = (raw_18bit - 131072) / 16384.0`
+- PC8 GPIO reconfigured from output to EXTI rising edge in USER CODE BEGIN 2
+- Hard/soft-iron calibration via `mag_cal.c/h`, validation via `mag_val.c/h`
+
+### MAX-M10M GPS (I2C1)
+
+Brought up the U-blox MAX-M10M GPS receiver on I2C1:
+- 10 Hz GPS-only mode, UBX-NAV-PVT protocol, I2C DDC address 0x42
+- NRST_GPS on PE15 (active-low reset), I2C1_INT on PE0 (not enabled yet)
+- Non-blocking `max_m10m_tick()` architecture with 25 ms poll interval
+- EKF GPS update stubs (`casper_ekf_update_gps_alt/vel`) called on 3D fix
+
+### EKF Clean-Sheet Rewrite (`casper_ekf.c/h`)
+
+Complete rewrite of the Extended Kalman Filter with the following changes:
+- Generic Joseph-form scalar update with explicit H vector and chi-squared innovation gate
+- 416 Hz predict rate (decimated from 833 Hz IMU ODR with trapezoidal averaging)
+- ZUPT (zero-velocity update) pseudo-measurement on PAD and LANDED states
+- Step-inflated R post-gate (not exponential decay) for transonic baro rejection
+- Bias reset + covariance P inflation at ungate transition
+- Temperature floor clamp in Mach gate (speed-of-sound calculation)
+- No baro-derived velocity — baro updates altitude channel only
+- R_BARO = 0.5, ACCEL_BI_SIGMA from Allan variance characterization
+
+### Identity Sensor-to-Body Mapping
+
+Changed from cyclic permutation (body[X,Y,Z] = sensor[Z,X,Y]) to identity mapping (body = sensor). Body frame convention:
+- Body X = starboard
+- Body Y = nose (forward)
+- Body Z = toward operator (up when vertical on pad)
+
+### Flight Loop Refactor (`flight_loop.c/h`)
+
+Moved the main flight loop out of `main.c` into `App/flight/flight_loop.c`:
+- `TEST_MODE=1`: COBS binary telemetry (production path)
+- `TEST_MODE=2`: ASCII serial plotter output for bench tuning (alt, vel, roll, pitch, yaw, ned_z, zupt flag)
+- Bench command parser: text commands over CDC for FSM state forcing, calibration skip, and debug overrides
+- `app_globals.h` provides shared state between flight loop and telemetry modules
+
+### File Reorganization
+
+Moved all application code out of CubeMX-managed `Core/` into `App/` subdirectories:
+- Drivers: `Core/Src/*.c` → `App/drivers/*.c` (all 6 sensor drivers)
+- Navigation: `Core/Src/casper_*.c` → `App/nav/` (EKF, attitude, quaternion, gyro integrator)
+- Calibration: `Core/Src/mag_*.c` → `App/cal/` (mag_cal, mag_val, temp_cal)
+- Pyro: existing `App/pyro/` (casper_pyro moved here alongside pyro_manager)
+- This keeps `Core/` clean for CubeMX regeneration without merge conflicts
+
+### Gyro Temperature Compensation
+
+Optional slope-only linear temperature model for gyro bias:
+- Enabled via `GYRO_TEMP_COMP` compile-time define
+- Coefficients in `temp_cal_coeffs.h` (per-axis slope in dps/degC)
+- Gyro only — no accelerometer temperature compensation
+- Implementation in `temp_cal.c/h`
+
+### ADXL372 Wake-Up Mode
+
+Low-power activity detection in PAD state:
+- ADXL372 configured for wake-up mode during PAD (minimal power draw)
+- Transitions to full measurement mode on launch (FSM transition to BOOST)
+- Provides high-g data during boost/coast where LSM6DSO32 saturates
+
+### Magnetometer Corrections Status
+
+Magnetometer corrections currently disabled in the attitude estimator:
+- `Kp_mag_pad = 0.0`, `Kp_mag_flight = 0.0`
+- Heading initialized from static magnetometer averaging during pad alignment
+- Pending proper hard/soft-iron field calibration before enabling corrections in flight
+
+### EKF Diagnostic Output
+
+When built with `TEST_MODE=2`, the ASCII serial plotter output includes additional channels:
+- `ned_z`: NED down-axis acceleration (for verifying body-to-NED rotation)
+- `zupt`: ZUPT active flag (1 when zero-velocity pseudo-measurement applied)
+- Useful for tuning EKF noise parameters and verifying gate behavior on bench
+
+### New/Moved Files (Rev 5)
+
+| Directory | Files |
+|-----------|-------|
+| `App/nav/` | `casper_attitude.c/h`, `casper_ekf.c/h` (rewritten), `casper_quat.c/h`, `casper_gyro_int.c/h`, `temp_cal_coeffs.h` |
+| `App/drivers/` | `lsm6dso32.c/h`, `adxl372.c/h`, `ms5611.c/h`, `w25q512jv.c/h`, `max_m10m.c/h`, `mmc5983ma.c/h` |
+| `App/cal/` | `mag_cal.c/h`, `mag_val.c/h`, `temp_cal.c/h` |
+| `App/flight/` | `flight_loop.c/h`, `app_globals.h` |
+| `App/util/` | (utility functions) |
+
+### Modified Files (Rev 5)
+
+| File | Change |
+|------|--------|
+| `Core/Src/main.c` | Flight loop dispatch to `App/flight/`, init calls for attitude + new sensors |
+| `App/fsm/flight_fsm.c/h` | ADXL372 wake-up mode transitions, attitude estimator integration |
+| `App/pyro/pyro_manager.c/h` | Moved `casper_pyro.c/h` into `App/pyro/` |
+| `App/command/cmd_router.c` | Bench command parser for TEST_MODE=2 |
+| `App/command/cac_handler.c` | Updated for new attitude module API |
+| `Makefile` | All new/moved source paths, App/ include paths, TEST_MODE define |
+
+---
+
 ## Next Steps
 
 - [x] Fix power supply and clock configuration
@@ -524,6 +641,14 @@ Every state transition emits an FC_EVT_STATE event.
 - [x] Bidirectional USB CDC command interface (COBS-framed)
 - [x] Flight state machine (12-state FSM + simulated flight)
 - [x] CAC protocol (ARM/FIRE with 3-phase confirm)
+- [x] Mahony attitude estimator (complementary filter, RK4 propagation)
+- [x] EKF clean-sheet rewrite (Joseph form, ZUPT, chi-squared gate)
+- [x] Sensor-to-body identity mapping + body frame convention
+- [x] File reorganization (Core/ → App/ subdirectories)
+- [x] Gyro temperature compensation (optional linear model)
+- [x] ADXL372 wake-up mode for low-power PAD state
+- [x] Hard/soft-iron magnetometer calibration module
+- [x] Flight loop refactor (main.c → App/flight/)
 - [ ] Flash & verify telemetry on hardware (USB CDC → MC Electron app)
 - [ ] Implement real sensor-based FSM transitions (launch detect, apogee, etc.)
 - [ ] Implement EKF GPS update math (stubs ready)

@@ -79,18 +79,20 @@ Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Src/usbd_cdc.c \
 Core/Src/system_stm32h7xx.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c \
-Core/Src/ms5611.c \
-Core/Src/lsm6dso32.c \
-Core/Src/adxl372.c \
-Core/Src/w25q512jv.c \
-Core/Src/casper_quat.c \
-Core/Src/casper_attitude.c \
-Core/Src/casper_ekf.c \
-Core/Src/max_m10m.c \
-Core/Src/mmc5983ma.c \
-Core/Src/mag_cal.c \
-Core/Src/mag_val.c \
-Core/Src/casper_pyro.c \
+App/drivers/ms5611.c \
+App/drivers/lsm6dso32.c \
+App/drivers/adxl372.c \
+App/drivers/w25q512jv.c \
+App/drivers/max_m10m.c \
+App/drivers/mmc5983ma.c \
+App/nav/casper_quat.c \
+App/nav/casper_attitude.c \
+App/nav/casper_ekf.c \
+App/nav/casper_gyro_int.c \
+App/cal/mag_cal.c \
+App/cal/mag_val.c \
+App/cal/temp_cal.c \
+App/pyro/casper_pyro.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_init_f32.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_mult_f32.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_trans_f32.c \
@@ -118,7 +120,8 @@ App/fsm/flight_fsm.c \
 App/command/cmd_router.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
-App/diag/self_test.c
+App/diag/self_test.c \
+App/flight/flight_loop.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -175,7 +178,7 @@ C_DEFS =  \
 -DSTM32H750xx \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
--DGYRO_TEMP_COMP \
+-DTEST_MODE=2 \
 -DMSC_MEDIA_PACKET=4096
 
 
@@ -199,12 +202,17 @@ C_INCLUDES =  \
 -IFATFS/Target \
 -IFATFS/App \
 -IMiddlewares/Third_Party/FatFs/src \
+-IApp/drivers \
+-IApp/nav \
+-IApp/cal \
 -IApp/telemetry \
 -IApp/pack \
 -IApp/pyro \
 -IApp/fsm \
 -IApp/command \
--IApp/diag
+-IApp/diag \
+-IApp/util \
+-IApp/flight
 
 
 # compile gcc flags

@@ -1,5 +1,6 @@
 #include "flight_fsm.h"
 #include "stm32h7xx_hal.h"
+#include "pyro_manager.h"
 #include <math.h>
 #include <string.h>
 
@@ -15,6 +16,17 @@ static bool        s_mission_started;
 /* Simulated flight */
 static bool        s_sim_active;
 static uint32_t    s_sim_start_ms;
+
+/* Bench test mode — holds FSM state, no auto-transitions */
+static bool        s_bench_mode;
+
+/* Launch detection (Item 10) */
+static uint8_t s_lsm_launch_count;
+
+/* Landing detection (Item 8) */
+static float    s_land_baro_ref;
+static uint32_t s_land_window_start_ms;
+static bool     s_land_window_active;
 
 /* ── Sim flight profile (time_s, alt_m, vel_mps) ─────────────── */
 typedef struct {
@@ -56,6 +68,38 @@ static float lerp(float a, float b, float t)
     return a + (b - a) * t;
 }
 
+/* ── Landing detection (Item 8) ──────────────────────────────────── */
+#define LANDED_ALT_THRESH  5.0f    /* m — baro altitude change threshold */
+#define LANDED_VEL_THRESH  1.0f    /* m/s — EKF velocity threshold       */
+#define T_LANDED_SUSTAIN   5000    /* ms — 5 seconds sustained            */
+#define LANDED_MIN_DESCENT 10000   /* ms — min time in descent state      */
+
+static void check_landing(const fc_telem_state_t *state)
+{
+    uint32_t now = HAL_GetTick();
+
+    /* Guard: must be in descent state for at least 10s */
+    if ((now - s_state_entry_ms) < LANDED_MIN_DESCENT)
+        return;
+
+    bool baro_stable = fabsf(state->baro_alt_m - s_land_baro_ref) < LANDED_ALT_THRESH;
+    bool vel_zero    = fabsf(state->vel_mps) < LANDED_VEL_THRESH;
+
+    if (baro_stable && vel_zero) {
+        if (!s_land_window_active) {
+            s_land_window_active = true;
+            s_land_window_start_ms = now;
+            s_land_baro_ref = state->baro_alt_m;
+        } else if ((now - s_land_window_start_ms) >= T_LANDED_SUSTAIN) {
+            transition_to(FSM_STATE_LANDED);
+            pyro_mgr_disarm_all();
+        }
+    } else {
+        s_land_window_active = false;
+        s_land_baro_ref = state->baro_alt_m;
+    }
+}
+
 /* ── Public API ─────────────────────────────────────────────────── */
 
 void flight_fsm_init(void)
@@ -66,11 +110,17 @@ void flight_fsm_init(void)
     s_mission_started = false;
     s_sim_active = false;
     s_sim_start_ms = 0;
+    s_bench_mode = false;
+    s_lsm_launch_count = 0;
+    s_land_baro_ref = 0.0f;
+    s_land_window_start_ms = 0;
+    s_land_window_active = false;
 }
 
 fsm_state_t flight_fsm_tick(const fc_telem_state_t *state)
 {
-    (void)state;  /* TODO: real sensor-based transitions */
+    /* Bench mode: hold state, no auto-transitions */
+    if (s_bench_mode) return s_state;
 
     if (s_sim_active) {
         uint32_t now = HAL_GetTick();
@@ -97,6 +147,42 @@ fsm_state_t flight_fsm_tick(const fc_telem_state_t *state)
                 s_sim_active = false;
             }
         }
+
+        return s_state;
+    }
+
+    /* ── Real sensor-based transitions ── */
+    switch (s_state) {
+    case FSM_STATE_PAD: {
+        /* Item 10: Dual-sensor launch confirmation */
+        bool lsm_trigger = (state->accel_mag_g > 3.0f);
+        if (lsm_trigger)
+            s_lsm_launch_count++;
+        else
+            s_lsm_launch_count = 0;
+
+        bool lsm_confirmed = (s_lsm_launch_count >= 2);
+        /* Degrade to LSM-only if ADXL not available */
+        bool adxl_ok = !state->adxl_available || state->adxl_activity;
+
+        if (lsm_confirmed && adxl_ok) {
+            s_mission_started = true;
+            s_mission_start_ms = HAL_GetTick();
+            transition_to(FSM_STATE_BOOST);
+        }
+        break;
+    }
+
+    case FSM_STATE_DROGUE:
+    case FSM_STATE_MAIN:
+    case FSM_STATE_RECOVERY:
+    case FSM_STATE_TUMBLE:
+        /* Item 8: ZUPT-based landing detection */
+        check_landing(state);
+        break;
+
+    default:
+        break;
     }
 
     return s_state;
@@ -186,11 +272,21 @@ void flight_fsm_sim_get_state(fc_telem_state_t *out)
     out->vel_mps = lerp(s_sim_profile[lo].vel_mps, s_sim_profile[hi].vel_mps, t);
     out->flight_time_s = sim_t;
 
-    /* Slowly rotating quaternion: yaw at 10 deg/s */
-    float yaw_rad = sim_t * 10.0f * 0.0174532925f;
-    float half_yaw = yaw_rad * 0.5f;
-    out->quat[0] = cosf(half_yaw);  /* w */
-    out->quat[1] = 0.0f;            /* x */
-    out->quat[2] = 0.0f;            /* y */
-    out->quat[3] = sinf(half_yaw);  /* z */
+    /* Slowly rolling quaternion: spin about nose (body Y) at 10 deg/s */
+    float roll_rad = sim_t * 10.0f * 0.0174532925f;
+    float half_roll = roll_rad * 0.5f;
+    out->quat[0] = cosf(half_roll);  /* w */
+    out->quat[1] = 0.0f;             /* x */
+    out->quat[2] = sinf(half_roll);  /* y — nose axis */
+    out->quat[3] = 0.0f;             /* z */
+}
+
+void flight_fsm_set_bench_mode(bool on)
+{
+    s_bench_mode = on;
+}
+
+bool flight_fsm_bench_active(void)
+{
+    return s_bench_mode;
 }

@@ -4,6 +4,7 @@
 #include "tlm_types.h"
 #include "tlm_manager.h"
 #include "flight_fsm.h"
+#include "endian.h"
 #include "usbd_cdc_if.h"
 #include <string.h>
 
@@ -27,15 +28,6 @@ static int     s_frame_pos;
 
 #define DECODE_BUF_SIZE 64
 static uint8_t s_decode_buf[DECODE_BUF_SIZE];
-
-/* ── Helpers ─────────────────────────────────────────────────── */
-static void put_le32(uint8_t *dst, uint32_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-    dst[2] = (uint8_t)((val >> 16) & 0xFF);
-    dst[3] = (uint8_t)((val >> 24) & 0xFF);
-}
 
 /* ── Handshake handler (0xC0) — implemented here ────────────── */
 static void cmd_handle_handshake(void)

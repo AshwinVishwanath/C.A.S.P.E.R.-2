@@ -194,6 +194,7 @@ float ms5611_get_pressure(const ms5611_t *dev)
 float ms5611_get_altitude(const ms5611_t *dev, float sea_level_hPa)
 {
     float pressure_hPa = (float)dev->pressure * 0.01f;
+    if (pressure_hPa <= 0.0f) pressure_hPa = 0.01f;  /* Guard: negative/zero → NaN from powf */
     float ratio = pressure_hPa / sea_level_hPa;
     return 44307.694f * (1.0f - powf(ratio, 0.190284f));
 }

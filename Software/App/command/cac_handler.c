@@ -4,6 +4,7 @@
 #include "tlm_manager.h"
 #include "pyro_manager.h"
 #include "flight_fsm.h"
+#include "endian.h"
 #include "stm32h7xx_hal.h"
 #include <string.h>
 
@@ -32,32 +33,6 @@ static uint32_t     s_confirm_deadline;
 /* ── Test mode state ──────────────────────────────────────────── */
 static bool     s_test_mode;
 static uint32_t s_test_mode_deadline;
-
-/* ── Helpers ──────────────────────────────────────────────────── */
-static void put_le16(uint8_t *dst, uint16_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-}
-
-static void put_le32(uint8_t *dst, uint32_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-    dst[2] = (uint8_t)((val >> 16) & 0xFF);
-    dst[3] = (uint8_t)((val >> 24) & 0xFF);
-}
-
-static uint16_t get_le16(const uint8_t *src)
-{
-    return (uint16_t)(src[0] | ((uint16_t)src[1] << 8));
-}
-
-static uint32_t get_le32(const uint8_t *src)
-{
-    return (uint32_t)(src[0] | ((uint32_t)src[1] << 8) |
-                      ((uint32_t)src[2] << 16) | ((uint32_t)src[3] << 24));
-}
 
 /* ── Send NACK packet (10 bytes) per INTERFACE_SPEC §8.3 ─────── */
 /* [0]=0xE0 [1-2]=nonce [3]=error_code [4-5]=rsvd [6-9]=CRC      */

@@ -56,15 +56,16 @@ void casper_quat_from_accel(const float accel[3], float q[4])
     float ax = accel[0], ay = accel[1], az = accel[2];
 
     /*
-     * On the pad, the accelerometer measures +1g in the direction opposite to
-     * gravity.  In NED frame, gravity points +Z (down).  We need the rotation
-     * that maps the body-frame gravity measurement to NED [0, 0, +g].
+     * Standard ZYX gravity-to-Euler extraction.  Works for any body frame.
      *
-     * pitch = atan2(-ax, az)   (rotation about body Y)
-     * roll  = atan2( ay, az)   (rotation about body X)
-     * yaw   = 0                (no magnetometer)
+     * Y-nose convention (body = sensor native):
+     *   +Y = nose (up on pad), +X = starboard, +Z = toward operator.
+     *   On pad: accel ≈ [0, +g, 0] → roll = π/2, pitch = 0.
+     *   Quaternion maps body +Y to reference +Z ("up" axis).
      *
-     * Euler (ZYX convention) to quaternion:
+     * pitch = atan2(-ax, sqrt(ay² + az²))   (body Y rotation)
+     * roll  = atan2( ay, az)                 (body X rotation)
+     * yaw   = 0                              (no magnetometer)
      */
     float pitch = atan2f(-ax, sqrtf(ay * ay + az * az));
     float roll  = atan2f( ay, az);
@@ -101,19 +102,30 @@ void casper_quat_to_euler(const float q[4], float euler[3])
 {
     float w = q[0], x = q[1], y = q[2], z = q[3];
 
-    /* Roll (X) */
-    float sinr = 2.0f * (w*x + y*z);
-    float cosr = 1.0f - 2.0f * (x*x + y*y);
-    euler[0] = atan2f(sinr, cosr) * (180.0f / 3.14159265f);
+    /* Body frame: Y = nose (thrust axis).
+     * ZYX Euler decomposition:
+     * euler[0] = body Z rotation (toward operator)
+     * euler[1] = body Y rotation (spin about nose)
+     * euler[2] = body X rotation (starboard tilt)
+     *
+     * Rocket-physical mapping (via casper_att_get_euler):
+     *   Roll  = euler[1] (spin about nose Y)
+     *   Pitch = euler[2] (lateral tilt about X)
+     *   Yaw   = euler[0] (heading about Z)            */
 
-    /* Pitch (Y) — clamp to avoid NaN at gimbal lock */
+    /* Body Z rotation — ZYX yaw extraction */
+    float siny = 2.0f * (w*z + x*y);
+    float cosy = 1.0f - 2.0f * (y*y + z*z);
+    euler[0] = atan2f(siny, cosy) * (180.0f / 3.14159265f);
+
+    /* Body Y rotation (nose spin) — ZYX pitch extraction, clamped */
     float sinp = 2.0f * (w*y - z*x);
     if (sinp >= 1.0f)       sinp = 1.0f;
     else if (sinp <= -1.0f) sinp = -1.0f;
     euler[1] = asinf(sinp) * (180.0f / 3.14159265f);
 
-    /* Yaw (Z) */
-    float siny = 2.0f * (w*z + x*y);
-    float cosy = 1.0f - 2.0f * (y*y + z*z);
-    euler[2] = atan2f(siny, cosy) * (180.0f / 3.14159265f);
+    /* Body X rotation (starboard tilt) — ZYX roll extraction */
+    float sinr = 2.0f * (w*x + y*z);
+    float cosr = 1.0f - 2.0f * (x*x + y*y);
+    euler[2] = atan2f(sinr, cosr) * (180.0f / 3.14159265f);
 }

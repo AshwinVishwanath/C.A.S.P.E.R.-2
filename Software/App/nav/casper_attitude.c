@@ -99,10 +99,10 @@ void casper_att_init(casper_attitude_t *att, const casper_att_config_t *config)
     /* Identity quaternion */
     att->q[0] = 1.0f;
 
-    /* LSM6DSO32 characterization values (rad/sqrt(s)) */
-    att->gyro_arw[0] = 6.73e-05f;
-    att->gyro_arw[1] = 6.08e-05f;
-    att->gyro_arw[2] = 4.92e-05f;
+    /* LSM6DSO32 characterization values (rad/sqrt(s)), body = sensor axes */
+    att->gyro_arw[0] = 6.08e-05f;   /* sensor X = body X (starboard) */
+    att->gyro_arw[1] = 4.92e-05f;   /* sensor Y = body Y (nose)      */
+    att->gyro_arw[2] = 6.73e-05f;   /* sensor Z = body Z (operator)  */
 
     /* Assume mag is available until proven otherwise */
     att->mag_available = true;
@@ -345,10 +345,10 @@ void casper_att_update(casper_attitude_t *att,
                   + att->gyro_arw[i] * att->gyro_arw[i] * dt;
         att->att_sigma[i] = sqrtf(s2);
     }
-    /* Heading uncertainty grows with Z-axis ARW */
+    /* Heading uncertainty grows with nose-axis (body Y) ARW */
     {
         float s2 = att->heading_sigma * att->heading_sigma
-                  + att->gyro_arw[2] * att->gyro_arw[2] * dt;
+                  + att->gyro_arw[1] * att->gyro_arw[1] * dt;
         att->heading_sigma = sqrtf(s2);
     }
 
@@ -381,7 +381,12 @@ void casper_att_get_euler(const casper_attitude_t *att,
 {
     float euler[3];
     casper_quat_to_euler(att->q, euler);
-    *roll_deg  = euler[0];
-    *pitch_deg = euler[1];
-    *yaw_deg   = euler[2];
+    /* ZYX Euler: euler[0]=bodyZ, euler[1]=bodyY, euler[2]=bodyX.
+     * Y-nose convention: bodyY=nose, bodyX=starboard, bodyZ=operator.
+     *   Roll  = spin about nose  = body Y rotation = euler[1]
+     *   Pitch = lateral tilt     = body X rotation = euler[2]
+     *   Yaw   = heading          = body Z rotation = euler[0] */
+    *roll_deg  = euler[1];
+    *pitch_deg = euler[2];
+    *yaw_deg   = euler[0];
 }

@@ -73,6 +73,68 @@ bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
     return true;
 }
 
+/* ── Single-shot initialisation (no continuous mode) ────────────────────── */
+
+bool mmc5983ma_init_oneshot(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
+{
+    dev->hi2c = hi2c;
+    dev->addr = MMC5983MA_I2C_ADDR_WRITE;
+    dev->data_ready = false;
+    dev->product_id = 0x00;
+
+    for (int i = 0; i < 3; i++) {
+        dev->mag_gauss[i] = 0.0f;
+        dev->mag_ut[i]    = 0.0f;
+        dev->raw_mag[i]   = 0;
+    }
+    dev->raw_temp = 0;
+
+    /* Software reset */
+    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL1, MMC5983MA_CTRL1_SW_RST);
+    HAL_Delay(15);
+
+    /* Read and verify product ID */
+    uint8_t id = 0;
+    if (mmc5983ma_read_reg(dev, MMC5983MA_REG_PROD_ID, &id) != HAL_OK)
+        return false;
+    dev->product_id = id;
+
+    if (id != MMC5983MA_PROD_ID_VAL)
+        return false;
+
+    /* Enable auto SET/RESET */
+    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL0,
+                        MMC5983MA_CTRL0_AUTO_SR_EN);
+
+    /* Bandwidth = 800 Hz (0.5 ms measurement time) */
+    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL1, MMC5983MA_BW_800HZ);
+
+    /* No CTRL2 write — continuous mode stays off */
+
+    return true;
+}
+
+/* ── Single-shot trigger + poll + read ──────────────────────────────────── */
+
+int mmc5983ma_trigger_oneshot(mmc5983ma_t *dev)
+{
+    /* Trigger single magnetic measurement with auto SET/RESET */
+    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL0,
+                        MMC5983MA_CTRL0_TM_M | MMC5983MA_CTRL0_AUTO_SR_EN);
+
+    /* Poll for measurement complete (up to 5 ms at BW=800Hz) */
+    uint8_t status = 0;
+    uint32_t start = HAL_GetTick();
+    while (!(status & MMC5983MA_STATUS_MEAS_M_DONE)) {
+        if (HAL_GetTick() - start > 5)
+            return MMC5983MA_ERR_I2C;
+        mmc5983ma_read_reg(dev, MMC5983MA_REG_STATUS, &status);
+    }
+
+    /* Read 18-bit mag data using existing function */
+    return mmc5983ma_read(dev);
+}
+
 /* ── Magnetic field read ─────────────────────────────────────────────────── */
 
 int mmc5983ma_read(mmc5983ma_t *dev)

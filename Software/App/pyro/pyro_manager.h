@@ -3,12 +3,15 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "stm32h7xx_hal.h"
 
 /**
- * Initialize the pyro manager. Wraps the existing casper_pyro_t.
- * Must be called after casper_pyro_init().
+ * Initialize the pyro manager and low-level pyro hardware.
+ * Calls casper_pyro_init() internally — do NOT call casper_pyro_init() separately.
  */
-void pyro_mgr_init(void);
+void pyro_mgr_init(ADC_HandleTypeDef *hadc1,
+                    ADC_HandleTypeDef *hadc2,
+                    ADC_HandleTypeDef *hadc3);
 
 /**
  * Periodic tick (~10 Hz). Calls casper_pyro_tick() for ADC/LED/auto-stop,

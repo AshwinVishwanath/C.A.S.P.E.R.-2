@@ -9,12 +9,12 @@ Covers register configuration, initialization sequences, data conversion, APIs, 
 
 | Sensor | Part | Measures | Bus | Bus Freq | Files |
 |--------|------|----------|-----|----------|-------|
-| IMU | LSM6DSO32 | Accel + Gyro | SPI2 | 5.25 MHz | `lsm6dso32.c/h` |
-| High-G Accel | ADXL372 | +-200g Accel | SPI3 | TBD | `adxl372.c/h` |
-| Barometer | MS5611 | Pressure + Temp | SPI4 | 13.5 MHz | `ms5611.c/h` |
-| Flash | W25Q512JV | 64 MB NOR | QUADSPI | 54 MHz | `w25q512jv.c/h` |
-| GPS | MAX-M10M | Position + Vel | I2C1 | 400 kHz | `max_m10m.c/h` |
-| Magnetometer | MMC5983MA | 3-axis Mag | I2C3 | 400 kHz | `mmc5983ma.c/h` |
+| IMU | LSM6DSO32 | Accel + Gyro | SPI2 | 5.25 MHz | `App/drivers/lsm6dso32.c/h` |
+| High-G Accel | ADXL372 | +-200g Accel | SPI3 | TBD | `App/drivers/adxl372.c/h` |
+| Barometer | MS5611 | Pressure + Temp | SPI4 | 13.5 MHz | `App/drivers/ms5611.c/h` |
+| Flash | W25Q512JV | 64 MB NOR | QUADSPI | 54 MHz | `App/drivers/w25q512jv.c/h` |
+| GPS | MAX-M10M | Position + Vel | I2C1 | 400 kHz | `App/drivers/max_m10m.c/h` |
+| Magnetometer | MMC5983MA | 3-axis Mag | I2C3 | 400 kHz | `App/drivers/mmc5983ma.c/h` |
 
 ---
 
@@ -90,14 +90,15 @@ void lsm6dso32_irq_handler(lsm6dso32_t *dev); /* Call from EXTI callback */
 
 ### 2.6 Interrupt-Driven Reads
 
-The data-ready interrupt on INT2 (PC15) sets `dev->data_ready = true`. The main loop polls this flag and calls `lsm6dso32_read()` when set. This ensures synchronization with the sensor's 833 Hz ODR.
+The data-ready interrupt on INT2 (PC15) sets `dev->data_ready = true`. The flight loop (`flight_loop_tick()`) polls this flag and calls `lsm6dso32_read()` when set. This ensures synchronization with the sensor's 833 Hz ODR.
 
 ### 2.7 Axis Mapping
 
 See ORIENTATION_SPEC.md for the full body frame mapping:
-- Sensor Y = vehicle nose (up on pad)
-- Sensor X = vehicle starboard
-- Firmware remaps: `body[X,Y,Z] = sensor[Z,X,Y]`
+- Sensor X = vehicle starboard = Body X
+- Sensor Y = vehicle nose (up on pad) = Body Y
+- Sensor Z = toward operator = Body Z
+- Firmware uses identity mapping: `body[X,Y,Z] = sensor[X,Y,Z]` (no axis permutation)
 
 ---
 
@@ -238,8 +239,16 @@ Second-order correction applied when TEMP < 2000 (below 20 deg C).
 **Altitude formula (barometric/hypsometric):**
 
 ```
-altitude_m = 44330.0 * (1.0 - pow(pressure_hPa / sea_level_hPa, 0.190284))
+altitude_m = 44307.694 * (1.0 - pow(pressure_hPa / sea_level_hPa, 0.190284))
 ```
+
+**Pressure clamp (NaN prevention):** Before the altitude calculation, pressure is clamped to a minimum of 0.01 hPa:
+
+```c
+if (pressure_hPa <= 0.0f) pressure_hPa = 0.01f;
+```
+
+Rare SPI read corruption can produce a negative `int32_t` pressure, causing `powf(negative, 0.190284)` to return NaN. This propagates through the EKF baro update and corrupts the entire state vector. The clamp prevents the NaN at its source. The EKF also has its own `isfinite()` guard and NaN-safe innovation gate as defense-in-depth (see EKF_SPEC.md Sections 2.5-2.6).
 
 ### 4.6 Non-Blocking State Machine
 
@@ -431,7 +440,7 @@ vel_d_m_s = vel_d_mm_s * 0.001
 
 ### 6.7 EKF Integration
 
-When a 3D fix is obtained, the main loop calls:
+When a 3D fix is obtained, `flight_loop_tick()` calls:
 ```c
 casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);  /* stub */
 casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);  /* stub */
@@ -526,7 +535,7 @@ After negation, the `mag_cal_apply()` function applies:
 1. Hard-iron offset subtraction
 2. Soft-iron matrix correction (3x3)
 
-Calibration parameters are stored in `mag_cal.h`.
+Calibration parameters are stored in `App/cal/mag_cal.h`.
 
 ### 7.7 Driver API
 
