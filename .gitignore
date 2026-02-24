@@ -75,5 +75,12 @@ Middlewares/
 # Windows reserved device names
 nul
 
+# CSV data files
+CSVs/
+*.csv
+
+# Build log
+Software/build_out.txt
+
 # Claude Code
 .claude/
