@@ -2,7 +2,7 @@
 
 **Date:** February 2026
 **Board:** C.A.S.P.E.R.-2 Rev 1 (STM32H750VBT6, LQFP100)
-**Firmware:** CubeMX HAL + USB CDC/MSC, 432 MHz SYSCLK (HSI+PLL), 6 sensors + EKF + attitude + telemetry (~87 KB)
+**Firmware:** CubeMX HAL + USB CDC/MSC, 432 MHz SYSCLK (HSI+PLL), 6 sensors + EKF + attitude + LoRa telemetry + buzzer (~89 KB)
 
 ---
 
@@ -622,6 +622,105 @@ When built with `TEST_MODE=2`, the ASCII serial plotter output includes addition
 
 ---
 
+## Rev 6 — LoRa Radio Telemetry & Buzzer
+
+### SX1276 LoRa Radio Driver (`App/radio/sx1276.c/h`)
+
+Low-level driver for the SX1276 (RA-01H module) on SPI1:
+- Register-level SPI access via software-managed CS (PB0), bypassing HAL polling to avoid H7 hangs
+- LoRa mode configuration: SF6–SF12, BW 7.8–500 kHz, CR 4/5–4/8, CRC always enabled
+- +20 dBm PA_BOOST output (PA_DAC 0x87, OCP 240 mA)
+- Hardware reset via PC13 (NRST, backup domain — requires slow 10 ms rise)
+- FIFO split: TX base 0x80, RX base 0x00 (256-byte total)
+- Frequency: 868 MHz, F_XOSC = 32 MHz
+- Packet RSSI: `raw - 157` dBm (HF band), SNR: `raw / 4` dB
+
+### Radio Manager (`App/radio/radio_manager.c/h`)
+
+Non-blocking TX/RX state machine called at ~833 Hz from the flight loop:
+- **States:** IDLE → TX → RX → IDLE (+ DISABLED for uninitialized)
+- **10 Hz downlink:** COBS-encoded telemetry packets, identical format to USB CDC
+- **TX priority:** Response (CAC ACK/NACK) > Event > GPS > Fast telemetry
+- **RX window:** After each TX, opens RXSINGLE for uplink CAC commands (~80 symbol timeout)
+- **Profile switching:** Profile A (SF7, 250 kHz BW) → Profile B (SF8) when altitude > 20 km or velocity > 500 m/s; one-way switch with FC_EVT_STATE event emission
+- **Error handling:** Max 3 TX retries, 10 consecutive CRC errors before reset, 200 ms TX timeout
+- **Packet sizes:** Fast 20B, GPS 17B, Event 11B (matching msgset v5)
+
+### Radio IRQ (`App/radio/radio_irq.c/h`)
+
+ISR flag interface for SX1276 DIO interrupts:
+- DIO0 (PB1, EXTI1): TxDone in TX mode, RxDone in RX mode
+- DIO1 (PD7, EXTI9_5): RxTimeout
+- Volatile flags polled by radio_manager in main loop — no SPI access in ISR context
+- `radio_irq_clear_all()` for atomic flag reset after handling
+
+### Piezo Buzzer (`App/buzzer/buzzer.c/h`)
+
+TIM4 PWM driver for audible status feedback:
+- 6 kHz tone on TIM4 CH3, ARR = 35999 (216 MHz / 6000)
+- Programmable beep sequences via `buzzer_beep_n(pct, count, on_ms, period_ms)`
+- Duty cycle 0–100% input mapped to 0–50% output (piezo max acoustic efficiency)
+- State machine: IDLE → BEEP_ON → BEEP_OFF → ... → IDLE
+- Non-blocking tick at ~833 Hz
+
+### Flight Loop Integration
+
+- `radio_manager_tick()` and `buzzer_tick()` called every superloop iteration
+- Navigation stack guarded with `#if TEST_MODE != 2` to allow radio-only bench testing
+- Numeric bench command (0–100) added for buzzer volume testing over CDC
+- Old ASCII plotter output removed in favor of radio telemetry
+
+### Startup Changes (`main.c`)
+
+- 5-second USB enumeration window with CDC debug prints for startup diagnostics
+- Radio and buzzer initialization after peripheral init
+- Deferred EXTI enables: LSM6DSO32 INT2 (PC15) and SX1276 DIO (PB1, PD7) interrupts enabled after all peripheral init to prevent ISR hangs during SPI configuration
+- SPI1 fixes: DataSize 4→8-bit, Prescaler 2→16 (13.5 MHz → ~5 MHz), NSSPMode disabled
+- PC13 (RADIO_NRST) GPIO driven HIGH early before SX1276 init
+- LED milestone: all-off then triple blink on successful startup
+
+### Interrupt Changes (`stm32h7xx_it.c`)
+
+- Added EXTI1_IRQHandler for SX1276 DIO0 (PB1)
+- Extended EXTI9_5_IRQHandler to handle both DIO1 (PD7) and MMC5983MA DRDY (PC8)
+
+### Document Reorganization
+
+- PRD docs moved from repo root → `Product Requirement Docs/`
+- Spec docs moved from repo root → `Specification Docs/`
+- Added `CASPER2_RADIO_PRD.md` and `CASPER2_TEST_HARNESS_PRD.md`
+
+### New/Modified Files (Rev 6)
+
+| Directory | Files |
+|-----------|-------|
+| `App/radio/` | `sx1276.c/h`, `radio_manager.c/h`, `radio_irq.c/h`, `radio_config.h` |
+| `App/buzzer/` | `buzzer.c/h` |
+| `Product Requirement Docs/` | `CASPER2_RADIO_PRD.md`, `CASPER2_TEST_HARNESS_PRD.md` (new), `CASPER_FLIGHT_CRITICAL_PRD.md`, `CASPER_LOGGING_PRD.md` (moved) |
+| `Specification Docs/` | `EKF_SPEC.md`, `HARDWARE_SPEC.md`, `INTERFACE_SPEC.md`, `ORIENTATION_SPEC.md`, `PYRO_SPEC.md`, `SENSOR_SPEC.md` (moved) |
+
+| File | Change |
+|------|--------|
+| `App/flight/flight_loop.c` | Radio/buzzer tick integration, nav guard, bench buzzer command |
+| `Core/Src/main.c` | Radio/buzzer init, deferred EXTI, SPI1 fixes, USB enum window |
+| `Core/Src/stm32h7xx_it.c` | EXTI1 + EXTI9_5 handlers for SX1276 DIO pins |
+| `Makefile` | Radio + buzzer sources/includes, TEST_MODE=0 default |
+
+### SPI1 / Radio Pin Mapping
+
+| Function | Pin | Notes |
+|----------|-----|-------|
+| SPI1_SCK | PA5 | Clock |
+| SPI1_MOSI | PA7 | Data out |
+| SPI1_MISO | PB4 | Data in |
+| Radio CS | PB0 | Software-managed, active-low |
+| Radio DIO0 | PB1 | EXTI1 — TxDone / RxDone |
+| Radio DIO1 | PD7 | EXTI9_5 — RxTimeout |
+| Radio NRST | PC13 | Backup domain, 1 ms pulse + 10 ms wait |
+| Buzzer PWM | TIM4 CH3 | 6 kHz tone |
+
+---
+
 ## Next Steps
 
 - [x] Fix power supply and clock configuration
@@ -649,10 +748,14 @@ When built with `TEST_MODE=2`, the ASCII serial plotter output includes addition
 - [x] ADXL372 wake-up mode for low-power PAD state
 - [x] Hard/soft-iron magnetometer calibration module
 - [x] Flight loop refactor (main.c → App/flight/)
+- [x] LoRa radio telemetry (SX1276, 868 MHz, 10 Hz downlink, profile switching)
+- [x] Piezo buzzer driver (TIM4 PWM, programmable beep sequences)
+- [x] Document reorganization (PRDs + specs into subdirectories)
+- [ ] Radio range testing & profile tuning on hardware
 - [ ] Flash & verify telemetry on hardware (USB CDC → MC Electron app)
 - [ ] Implement real sensor-based FSM transitions (launch detect, apogee, etc.)
 - [ ] Implement EKF GPS update math (stubs ready)
 - [ ] Config persistence to QSPI flash
 - [ ] Flight log recording + readback
 - [ ] Servo PWM output (TIM2 CH1-4)
-- [ ] LoRa radio telemetry
+- [ ] Power sensor bring-up
