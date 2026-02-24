@@ -55,6 +55,9 @@
 #include "pyro_manager.h"
 #include "self_test.h"
 #include "flight_loop.h"
+#include "radio_irq.h"
+#include "radio_manager.h"
+#include "buzzer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -203,13 +206,25 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-  // Milestone 2: GPIO configured — turn on CONT_YN_2 (PB14)
-  HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
-  HAL_Delay(500);
 
-  // Milestone 3: USB init done — turn on CONT_YN_3 (PE8)
-  HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
-  HAL_Delay(500);
+  /* ── 5-second USB enumeration window ──
+   * Wait here so the user can open a serial terminal before any
+   * sensor init runs.  All CDC debug prints after this point will
+   * be visible. */
+  HAL_Delay(5000);
+
+  {
+    char _dbg[80]; int _len;
+    #define DBG_PRINT(msg) do { \
+      _len = snprintf(_dbg, sizeof(_dbg), msg); \
+      CDC_Transmit_FS((uint8_t *)_dbg, (uint16_t)_len); \
+      HAL_Delay(20); \
+    } while(0)
+
+    DBG_PRINT("[INIT] USB up, starting sensor init\r\n");
+
+    // M1: MS5611
+    DBG_PRINT("[INIT] MS5611...\r\n");
 
   // Init MS5611 barometer on SPI4
   if (!ms5611_init(&baro, &hspi4, SPI4_CS_GPIO_Port, SPI4_CS_Pin)) {
@@ -226,12 +241,12 @@ int main(void)
   ms5611_set_oversampling(&baro, MS5611_OSR_2048);
 #endif
 
+    DBG_PRINT("[INIT] MS5611 done\r\n");
+
   // Explicitly close PC2 analog switch for SPI2 MISO (PC2_C)
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE);
 
   // Fix PC2 MODER: something during init sets PC2 to analog mode instead of AF.
-  // AFR is correctly set to AF5 by SPI2 MspInit, but MODER gets clobbered.
-  // Force PC2 back to AF mode for SPI2 MISO.
   {
     GPIO_InitTypeDef gpio_fix = {0};
     gpio_fix.Pin = GPIO_PIN_2;
@@ -241,6 +256,8 @@ int main(void)
     gpio_fix.Alternate = GPIO_AF5_SPI2;
     HAL_GPIO_Init(GPIOC, &gpio_fix);
   }
+
+    DBG_PRINT("[INIT] LSM6DSO32...\r\n");
 
   // Init LSM6DSO32 IMU on SPI2
   lsm6dso32_init(&imu, &hspi2, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
@@ -253,12 +270,12 @@ int main(void)
     }
   }
 
-  // Enable EXTI15 interrupt for LSM6DSO32 INT2 (PC15)
-  __HAL_GPIO_EXTI_CLEAR_IT(SPI2_INT_Pin);  // Clear stale pending bit from sensor init
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+    DBG_PRINT("[INIT] LSM6DSO32 done\r\n");
 
-  // Init attitude estimator and EKF
+  // NOTE: EXTI15 for LSM6DSO32 INT2 deferred to after all init completes
+  // (enabling it here caused immediate ISR hang — INT2 already asserted)
+
+    DBG_PRINT("[INIT] EKF+attitude...\r\n");
   {
     casper_att_config_t att_cfg = {
       .Kp_grav           = 1.0f,
@@ -273,26 +290,22 @@ int main(void)
     casper_ekf_init(&ekf);
   }
 
-  // Init ADXL372 high-G accelerometer on SPI3
+    DBG_PRINT("[INIT] ADXL372...\r\n");
   adxl372_init(&high_g, &hspi3, SPI3_CS_GPIO_Port, SPI3_CS_Pin);
   if (high_g.device_id != ADXL372_DEVID_VAL) {
-    // DEVID mismatch — blink LED3+LED4 as warning but continue
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
       HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
       HAL_Delay(200);
     }
   }
-
-  /* Put ADXL372 in wake-up mode for launch detection (Item 9) */
   if (high_g.device_id == ADXL372_DEVID_VAL) {
     adxl372_wakeup_init(&high_g, ADXL_LAUNCH_G, 6);
   }
 
+    DBG_PRINT("[INIT] GPS...\r\n");
 #ifndef GYRO_TEMP_CAL
-  // Init MAX-M10M GPS on I2C1
   if (!max_m10m_init(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
-    // I2C NAK — GPS module not responding — blink LED3+LED4 warning, continue
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
       HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
@@ -310,14 +323,13 @@ int main(void)
     HAL_GPIO_Init(I2C_3_INT_GPIO_Port, &gpio_fix);
   }
 
-  // Init MMC5983MA magnetometer on I2C3
+    DBG_PRINT("[INIT] MMC5983MA...\r\n");
 #ifdef GYRO_TEMP_CAL
   mmc5983ma_init_oneshot(&mag, &hi2c3);
 #else
   mmc5983ma_init(&mag, &hi2c3);
 #endif
   if (mag.product_id != MMC5983MA_PROD_ID_VAL) {
-    // Product ID mismatch — blink LED3+LED4 as warning but continue
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
       HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
@@ -325,11 +337,7 @@ int main(void)
     }
   }
 
-  // EXTI9_5 for MMC5983MA DRDY (PC8) — disabled, using polled reads instead
-  // HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
-  // HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
-
-  // Init MC telemetry + command subsystems
+    DBG_PRINT("[INIT] telemetry+FSM+pyro+buzzer...\r\n");
   crc32_hw_init();
   tlm_init();
   cmd_router_init();
@@ -337,6 +345,44 @@ int main(void)
   cfg_manager_init();
   flight_fsm_init();
   pyro_mgr_init(&hadc1, &hadc2, &hadc3);
+  buzzer_init(&htim4);
+
+    DBG_PRINT("[INIT] radio...\r\n");
+  {
+    int rc = radio_manager_init(&hspi1);
+    _len = snprintf(_dbg, sizeof(_dbg), "[INIT] radio returned %d\r\n", rc);
+    CDC_Transmit_FS((uint8_t *)_dbg, (uint16_t)_len);
+    HAL_Delay(20);
+
+    if (rc != 0) {
+      for (int i = 0; i < 10; i++) {
+        HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        HAL_Delay(100);
+      }
+      HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+    }
+  }
+
+    DBG_PRINT("[INIT] all init complete\r\n");
+  } /* end DBG_PRINT scope */
+
+  /* Enable EXTI15 for LSM6DSO32 INT2 (PC15) — deferred from init to here
+   * so the ISR doesn't fire while SPI buses are still being configured. */
+  __HAL_GPIO_EXTI_CLEAR_IT(SPI2_INT_Pin);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
+  /* Enable EXTI1 interrupt for SX1276 DIO0 (PB1) */
+  __HAL_GPIO_EXTI_CLEAR_IT(SPI1_INT_Pin);
+  HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+
+  /* Enable EXTI9_5 for DIO1 (PD7) — shared with MMC5983MA (PC8) */
+  __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO1_Pin);
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 1);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
@@ -398,15 +444,24 @@ int main(void)
   }
 #endif /* USB_MODE != 2 */
 
-  // Milestone 4: all done — turn on CONT_YN_4 (PE7)
-  HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
-  HAL_Delay(1000);  // USB enumeration time
-
-  // Turn all OFF before entering main loop
+  // M5: init complete — all LEDs off, then blink all 3 times
   HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+  for (int i = 0; i < 3; i++) {
+    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+    HAL_Delay(150);
+    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+    HAL_Delay(150);
+  }
+  HAL_Delay(500);  // USB enumeration time
 
 #if (USB_MODE != 2)
   // Print status on first few lines so terminal can capture it
@@ -1115,16 +1170,16 @@ static void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;           /* CubeMX: 4BIT — WRONG */
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16; /* CubeMX: 2 — TOO FAST */
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 0x0;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi1.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;       /* CubeMX: ENABLE — WRONG */
   hspi1.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
   hspi1.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
   hspi1.Init.TxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
@@ -1139,7 +1194,8 @@ static void MX_SPI1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN SPI1_Init 2 */
-
+  /* Correct values patched inline above — see "CubeMX: WRONG" comments.
+     After CubeMX regen: fix DataSize→8BIT, Prescaler→16, NSSPMode→DISABLE. */
   /* USER CODE END SPI1_Init 2 */
 
 }
@@ -1537,19 +1593,46 @@ static void MX_GPIO_Init(void)
   // All SPI CS pins must idle HIGH so sensors are deselected.
   HAL_GPIO_WritePin(SPI2_CS_GPIO_Port, SPI2_CS_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(SPI3_CS_GPIO_Port, SPI3_CS_Pin, GPIO_PIN_SET);
+
+  // RADIO_NRST (PC13): CubeMX groups this with SPI2_CS and I2C_3_INT as
+  // push-pull output with GPIO_NOPULL and initial state LOW. This holds the
+  // SX1276 in reset. PC13 is in the backup domain (3mA max drive) so the
+  // rising edge is slow. Fix: reconfigure with GPIO_PULLUP for sharper edges
+  // and drive HIGH immediately to release the SX1276 from reset early.
+  {
+      GPIO_InitTypeDef nrst_fix = {0};
+      nrst_fix.Pin   = RADIO_NRST_Pin;
+      nrst_fix.Mode  = GPIO_MODE_OUTPUT_PP;
+      nrst_fix.Pull  = GPIO_PULLUP;
+      nrst_fix.Speed = GPIO_SPEED_FREQ_LOW;
+      HAL_GPIO_Init(RADIO_NRST_GPIO_Port, &nrst_fix);
+  }
+  HAL_GPIO_WritePin(RADIO_NRST_GPIO_Port, RADIO_NRST_Pin, GPIO_PIN_SET);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == SPI2_INT_Pin) {  /* PC15 = LSM6DSO32 INT2 */
+  /* ---- Radio SX1276 DIO pins ---- */
+  if (GPIO_Pin == SPI1_INT_Pin) {   /* PB1  = DIO0 (TxDone/RxDone) */
+    g_radio_dio0_flag = 1;
+  }
+  if (GPIO_Pin == RADIO_DIO1_Pin) { /* PD7  = DIO1 (RxTimeout)     */
+    g_radio_dio1_flag = 1;
+  }
+  if (GPIO_Pin == RADIO_DIO3_Pin) { /* PA4  = DIO3 (ValidHeader)   */
+    g_radio_dio3_flag = 1;
+  }
+
+  /* ---- Sensor interrupt pins ---- */
+  if (GPIO_Pin == SPI2_INT_Pin) {   /* PC15 = LSM6DSO32 INT2 */
     lsm6dso32_irq_handler(&imu);
   }
-  if (GPIO_Pin == I2C1_INT_Pin) {  /* PE0 = GPS data ready (NVIC not enabled yet) */
+  if (GPIO_Pin == I2C1_INT_Pin) {   /* PE0  = GPS data ready */
     max_m10m_irq_handler(&gps);
   }
-  if (GPIO_Pin == I2C_3_INT_Pin) {  /* PC8 = MMC5983MA DRDY */
+  if (GPIO_Pin == I2C_3_INT_Pin) {  /* PC8  = MMC5983MA DRDY */
     mmc5983ma_irq_handler(&mag);
   }
 }

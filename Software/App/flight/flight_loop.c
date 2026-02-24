@@ -12,11 +12,14 @@
 #include "flight_fsm.h"
 #include "cmd_router.h"
 #include "cac_handler.h"
+#include "radio_manager.h"
+#include "buzzer.h"
 #include "usbd_cdc_if.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef TEST_MODE
@@ -28,6 +31,7 @@
 #include "temp_cal_coeffs.h"
 #endif
 
+#if TEST_MODE != 2
 /* ── Module-level state (was local to main before while-loop) ── */
 static float   mag_cal_ut[3];
 static bool    mag_new        = false;
@@ -60,6 +64,7 @@ static float    last_baro_alt_agl = 0.0f;
 /* Diagnostics for EKF tuning (TEST_MODE=2) */
 static float    diag_ned_z = 0.0f;       /* latest NED-Z accel for diagnostics */
 static bool     diag_zupt_fired = false;  /* did ZUPT fire this predict cycle  */
+#endif /* TEST_MODE != 2 */
 
 /* ── Bench test mode: CDC text command parser ── */
 static char    bench_cmd_buf[32];
@@ -96,6 +101,7 @@ static void bench_dispatch(const char *cmd)
         return;
     }
 
+#if TEST_MODE != 2
     /* Skip calibration period */
     if (strcmp(cmd, "skip") == 0) {
         if (cal_done) {
@@ -114,6 +120,7 @@ static void bench_dispatch(const char *cmd)
         }
         return;
     }
+#endif
 
     /* State commands — auto-enable bench mode */
     for (int i = 0; i < (int)(sizeof(state_cmds) / sizeof(state_cmds[0])); i++) {
@@ -122,6 +129,25 @@ static void bench_dispatch(const char *cmd)
             flight_fsm_force_state(state_cmds[i].state);
             char ack[48];
             snprintf(ack, sizeof(ack), "[BENCH] FSM -> %s\r\n", state_cmds[i].name);
+            bench_send(ack);
+            return;
+        }
+    }
+
+    /* Buzzer test: numeric 0-100 = volume %, beep 3 times */
+    {
+        int val = -1;
+        const char *p = cmd;
+        bool is_num = (*p != '\0');
+        while (*p) {
+            if (*p < '0' || *p > '9') { is_num = false; break; }
+            p++;
+        }
+        if (is_num) val = atoi(cmd);
+        if (val >= 0 && val <= 100) {
+            buzzer_beep_n((uint8_t)val, 3, 200, 1000);
+            char ack[48];
+            snprintf(ack, sizeof(ack), "[BUZZ] %d%%\r\n", val);
             bench_send(ack);
             return;
         }
@@ -159,6 +185,7 @@ static void bench_process_cdc(void)
 
 void flight_loop_init(void)
 {
+#if TEST_MODE != 2
     last_mag_tick    = 0;
     baro_ref         = 0.0f;
     init_done        = false;
@@ -172,12 +199,16 @@ void flight_loop_init(void)
     ned_accel_accum[0] = ned_accel_accum[1] = ned_accel_accum[2] = 0.0f;
     last_accel_mag_g = 0.0f;
     last_baro_alt_agl = 0.0f;
+#endif
 }
 
 void flight_loop_tick(void)
 {
-    uint32_t now = HAL_GetTick();
+    /* ── Buzzer state machine ── */
+    buzzer_tick();
 
+#if TEST_MODE != 2
+    uint32_t now = HAL_GetTick();
     /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
     if (now - last_mag_tick >= 10) {
       mmc5983ma_read(&mag);
@@ -318,7 +349,7 @@ void flight_loop_tick(void)
 
     /* ── Async baro: accumulate during cal, feed EKF after cal_done ── */
     static bool s_baro_fed_ekf = false;
-    static float last_baro_alt = 0.0f;
+    static float last_baro_alt = 0.0f; (void)last_baro_alt;
     if (ms5611_tick(&baro)) {
       if (cal_done) {
         float altitude = ms5611_get_altitude(&baro, 1013.25f) - baro_ref;
@@ -352,6 +383,9 @@ void flight_loop_tick(void)
     /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
     pyro_mgr_tick();
 
+#endif /* TEST_MODE != 2 — end of nav stack gate */
+
+#if TEST_MODE != 2
     /* ── EKF diagnostic LEDs (override pyro LEDs after init) ── */
     if (cal_done) {
       static uint32_t ekf_led_tick = 0;
@@ -424,27 +458,12 @@ void flight_loop_tick(void)
         gstate.sat_count = gps.num_sv;
         tlm_send_gps(&gstate);
       }
-#elif TEST_MODE == 2
-      /* ── ASCII serial plotter output (50 Hz) ── */
-      {
-        static uint32_t last_print = 0;
-        if (now - last_print >= 20) {
-          float euler[3];
-          casper_quat_to_euler(att.q, euler);
-          char buf[200];
-          int len = snprintf(buf, sizeof(buf),
-              ">alt:%.2f,vel:%.2f,ab:%.4f,bb:%.2f,baro:%.2f,r:%.1f,p:%.1f,y:%.1f,fsm:%d,nz:%.3f,zupt:%d\r\n",
-              ekf.x[0], ekf.x[1], ekf.x[2], ekf.x[3],
-              last_baro_alt,
-              euler[0], euler[1], euler[2],
-              (int)fsm,
-              diag_ned_z, (int)diag_zupt_fired);
-          CDC_Transmit_FS((uint8_t *)buf, len);
-          last_print = now;
-        }
-      }
-#endif
+
+      /* ── Radio telemetry TX + RX window ── */
+      radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+#endif /* TEST_MODE == 1 */
     }
+#endif /* TEST_MODE != 2 */
 
 #if TEST_MODE == 1
     /* ── Process incoming CDC commands ── */

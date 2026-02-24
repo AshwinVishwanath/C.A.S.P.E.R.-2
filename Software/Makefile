@@ -121,7 +121,11 @@ App/command/cmd_router.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
-App/flight/flight_loop.c
+App/flight/flight_loop.c \
+App/radio/sx1276.c \
+App/radio/radio_manager.c \
+App/radio/radio_irq.c \
+App/buzzer/buzzer.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -178,7 +182,7 @@ C_DEFS =  \
 -DSTM32H750xx \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
--DTEST_MODE=2 \
+-DTEST_MODE=0 \
 -DMSC_MEDIA_PACKET=4096
 
 
@@ -212,7 +216,9 @@ C_INCLUDES =  \
 -IApp/command \
 -IApp/diag \
 -IApp/util \
--IApp/flight
+-IApp/flight \
+-IApp/radio \
+-IApp/buzzer
 
 
 # compile gcc flags
