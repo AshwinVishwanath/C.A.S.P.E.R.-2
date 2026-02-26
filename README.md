@@ -1,7 +1,7 @@
 # C.A.S.P.E.R 2 — Control and Stability Package for Experimental Rocketry
 
 [![Hardware Status](https://img.shields.io/badge/Hardware-Final%20Design%20%E2%80%93%20Off%20for%20Manufacture-brightgreen)]()
-[![Software Status](https://img.shields.io/badge/Software-Early%20Development-yellow)]()
+[![Software Status](https://img.shields.io/badge/Software-Alpha-orange)]()
 [![Platform](https://img.shields.io/badge/MCU-STM32H750-blue)]()
 [![Category](https://img.shields.io/badge/Application-Rocket%20Avionics-orange)]()
 
