@@ -30,13 +30,16 @@
 #include "usbd_cdc_if.h"
 #endif
 #include "ms5611.h"
+#ifndef BUILD_TARGET_GROUND
 #include "lsm6dso32.h"
 #include "adxl372.h"
 #include "w25q512jv.h"
 #include "casper_ekf.h"
 #include "casper_attitude.h"
 #include "casper_quat.h"
+#endif /* !BUILD_TARGET_GROUND */
 #include "max_m10m.h"
+#ifndef BUILD_TARGET_GROUND
 #include "mmc5983ma.h"
 #include "mag_cal.h"
 #ifdef MAG_VAL
@@ -46,7 +49,6 @@
 #include "temp_cal.h"
 #endif
 /* ── MC Testing / Telemetry modules ── */
-#include "crc32_hw.h"
 #include "tlm_manager.h"
 #include "cmd_router.h"
 #include "cac_handler.h"
@@ -55,9 +57,14 @@
 #include "pyro_manager.h"
 #include "self_test.h"
 #include "flight_loop.h"
-#include "radio_irq.h"
 #include "radio_manager.h"
+#endif /* !BUILD_TARGET_GROUND */
+#include "crc32_hw.h"
+#include "radio_irq.h"
 #include "buzzer.h"
+#ifdef BUILD_TARGET_GROUND
+#include "ground_main.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -101,13 +108,17 @@ TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN PV */
 ms5611_t baro;
+#ifndef BUILD_TARGET_GROUND
 lsm6dso32_t imu;
 adxl372_t high_g;
 w25q512jv_t flash;
 casper_ekf_t ekf;
 casper_attitude_t att;
+#endif
 max_m10m_t gps;
+#ifndef BUILD_TARGET_GROUND
 mmc5983ma_t mag;
+#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -189,22 +200,30 @@ int main(void)
   MX_ADC2_Init();
   MX_ADC3_Init();
   MX_I2C1_Init();
+#ifndef BUILD_TARGET_GROUND
   MX_I2C2_Init();
   MX_QUADSPI_Init();
+#endif
   MX_SPI1_Init();
+#ifndef BUILD_TARGET_GROUND
   MX_SPI2_Init();
+#endif
   MX_SPI4_Init();
   MX_TIM2_Init();
   MX_CRC_Init();
   MX_TIM4_Init();
+#ifndef BUILD_TARGET_GROUND
   MX_I2C3_Init();
   MX_SPI3_Init();
 
   // Init flash BEFORE USB so MSC storage callbacks can respond during enumeration
   w25q512jv_init(&flash, &hqspi);
+#endif
 
   MX_USB_DEVICE_Init();
+#ifndef BUILD_TARGET_GROUND
   MX_FATFS_Init();
+#endif
   /* USER CODE BEGIN 2 */
 
   /* ── 5-second USB enumeration window ──
@@ -212,6 +231,70 @@ int main(void)
    * sensor init runs.  All CDC debug prints after this point will
    * be visible. */
   HAL_Delay(5000);
+
+#ifdef BUILD_TARGET_GROUND
+  /* ── Ground station init ──────────────────────────────────────── */
+  {
+    char _dbg[80]; int _len;
+    #define DBG_PRINT(msg) do { \
+      _len = snprintf(_dbg, sizeof(_dbg), msg); \
+      CDC_Transmit_FS((uint8_t *)_dbg, (uint16_t)_len); \
+      HAL_Delay(20); \
+    } while(0)
+
+    DBG_PRINT("[INIT] Ground station mode\r\n");
+    DBG_PRINT("[INIT] MS5611...\r\n");
+    if (!ms5611_init(&baro, &hspi4, SPI4_CS_GPIO_Port, SPI4_CS_Pin)) {
+      for (int i = 0; i < 6; i++) {
+        HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        HAL_Delay(200);
+      }
+    }
+    ms5611_set_oversampling(&baro, MS5611_OSR_2048);
+
+    DBG_PRINT("[INIT] GPS...\r\n");
+    if (!max_m10m_init(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
+      for (int i = 0; i < 6; i++) {
+        HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        HAL_Delay(200);
+      }
+    }
+
+    DBG_PRINT("[INIT] CRC + radio...\r\n");
+    crc32_hw_init();
+    buzzer_init(&htim4);
+
+    DBG_PRINT("[INIT] ground_main_init...\r\n");
+    ground_main_init(&hspi1, &baro, &gps);
+
+    DBG_PRINT("[INIT] Ground station init complete\r\n");
+  }
+
+  /* Enable EXTI1 for SX1276 DIO0 (PB1) */
+  __HAL_GPIO_EXTI_CLEAR_IT(SPI1_INT_Pin);
+  HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+
+  /* Enable EXTI9_5 for DIO1 (PD7) */
+  __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO1_Pin);
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 1);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+  /* Reset pyro pins to input mode (safety — GS has no pyros) */
+  {
+    GPIO_InitTypeDef pyro_safe = {0};
+    pyro_safe.Pin = PY1_Pin | PY2_Pin | PY3_Pin;
+    pyro_safe.Mode = GPIO_MODE_INPUT;
+    pyro_safe.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(GPIOD, &pyro_safe);
+
+    pyro_safe.Pin = PY4_Pin;
+    HAL_GPIO_Init(GPIOB, &pyro_safe);
+  }
+
+#else /* FLIGHT build — existing code unchanged */
 
   {
     char _dbg[80]; int _len;
@@ -348,8 +431,10 @@ int main(void)
   buzzer_init(&htim4);
 
     DBG_PRINT("[INIT] radio...\r\n");
+  int radio_init_ok = 0;
   {
     int rc = radio_manager_init(&hspi1);
+    radio_init_ok = (rc == 0);
     _len = snprintf(_dbg, sizeof(_dbg), "[INIT] radio returned %d\r\n", rc);
     CDC_Transmit_FS((uint8_t *)_dbg, (uint16_t)_len);
     HAL_Delay(20);
@@ -366,23 +451,19 @@ int main(void)
   }
 
     DBG_PRINT("[INIT] all init complete\r\n");
+
+  /* Startup beep: 3 short = radio OK, 5 long = radio FAIL */
+  if (radio_init_ok) {
+    buzzer_beep_n(50, 3, 100, 150);
+  } else {
+    buzzer_beep_n(50, 5, 300, 100);
+  }
+
   } /* end DBG_PRINT scope */
 
-  /* Enable EXTI15 for LSM6DSO32 INT2 (PC15) — deferred from init to here
-   * so the ISR doesn't fire while SPI buses are still being configured. */
-  __HAL_GPIO_EXTI_CLEAR_IT(SPI2_INT_Pin);
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-
-  /* Enable EXTI1 interrupt for SX1276 DIO0 (PB1) */
-  __HAL_GPIO_EXTI_CLEAR_IT(SPI1_INT_Pin);
-  HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-
-  /* Enable EXTI9_5 for DIO1 (PD7) — shared with MMC5983MA (PC8) */
-  __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO1_Pin);
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 1);
-  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+  /* EXTI disabled — using GPIO polling instead (see flight_loop_tick).
+   * The shared EXTI15_10/EXTI9_5 handlers had stale-pending issues
+   * from SX1276 DIO4/DIO5 pins configured as IT_RISING by CubeMX. */
 
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
@@ -398,8 +479,10 @@ int main(void)
   (void)flash_ok;  // suppress warning when FATFS block is compiled out
 
 #if (USB_MODE != 2)
-  // Mount FATFS on flash (CDC mode only — MSC lets the PC manage the filesystem)
   bool fatfs_ok = false;
+  bool file_test_ok = false;
+#if (TEST_MODE != 1)
+  // Mount FATFS on flash (CDC mode only — MSC lets the PC manage the filesystem)
   if (flash_ok) {
     FRESULT fres = f_mount(&USERFatFS, USERPath, 1);
     if (fres == FR_NO_FILESYSTEM) {
@@ -413,7 +496,6 @@ int main(void)
   }
 
   // File I/O test: write a string, read it back, compare
-  bool file_test_ok = false;
   if (fatfs_ok) {
     const char test_str[] = "CASPER-2 FATFS OK";
     char read_buf[32] = {0};
@@ -442,7 +524,11 @@ int main(void)
       file_test_ok = true;
     }
   }
+#endif /* TEST_MODE != 1 */
 #endif /* USB_MODE != 2 */
+
+  /* DEBUG: LED4 ON = FATFS done */
+  HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
 
   // M5: init complete — all LEDs off, then blink all 3 times
   HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
@@ -546,6 +632,8 @@ int main(void)
 #else
   flight_loop_init();
 #endif
+
+#endif /* BUILD_TARGET_GROUND */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -555,7 +643,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-#if (USB_MODE == 2)
+#if defined(BUILD_TARGET_GROUND)
+    ground_main_tick();
+#elif (USB_MODE == 2)
     // MSC mode: pyro continuity LEDs at 10 Hz (replaces old ping-pong)
     {
       static uint32_t last_pyro_tick = 0;
@@ -1625,16 +1715,20 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     g_radio_dio3_flag = 1;
   }
 
-  /* ---- Sensor interrupt pins ---- */
-  if (GPIO_Pin == SPI2_INT_Pin) {   /* PC15 = LSM6DSO32 INT2 */
-    lsm6dso32_irq_handler(&imu);
-  }
+  /* ---- GPS data ready (both builds) ---- */
   if (GPIO_Pin == I2C1_INT_Pin) {   /* PE0  = GPS data ready */
     max_m10m_irq_handler(&gps);
+  }
+
+#ifndef BUILD_TARGET_GROUND
+  /* ---- Flight-only sensor interrupts ---- */
+  if (GPIO_Pin == SPI2_INT_Pin) {   /* PC15 = LSM6DSO32 INT2 */
+    lsm6dso32_irq_handler(&imu);
   }
   if (GPIO_Pin == I2C_3_INT_Pin) {  /* PC8  = MMC5983MA DRDY */
     mmc5983ma_irq_handler(&mag);
   }
+#endif
 }
 /* USER CODE END 4 */
 

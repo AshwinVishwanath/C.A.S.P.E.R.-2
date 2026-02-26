@@ -9,6 +9,7 @@
 #include "casper_attitude.h"
 #include "max_m10m.h"
 #include "mmc5983ma.h"
+#include "tlm_types.h"
 
 extern ms5611_t baro;
 extern lsm6dso32_t imu;
@@ -18,5 +19,7 @@ extern casper_ekf_t ekf;
 extern casper_attitude_t att;
 extern max_m10m_t gps;
 extern mmc5983ma_t mag;
+
+extern flight_cfg_t g_flight_cfg;
 
 #endif

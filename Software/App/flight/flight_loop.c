@@ -15,6 +15,7 @@
 #include "radio_manager.h"
 #include "buzzer.h"
 #include "usbd_cdc_if.h"
+#include "fsm_util.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -65,6 +66,17 @@ static float    last_baro_alt_agl = 0.0f;
 static float    diag_ned_z = 0.0f;       /* latest NED-Z accel for diagnostics */
 static bool     diag_zupt_fired = false;  /* did ZUPT fire this predict cycle  */
 #endif /* TEST_MODE != 2 */
+
+/* ── FSM flight configuration defaults ── */
+flight_cfg_t g_flight_cfg = {
+    .main_deploy_alt   = 250.0f,
+    .drogue_fail_vel   = 50.0f,
+    .drogue_fail_time  = 3.0f,
+    .apogee_pyro_ch    = 0,
+    .main_pyro_ch      = 1,
+    .apogee_fire_dur   = 1000,
+    .main_fire_dur     = 1000,
+};
 
 /* ── Bench test mode: CDC text command parser ── */
 static char    bench_cmd_buf[32];
@@ -419,7 +431,25 @@ void flight_loop_tick(void)
         tstate.batt_v = 7.4f;
       }
 
-      fsm_state_t fsm = flight_fsm_tick(&tstate);
+      /* Build fsm_input_t for sensor-driven transitions */
+      fsm_input_t fsm_in = {0};
+      fsm_in.alt_m               = ekf.x[0];
+      fsm_in.vel_mps             = ekf.x[1];
+      fsm_in.vert_accel_g        = compute_vert_accel(att.q, (float[]){
+                                     imu.accel_g[0] * G_CONST,
+                                     imu.accel_g[1] * G_CONST,
+                                     imu.accel_g[2] * G_CONST });
+      fsm_in.antenna_up          = check_antenna_up(att.q);
+      fsm_in.flight_time_s       = flight_fsm_get_time_s();
+      fsm_in.main_deploy_alt_m   = g_flight_cfg.main_deploy_alt;
+      fsm_in.drogue_fail_vel_mps = g_flight_cfg.drogue_fail_vel;
+      fsm_in.drogue_fail_time_s  = g_flight_cfg.drogue_fail_time;
+      fsm_in.apogee_pyro_ch      = g_flight_cfg.apogee_pyro_ch;
+      fsm_in.main_pyro_ch        = g_flight_cfg.main_pyro_ch;
+      fsm_in.apogee_fire_dur_ms  = g_flight_cfg.apogee_fire_dur;
+      fsm_in.main_fire_dur_ms    = g_flight_cfg.main_fire_dur;
+
+      fsm_state_t fsm = flight_fsm_tick(&fsm_in);
 
       /* On launch: transition ADXL372 from wake-up to measurement mode */
       {
@@ -446,21 +476,21 @@ void flight_loop_tick(void)
         pstate.continuity[3] = (cont_bm & 0x08) != 0;
         pstate.fired = pyro_mgr_is_firing();
         tlm_tick(&tstate, &pstate, fsm);
-      }
 
-      /* ── GPS telemetry on new fix ── */
-      if (gps_new_fix) {
-        fc_gps_state_t gstate;
-        gstate.dlat_mm   = 0;
-        gstate.dlon_mm   = 0;
-        gstate.alt_msl_m = gps.alt_msl_m;
-        gstate.fix_type  = gps.fix_type;
-        gstate.sat_count = gps.num_sv;
-        tlm_send_gps(&gstate);
-      }
+        /* ── GPS telemetry on new fix ── */
+        if (gps_new_fix) {
+          fc_gps_state_t gstate;
+          gstate.dlat_mm   = 0;
+          gstate.dlon_mm   = 0;
+          gstate.alt_msl_m = gps.alt_msl_m;
+          gstate.fix_type  = gps.fix_type;
+          gstate.sat_count = gps.num_sv;
+          tlm_send_gps(&gstate);
+        }
 
-      /* ── Radio telemetry TX + RX window ── */
-      radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+        /* ── Radio telemetry TX + RX window ── */
+        radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+      }
 #endif /* TEST_MODE == 1 */
     }
 #endif /* TEST_MODE != 2 */

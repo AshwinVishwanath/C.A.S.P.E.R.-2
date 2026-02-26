@@ -23,7 +23,7 @@ typedef struct {
     uint32_t freq_hz;       /* Carrier frequency: 868000000            */
 } radio_profile_t;
 
-/* ── Profile instances (defined in radio_manager.c) ─────────────── */
+/* ── Profile instances (defined in radio_config.c) ──────────────── */
 
 extern const radio_profile_t RADIO_PROFILE_A;  /* SF7, 250k, CR4/5 */
 extern const radio_profile_t RADIO_PROFILE_B;  /* SF8, 250k, CR4/5 */

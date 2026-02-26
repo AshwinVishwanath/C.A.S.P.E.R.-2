@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "tlm_types.h"
+#include "fsm_types.h"
 
 /**
  * Initialize the flight state machine. Starts in PAD state.
@@ -11,13 +12,19 @@
 void flight_fsm_init(void);
 
 /**
- * Tick the FSM. Call every superloop iteration.
- * Handles simulated flight progression and state transitions.
- *
- * @param state  Current telemetry state (used for sensor-based transitions — TODO)
- * @return       Current FSM state
+ * Reset all FSM internal state (for testing).
+ * Equivalent to flight_fsm_init().
  */
-fsm_state_t flight_fsm_tick(const fc_telem_state_t *state);
+void flight_fsm_reset(void);
+
+/**
+ * Tick the FSM. Call every superloop iteration.
+ * Handles simulated flight progression and sensor-driven state transitions.
+ *
+ * @param in  Sensor-derived FSM inputs (ignored during sim/bench mode)
+ * @return    Current FSM state
+ */
+fsm_state_t flight_fsm_tick(const fsm_input_t *in);
 
 /**
  * Get current FSM state.
@@ -38,7 +45,7 @@ void flight_fsm_force_state(fsm_state_t new_state);
 
 /**
  * Start simulated flight sequence (0xD0 debug command).
- * Scripted PAD→BOOST→COAST→APOGEE→DROGUE→MAIN→RECOVERY→LANDED.
+ * Scripted PAD->BOOST->COAST->APOGEE->DROGUE->MAIN->RECOVERY->LANDED.
  */
 void flight_fsm_sim_start(void);
 

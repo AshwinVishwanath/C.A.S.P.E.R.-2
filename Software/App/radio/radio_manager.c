@@ -9,6 +9,7 @@
  */
 
 #include "radio_manager.h"
+#include "main.h"
 #include "sx1276.h"
 #include "radio_config.h"
 #include "radio_irq.h"
@@ -20,19 +21,7 @@
 #include <string.h>
 #include <math.h>
 
-/* ── Profile instances ─────────────────────────────────────────────── */
-
-const radio_profile_t RADIO_PROFILE_A = {
-    .sf = 7, .bw_hz = 250000, .cr = 5,
-    .sync_word = 0x12, .preamble = 8,
-    .tx_power_dbm = 20, .freq_hz = 868000000
-};
-
-const radio_profile_t RADIO_PROFILE_B = {
-    .sf = 8, .bw_hz = 250000, .cr = 5,
-    .sync_word = 0x12, .preamble = 8,
-    .tx_power_dbm = 20, .freq_hz = 868000000
-};
+/* ── Profile instances are in radio_config.c (shared with ground) ──── */
 
 /* ── State machine ─────────────────────────────────────────────────── */
 
@@ -260,6 +249,7 @@ static int build_event_packet(uint8_t *buf, uint8_t type, uint16_t data)
 
 static void start_tx(const uint8_t *pkt, uint8_t len)
 {
+    HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);  /* TX activity LED */
     sx1276_set_mode(SX1276_MODE_STDBY);
     sx1276_write_reg(SX1276_REG_FIFO_ADDR_PTR, SX1276_FIFO_TX_BASE);
     sx1276_write_fifo(pkt, len);
@@ -508,6 +498,12 @@ void radio_manager_tick(const casper_ekf_t *ekf,
                         fsm_state_t fsm)
 {
     if (s_radio_state == RADIO_STATE_DISABLED) return;
+
+    /* Poll DIO0/DIO1 GPIOs (EXTI disabled — using polling instead) */
+    if (HAL_GPIO_ReadPin(SPI1_INT_GPIO_Port, SPI1_INT_Pin))
+        g_radio_dio0_flag = 1;
+    if (HAL_GPIO_ReadPin(RADIO_DIO1_GPIO_Port, RADIO_DIO1_Pin))
+        g_radio_dio1_flag = 1;
 
     uint32_t now = HAL_GetTick();
 

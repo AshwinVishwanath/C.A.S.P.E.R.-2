@@ -18,6 +18,8 @@
 #include "mock_gpio.h"
 #include "mock_adc.h"
 #include "flight_fsm.h"
+#include "fsm_types.h"
+#include "fsm_util.h"
 #include "tlm_types.h"
 
 /* ================================================================== */
@@ -39,8 +41,10 @@ int tlm_queue_event(uint8_t type, uint16_t data)
     return 1;
 }
 
-/* Stub for pyro_mgr_disarm_all (called by FSM on LANDED) */
+/* Stubs for pyro_manager functions (called by FSM) */
 void pyro_mgr_disarm_all(void) { }
+void pyro_mgr_auto_arm_flight(void) { }
+int  pyro_mgr_auto_fire(uint8_t ch, uint16_t dur) { (void)ch; (void)dur; return 0; }
 
 static void reset_spy(void)
 {
@@ -49,27 +53,47 @@ static void reset_spy(void)
     memset(spy_evt_datas, 0, sizeof(spy_evt_datas));
 }
 
-/* Build a default telem state (idle on pad) */
-static fc_telem_state_t make_pad_state(void)
+/* Build a default FSM input (idle on pad) */
+static fsm_input_t make_pad_input(void)
 {
-    fc_telem_state_t s;
-    memset(&s, 0, sizeof(s));
-    s.accel_mag_g = 1.0f;
-    s.baro_alt_m = 0.0f;
-    s.vel_mps = 0.0f;
-    s.adxl_available = true;
-    s.adxl_activity = false;
-    return s;
+    fsm_input_t in;
+    memset(&in, 0, sizeof(in));
+    in.vert_accel_g = 0.0f;
+    in.alt_m = 0.0f;
+    in.vel_mps = 0.0f;
+    in.antenna_up = true;
+    in.flight_time_s = 0.0f;
+    in.main_deploy_alt_m = 250.0f;
+    in.drogue_fail_vel_mps = 50.0f;
+    in.drogue_fail_time_s = 3.0f;
+    in.apogee_pyro_ch = 0;
+    in.main_pyro_ch = 1;
+    in.apogee_fire_dur_ms = 1000;
+    in.main_fire_dur_ms = 1000;
+    return in;
 }
 
 /* ================================================================== */
 /*  setUp / tearDown                                                    */
 /* ================================================================== */
 
+/* Helper: keep mock_tick and fsm virtual clock in sync */
+static void set_tick(uint32_t ms)
+{
+    mock_tick_set(ms);
+    fsm_set_tick(ms);
+}
+
+static void advance_tick(uint32_t delta_ms)
+{
+    mock_tick_advance(delta_ms);
+    fsm_set_tick(mock_tick_get());
+}
+
 void setUp(void)
 {
     mock_tick_reset();
-    mock_tick_set(1000);
+    set_tick(1000);
     reset_spy();
     flight_fsm_init();
 }
@@ -96,62 +120,65 @@ void test_mission_time_zero_before_launch(void)
 
 void test_launch_detection_dual_sensor(void)
 {
-    fc_telem_state_t state = make_pad_state();
+    fsm_input_t in = make_pad_input();
 
     /* Tick once with low accel — should stay on PAD */
-    state.accel_mag_g = 1.0f;
-    flight_fsm_tick(&state);
+    in.vert_accel_g = 0.0f;
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_PAD, flight_fsm_get_state());
 
-    /* Two consecutive ticks with accel > 3g AND adxl activity */
-    state.accel_mag_g = 5.0f;
-    state.adxl_activity = true;
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
-    /* Need 2 consecutive > 3g samples */
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    /* Sustained accel > 2g for 100ms + vel > 15 + antenna_up */
+    in.vert_accel_g = 5.0f;
+    in.vel_mps = 20.0f;
+    in.antenna_up = true;
+    advance_tick(1);
+    flight_fsm_tick(&in);
+    /* Need sustained 100ms dwell */
+    advance_tick(110);
+    flight_fsm_tick(&in);
 
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_BOOST, flight_fsm_get_state());
 }
 
 void test_launch_detection_resets_on_gap(void)
 {
-    fc_telem_state_t state = make_pad_state();
+    fsm_input_t in = make_pad_input();
 
-    /* One high-accel tick */
-    state.accel_mag_g = 5.0f;
-    state.adxl_activity = true;
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    /* Start high-accel dwell */
+    in.vert_accel_g = 5.0f;
+    in.vel_mps = 20.0f;
+    in.antenna_up = true;
+    advance_tick(50);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_PAD, flight_fsm_get_state());
 
-    /* One low-accel tick (resets counter) */
-    state.accel_mag_g = 1.0f;
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    /* Drop accel below threshold (resets dwell timer) */
+    in.vert_accel_g = 0.5f;
+    advance_tick(10);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_PAD, flight_fsm_get_state());
 
-    /* One more high-accel tick (counter = 1, need 2) */
-    state.accel_mag_g = 5.0f;
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    /* Resume high accel — dwell restarts, only 50ms so far (need 100ms) */
+    in.vert_accel_g = 5.0f;
+    advance_tick(50);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_PAD, flight_fsm_get_state());
 }
 
-void test_launch_degraded_mode_no_adxl(void)
+void test_launch_requires_antenna_up(void)
 {
-    fc_telem_state_t state = make_pad_state();
-    state.adxl_available = false;  /* ADXL372 not available */
+    fsm_input_t in = make_pad_input();
+    in.antenna_up = false;  /* Rocket not upright */
 
-    /* Two consecutive high-accel ticks — should still launch (degraded mode) */
-    state.accel_mag_g = 5.0f;
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    /* Sustained high accel + vel, but antenna not up — should NOT launch */
+    in.vert_accel_g = 5.0f;
+    in.vel_mps = 20.0f;
+    advance_tick(1);
+    flight_fsm_tick(&in);
+    advance_tick(110);
+    flight_fsm_tick(&in);
 
-    TEST_ASSERT_EQUAL_HEX8(FSM_STATE_BOOST, flight_fsm_get_state());
+    TEST_ASSERT_EQUAL_HEX8(FSM_STATE_PAD, flight_fsm_get_state());
 }
 
 /* ================================================================== */
@@ -160,14 +187,15 @@ void test_launch_degraded_mode_no_adxl(void)
 
 void test_mission_timer_starts_at_launch(void)
 {
-    fc_telem_state_t state = make_pad_state();
-    state.accel_mag_g = 5.0f;
-    state.adxl_activity = true;
+    fsm_input_t in = make_pad_input();
+    in.vert_accel_g = 5.0f;
+    in.vel_mps = 20.0f;
+    in.antenna_up = true;
 
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    advance_tick(1);
+    flight_fsm_tick(&in);
+    advance_tick(110);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_BOOST, flight_fsm_get_state());
 
     /* Timer should be very small right after launch */
@@ -175,7 +203,7 @@ void test_mission_timer_starts_at_launch(void)
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, t0);
 
     /* Advance 2 seconds */
-    mock_tick_advance(2000);
+    advance_tick(2000);
     float t1 = flight_fsm_get_time_s();
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 2.0f, t1);
     TEST_ASSERT_TRUE(t1 > t0);
@@ -218,7 +246,7 @@ void test_force_state_starts_mission_timer(void)
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, flight_fsm_get_time_s());
 
     flight_fsm_force_state(FSM_STATE_BOOST);
-    mock_tick_advance(1000);
+    advance_tick(1000);
 
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 1.0f, flight_fsm_get_time_s());
 }
@@ -227,15 +255,14 @@ void test_force_state_apogee_emits_apogee_event(void)
 {
     flight_fsm_force_state(FSM_STATE_APOGEE);
 
-    /* Should emit both FC_EVT_STATE and FC_EVT_APOGEE */
+    /* force_state always emits FC_EVT_STATE.
+     * FC_EVT_APOGEE is now only emitted by the sensor-driven COAST->APOGEE
+     * path (not by transition_to directly), so force_state does NOT emit it. */
     bool found_state = false;
-    bool found_apogee = false;
     for (int i = 0; i < spy_evt_count; i++) {
         if (spy_evt_types[i] == FC_EVT_STATE) found_state = true;
-        if (spy_evt_types[i] == FC_EVT_APOGEE) found_apogee = true;
     }
     TEST_ASSERT_TRUE(found_state);
-    TEST_ASSERT_TRUE(found_apogee);
 }
 
 void test_force_state_same_state_no_event(void)
@@ -260,56 +287,56 @@ void test_sim_starts_active(void)
 void test_sim_progresses_through_states(void)
 {
     flight_fsm_sim_start();
-    fc_telem_state_t state = make_pad_state();
+    fsm_input_t in = make_pad_input();
 
     /* At t=0: PAD */
-    flight_fsm_tick(&state);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_PAD, flight_fsm_get_state());
 
     /* At t=0.5s: BOOST */
-    mock_tick_advance(600);
-    flight_fsm_tick(&state);
+    advance_tick(600);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_BOOST, flight_fsm_get_state());
 
     /* At t=3.5s: COAST */
-    mock_tick_advance(3000);
-    flight_fsm_tick(&state);
+    advance_tick(3000);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_COAST, flight_fsm_get_state());
 
     /* At t=12s: APOGEE */
-    mock_tick_advance(8500);
-    flight_fsm_tick(&state);
+    advance_tick(8500);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_APOGEE, flight_fsm_get_state());
 
     /* At t=12.5s: DROGUE */
-    mock_tick_advance(600);
-    flight_fsm_tick(&state);
+    advance_tick(600);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_DROGUE, flight_fsm_get_state());
 
     /* At t=45s: MAIN */
-    mock_tick_advance(33000);
-    flight_fsm_tick(&state);
+    advance_tick(33000);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_MAIN, flight_fsm_get_state());
 
     /* At t=90s: RECOVERY */
-    mock_tick_advance(46000);
-    flight_fsm_tick(&state);
+    advance_tick(46000);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_RECOVERY, flight_fsm_get_state());
 
     /* At t=180s: LANDED */
-    mock_tick_advance(91000);
-    flight_fsm_tick(&state);
+    advance_tick(91000);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_LANDED, flight_fsm_get_state());
 }
 
 void test_sim_stop_returns_to_pad(void)
 {
     flight_fsm_sim_start();
-    fc_telem_state_t state = make_pad_state();
+    fsm_input_t in = make_pad_input();
 
     /* Advance to BOOST */
-    mock_tick_advance(600);
-    flight_fsm_tick(&state);
+    advance_tick(600);
+    flight_fsm_tick(&in);
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_BOOST, flight_fsm_get_state());
 
     /* Stop sim */
@@ -323,7 +350,7 @@ void test_sim_get_state_interpolates(void)
     flight_fsm_sim_start();
 
     /* Advance to mid-boost (~1.5s) */
-    mock_tick_advance(1500);
+    advance_tick(1500);
 
     fc_telem_state_t out;
     memset(&out, 0, sizeof(out));
@@ -342,11 +369,11 @@ void test_sim_get_state_interpolates(void)
 void test_sim_auto_ends_after_landed(void)
 {
     flight_fsm_sim_start();
-    fc_telem_state_t state = make_pad_state();
+    fsm_input_t in = make_pad_input();
 
     /* Advance well past LANDED + 5s holdoff (180s + 6s = 186s) */
-    mock_tick_advance(186000);
-    flight_fsm_tick(&state);
+    advance_tick(186000);
+    flight_fsm_tick(&in);
 
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_LANDED, flight_fsm_get_state());
     TEST_ASSERT_FALSE(flight_fsm_sim_active());
@@ -361,15 +388,16 @@ void test_bench_mode_holds_state(void)
     flight_fsm_set_bench_mode(true);
     TEST_ASSERT_TRUE(flight_fsm_bench_active());
 
-    fc_telem_state_t state = make_pad_state();
-    state.accel_mag_g = 10.0f;
-    state.adxl_activity = true;
+    fsm_input_t in = make_pad_input();
+    in.vert_accel_g = 10.0f;
+    in.vel_mps = 20.0f;
+    in.antenna_up = true;
 
     /* Even with high accel, should not transition */
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    advance_tick(1);
+    flight_fsm_tick(&in);
+    advance_tick(110);
+    flight_fsm_tick(&in);
 
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_PAD, flight_fsm_get_state());
 }
@@ -388,14 +416,15 @@ void test_bench_mode_off_resumes_transitions(void)
     flight_fsm_set_bench_mode(false);
     TEST_ASSERT_FALSE(flight_fsm_bench_active());
 
-    fc_telem_state_t state = make_pad_state();
-    state.accel_mag_g = 5.0f;
-    state.adxl_activity = true;
+    fsm_input_t in = make_pad_input();
+    in.vert_accel_g = 5.0f;
+    in.vel_mps = 20.0f;
+    in.antenna_up = true;
 
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
-    mock_tick_advance(1);
-    flight_fsm_tick(&state);
+    advance_tick(1);
+    flight_fsm_tick(&in);
+    advance_tick(110);
+    flight_fsm_tick(&in);
 
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_BOOST, flight_fsm_get_state());
 }
@@ -404,23 +433,20 @@ void test_bench_mode_off_resumes_transitions(void)
 /*  Landing detection tests                                             */
 /* ================================================================== */
 
-void test_landing_detection_in_drogue(void)
+void test_landing_detection_in_main(void)
 {
-    /* Put FSM into DROGUE state */
-    flight_fsm_force_state(FSM_STATE_DROGUE);
+    /* Put FSM into MAIN state (landing only detected from MAIN) */
+    flight_fsm_force_state(FSM_STATE_MAIN);
     reset_spy();
 
-    fc_telem_state_t state = make_pad_state();
-    state.baro_alt_m = 50.0f;
-    state.vel_mps = 0.0f;
+    fsm_input_t in = make_pad_input();
+    in.alt_m = 5.0f;
+    in.vel_mps = 0.0f;
 
-    /* Landing detection requires LANDED_MIN_DESCENT (10s) in descent state first */
-    mock_tick_advance(11000);
-
-    /* Then T_LANDED_SUSTAIN (5s) of stable baro + low velocity */
-    for (int i = 0; i < 60; i++) {
-        mock_tick_advance(100);
-        flight_fsm_tick(&state);
+    /* Sustain |vel| < 1 m/s AND |delta_alt| < 2 m for 3 seconds */
+    for (int i = 0; i < 40; i++) {
+        advance_tick(100);
+        flight_fsm_tick(&in);
     }
 
     TEST_ASSERT_EQUAL_HEX8(FSM_STATE_LANDED, flight_fsm_get_state());
@@ -433,11 +459,11 @@ void test_landing_detection_in_drogue(void)
 void test_sim_emits_state_events(void)
 {
     flight_fsm_sim_start();
-    fc_telem_state_t state = make_pad_state();
+    fsm_input_t in = make_pad_input();
 
     /* Advance through BOOST */
-    mock_tick_advance(600);
-    flight_fsm_tick(&state);
+    advance_tick(600);
+    flight_fsm_tick(&in);
 
     /* Check that FC_EVT_STATE was emitted for BOOST */
     bool found_boost = false;
@@ -465,7 +491,7 @@ int main(void)
     /* Launch detection */
     RUN_TEST(test_launch_detection_dual_sensor);
     RUN_TEST(test_launch_detection_resets_on_gap);
-    RUN_TEST(test_launch_degraded_mode_no_adxl);
+    RUN_TEST(test_launch_requires_antenna_up);
 
     /* Mission timer */
     RUN_TEST(test_mission_timer_starts_at_launch);
@@ -491,7 +517,7 @@ int main(void)
     RUN_TEST(test_bench_mode_off_resumes_transitions);
 
     /* Landing detection */
-    RUN_TEST(test_landing_detection_in_drogue);
+    RUN_TEST(test_landing_detection_in_main);
 
     /* Event emission */
     RUN_TEST(test_sim_emits_state_events);

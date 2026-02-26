@@ -7,6 +7,9 @@
 #include "endian.h"
 #include "usbd_cdc_if.h"
 #include <string.h>
+#ifdef HIL_MODE
+#include "hil_handler.h"
+#endif
 
 /* ── Forward declarations for handlers in other modules ────── */
 extern void cac_handle_arm(const uint8_t *data, int len);
@@ -93,6 +96,10 @@ static void dispatch_frame(const uint8_t *decoded, int len)
     case MSG_ID_READLOG:       cfg_handle_readlog(decoded, len);     break;
     case MSG_ID_ERASELOG:      cfg_handle_eraselog(decoded, len);     break;
     case MSG_ID_SIM_FLIGHT:    cmd_handle_sim_flight(decoded, len);  break;
+
+#ifdef HIL_MODE
+    case MSG_ID_HIL_INJECT:    hil_handle_inject(decoded, len);  break;
+#endif
 
     default:
         /* Unknown message — silently discard */

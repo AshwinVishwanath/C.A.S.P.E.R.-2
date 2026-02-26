@@ -3,11 +3,24 @@
 #include "flight_fsm.h"
 #include "tlm_types.h"
 #include "stm32h7xx_hal.h"
+#include "fsm_types.h"
+
+extern int tlm_queue_event(uint8_t type, uint16_t data);
 
 /* ── Private state ──────────────────────────────────────────────── */
 static casper_pyro_t pyro;
 static bool s_armed[PYRO_MGR_NUM_CHANNELS];
 static bool s_test_mode;
+
+/* ── PAD lockout (FSM_TRANSITION_SPEC §6.1) ────────────────────── */
+#define PYRO_PAD_LOCKOUT() \
+    do { if (flight_fsm_get_state() == FSM_STATE_PAD) return -1; } while(0)
+
+/* ── Channel exclusion (FSM_TRANSITION_SPEC §6.2) ──────────────── */
+static inline bool pyro_ch_excluded(uint8_t ch)
+{
+    return (PYRO_EXCLUDE_MASK >> ch) & 1;
+}
 
 void pyro_mgr_init(ADC_HandleTypeDef *hadc1,
                     ADC_HandleTypeDef *hadc2,
@@ -149,4 +162,38 @@ void pyro_mgr_set_test_mode(bool enable)
 bool pyro_mgr_is_test_mode(void)
 {
     return s_test_mode;
+}
+
+void pyro_mgr_auto_arm_flight(void)
+{
+    for (uint8_t ch = 0; ch < PYRO_MGR_NUM_CHANNELS; ch++) {
+        if (pyro_ch_excluded(ch)) continue;
+        if (!pyro.continuity[ch]) continue;
+        if (s_armed[ch]) continue;              /* already armed */
+
+        s_armed[ch] = true;
+        tlm_queue_event(FC_EVT_ARM,
+                        ((uint16_t)ch << 8) | 0x01);   /* auto-arm event */
+    }
+}
+
+int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms)
+{
+    /* Hard safety: never fire on pad */
+    PYRO_PAD_LOCKOUT();
+
+    /* Preconditions */
+    if (ch >= PYRO_MGR_NUM_CHANNELS) return -1;
+    if (pyro_ch_excluded(ch)) return -1;
+    if (!s_armed[ch]) return -1;
+    if (!pyro.continuity[ch]) return -1;
+    if (pyro.firing[ch]) return -1;
+
+    /* Cap duration */
+    if (duration_ms > PYRO_MAX_FIRE_MS) duration_ms = PYRO_MAX_FIRE_MS;
+
+    casper_pyro_fire(&pyro, ch, duration_ms);
+    tlm_queue_event(FC_EVT_PYRO,
+                    ((uint16_t)ch << 8) | (duration_ms & 0xFF));
+    return 0;
 }

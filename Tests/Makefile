@@ -59,6 +59,7 @@ STATUS_SRC    = $(APP_ROOT)/pack/status_pack.c
 QPACK_SRC     = $(APP_ROOT)/pack/quat_pack.c
 MS5611_SRC    = $(APP_ROOT)/drivers/ms5611.c
 FSM_SRC       = $(APP_ROOT)/fsm/flight_fsm.c
+FSM_UTIL_SRC  = $(APP_ROOT)/fsm/fsm_util.c
 PYRO_MGR_SRC  = $(APP_ROOT)/pyro/pyro_manager.c
 PYRO_DRV_SRC  = $(APP_ROOT)/pyro/casper_pyro.c
 CAC_SRC       = $(APP_ROOT)/command/cac_handler.c
@@ -79,7 +80,8 @@ TIER1_TESTS = \
 	$(BUILD_DIR)/test_crc32 \
 	$(BUILD_DIR)/test_status_pack \
 	$(BUILD_DIR)/test_ms5611_math \
-	$(BUILD_DIR)/test_tlm_pack
+	$(BUILD_DIR)/test_tlm_pack \
+	$(BUILD_DIR)/test_fsm_util
 
 TIER1_NAV_TESTS = \
 	$(BUILD_DIR)/test_casper_gyro_int
@@ -107,9 +109,12 @@ TIER2_CONDITIONAL =
 
 ifneq ($(wildcard $(FSM_SRC)),)
 TIER2_CONDITIONAL += $(BUILD_DIR)/test_flight_fsm
+TIER2_CONDITIONAL += $(BUILD_DIR)/test_fsm_transitions
+TIER2_CONDITIONAL += $(BUILD_DIR)/test_hil_handler
 endif
 ifneq ($(wildcard $(PYRO_MGR_SRC)),)
 TIER2_CONDITIONAL += $(BUILD_DIR)/test_pyro_manager
+TIER2_CONDITIONAL += $(BUILD_DIR)/test_pyro_safety
 endif
 ifneq ($(wildcard $(CAC_SRC)),)
 TIER2_CONDITIONAL += $(BUILD_DIR)/test_cac_handler
@@ -159,13 +164,25 @@ $(BUILD_DIR)/test_ms5611_math: tier1_unit/test_ms5611_math.c $(MS5611_SRC) $(COM
 $(BUILD_DIR)/test_tlm_pack: tier1_unit/test_tlm_pack.c $(QPACK_SRC) $(COMMON) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
 
+$(BUILD_DIR)/test_fsm_util: tier1_unit/test_fsm_util.c $(FSM_UTIL_SRC) $(QUAT_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -DHIL_MODE -o $@ $^ $(LDFLAGS)
+
 # ---- TIER 2: Protocol/FSM ----
 
-$(BUILD_DIR)/test_flight_fsm: tier2_protocol/test_flight_fsm.c $(FSM_SRC) $(COBS_SRC) $(CRC_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
+$(BUILD_DIR)/test_flight_fsm: tier2_protocol/test_flight_fsm.c $(FSM_SRC) $(FSM_UTIL_SRC) $(QUAT_SRC) $(COBS_SRC) $(CRC_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -DHIL_MODE -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/test_fsm_transitions: tier2_protocol/test_fsm_transitions.c $(FSM_SRC) $(FSM_UTIL_SRC) $(QUAT_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -DHIL_MODE -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/test_hil_handler: tier2_protocol/test_hil_handler.c $(FSM_SRC) $(FSM_UTIL_SRC) $(QUAT_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -DHIL_MODE -o $@ $^ $(LDFLAGS)
 
 $(BUILD_DIR)/test_pyro_manager: tier2_protocol/test_pyro_manager.c $(PYRO_MGR_SRC) $(PYRO_DRV_SRC) $(COMMON) $(MOCK_TICK_SRC) $(MOCK_GPIO_SRC) $(MOCK_ADC_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/test_pyro_safety: tier2_protocol/test_pyro_safety.c $(PYRO_MGR_SRC) $(PYRO_DRV_SRC) $(FSM_SRC) $(FSM_UTIL_SRC) $(QUAT_SRC) $(COMMON) $(MOCK_TICK_SRC) $(MOCK_GPIO_SRC) $(MOCK_ADC_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -DHIL_MODE -DPYRO_EXCLUDE_MASK=0x04 -o $@ $^ $(LDFLAGS)
 
 $(BUILD_DIR)/test_cac_handler: tier2_protocol/test_cac_handler.c $(CAC_SRC) $(COBS_SRC) $(CRC_SRC) $(PYRO_MGR_SRC) $(PYRO_DRV_SRC) $(COMMON) $(MOCK_TICK_SRC) $(MOCK_GPIO_SRC) $(MOCK_ADC_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)

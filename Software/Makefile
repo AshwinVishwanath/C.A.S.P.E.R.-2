@@ -13,7 +13,14 @@
 ######################################
 # target
 ######################################
-TARGET = Casper2
+# Build target: FLIGHT (default) or GROUND
+BUILD_TARGET ?= FLIGHT
+
+ifeq ($(BUILD_TARGET),GROUND)
+TARGET = Casper2_Ground
+else
+TARGET = Casper2_Flight
+endif
 
 
 ######################################
@@ -28,13 +35,18 @@ OPT = -Og
 #######################################
 # paths
 #######################################
-# Build path
-BUILD_DIR = build
+# Build path — separate subdirectories for flight and ground
+ifeq ($(BUILD_TARGET),GROUND)
+BUILD_DIR = build/GroundStation
+else
+BUILD_DIR = build/FlightComputer
+endif
 
 ######################################
 # source
 ######################################
 # C sources
+# ── Base sources (HAL / Core / System / USB / Drivers) ────────────
 C_SOURCES =  \
 Core/Src/main.c \
 Core/Src/stm32h7xx_it.c \
@@ -78,12 +90,33 @@ Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c \
 Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Src/usbd_cdc.c \
 Core/Src/system_stm32h7xx.c \
 Core/Src/sysmem.c \
-Core/Src/syscalls.c \
+Core/Src/syscalls.c
+
+# ── Shared application sources (both builds) ──────────────────
+C_SOURCES += \
 App/drivers/ms5611.c \
+App/drivers/max_m10m.c \
+App/radio/sx1276.c \
+App/radio/radio_irq.c \
+App/radio/radio_config.c \
+App/telemetry/cobs.c \
+App/telemetry/crc32_hw.c \
+App/pack/quat_pack.c \
+App/pack/status_pack.c \
+App/buzzer/buzzer.c
+
+ifeq ($(BUILD_TARGET),GROUND)
+# ── Ground station sources ──────────────────────────────────────
+C_SOURCES += \
+App/ground/ground_main.c \
+App/ground/ground_radio.c
+
+else
+# ── Flight-only sources ─────────────────────────────────────────
+C_SOURCES += \
 App/drivers/lsm6dso32.c \
 App/drivers/adxl372.c \
 App/drivers/w25q512jv.c \
-App/drivers/max_m10m.c \
 App/drivers/mmc5983ma.c \
 App/nav/casper_quat.c \
 App/nav/casper_attitude.c \
@@ -110,22 +143,19 @@ Middlewares/ST/STM32_USB_Device_Library/Class/MSC/Src/usbd_msc_bot.c \
 Middlewares/ST/STM32_USB_Device_Library/Class/MSC/Src/usbd_msc_scsi.c \
 Middlewares/ST/STM32_USB_Device_Library/Class/MSC/Src/usbd_msc_data.c \
 USB_DEVICE/App/usbd_msc_storage_if.c \
-App/telemetry/cobs.c \
-App/telemetry/crc32_hw.c \
 App/telemetry/tlm_manager.c \
-App/pack/quat_pack.c \
-App/pack/status_pack.c \
 App/pyro/pyro_manager.c \
 App/fsm/flight_fsm.c \
+App/fsm/fsm_util.c \
 App/command/cmd_router.c \
+App/command/hil_handler.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
 App/flight/flight_loop.c \
-App/radio/sx1276.c \
-App/radio/radio_manager.c \
-App/radio/radio_irq.c \
-App/buzzer/buzzer.c
+App/radio/radio_manager.c
+
+endif
 
 # ASM sources
 ASM_SOURCES =  \
@@ -182,8 +212,14 @@ C_DEFS =  \
 -DSTM32H750xx \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
--DTEST_MODE=0 \
+-DTEST_MODE=1 \
 -DMSC_MEDIA_PACKET=4096
+
+ifeq ($(BUILD_TARGET),GROUND)
+C_DEFS += -DBUILD_TARGET_GROUND
+else
+C_DEFS += -DBUILD_TARGET_FLIGHT
+endif
 
 
 # AS includes
@@ -218,7 +254,8 @@ C_INCLUDES =  \
 -IApp/util \
 -IApp/flight \
 -IApp/radio \
--IApp/buzzer
+-IApp/buzzer \
+-IApp/ground
 
 
 # compile gcc flags
@@ -281,13 +318,20 @@ $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 	$(BIN) $< $@	
 	
 $(BUILD_DIR):
-	mkdir $@		
+	mkdir -p $@
+
+# ── Convenience build targets ─────────────────────────────────
+flight:
+	$(MAKE) BUILD_TARGET=FLIGHT
+
+ground:
+	$(MAKE) BUILD_TARGET=GROUND
 
 #######################################
 # clean up
 #######################################
 clean:
-	-rm -fR $(BUILD_DIR)
+	-rm -fR build
   
 #######################################
 # dependencies

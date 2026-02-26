@@ -1,32 +1,42 @@
 #include "flight_fsm.h"
+#include "fsm_util.h"
 #include "stm32h7xx_hal.h"
-#include "pyro_manager.h"
 #include <math.h>
 #include <string.h>
 
-/* Forward declaration — implemented in tlm_manager.c */
-extern int tlm_queue_event(uint8_t type, uint16_t data);
+#include "pyro_manager.h"
 
-/* ── Internal state ─────────────────────────────────────────────── */
+/* Forward declaration — implemented in tlm_manager.c */
+extern int  tlm_queue_event(uint8_t type, uint16_t data);
+
+/* ── Internal state (spec S8) ──────────────────────────────────── */
 static fsm_state_t s_state;
 static uint32_t    s_state_entry_ms;
 static uint32_t    s_mission_start_ms;
 static bool        s_mission_started;
 
-/* Simulated flight */
+/* Sim + bench */
 static bool        s_sim_active;
 static uint32_t    s_sim_start_ms;
-
-/* Bench test mode — holds FSM state, no auto-transitions */
 static bool        s_bench_mode;
 
-/* Launch detection (Item 10) */
-static uint8_t s_lsm_launch_count;
+/* Dwell timers (spec S8) */
+static dwell_timer_t s_launch_accel_dwell;
+static dwell_timer_t s_burnout_dwell;
+static dwell_timer_t s_sustain_relight_dwell;
+static dwell_timer_t s_apogee_vel_dwell;
+static dwell_timer_t s_drogue_fail_dwell;
+static dwell_timer_t s_landed_dwell;
 
-/* Landing detection (Item 8) */
-static float    s_land_baro_ref;
-static uint32_t s_land_window_start_ms;
-static bool     s_land_window_active;
+/* Peak tracking */
+static float   s_peak_accel_g;
+static float   s_peak_alt_m;
+
+/* Landing detection */
+static float   s_landed_alt_ref;
+
+/* Multi-stage */
+static uint8_t s_stage_count;
 
 /* ── Sim flight profile (time_s, alt_m, vel_mps) ─────────────── */
 typedef struct {
@@ -52,14 +62,13 @@ static const sim_waypoint_t s_sim_profile[] = {
 /* ── Helpers ────────────────────────────────────────────────────── */
 static void transition_to(fsm_state_t new_state)
 {
-    if (new_state == s_state) {
-        return;
-    }
+    if (new_state == s_state) return;
     s_state = new_state;
-    s_state_entry_ms = HAL_GetTick();
+    s_state_entry_ms = fsm_get_tick();
     tlm_queue_event(FC_EVT_STATE, (uint16_t)new_state);
-    if (new_state == FSM_STATE_APOGEE) {
-        tlm_queue_event(FC_EVT_APOGEE, 0);
+
+    if (new_state == FSM_STATE_BOOST) {
+        pyro_mgr_auto_arm_flight();
     }
 }
 
@@ -68,65 +77,46 @@ static float lerp(float a, float b, float t)
     return a + (b - a) * t;
 }
 
-/* ── Landing detection (Item 8) ──────────────────────────────────── */
-#define LANDED_ALT_THRESH  5.0f    /* m — baro altitude change threshold */
-#define LANDED_VEL_THRESH  1.0f    /* m/s — EKF velocity threshold       */
-#define T_LANDED_SUSTAIN   5000    /* ms — 5 seconds sustained            */
-#define LANDED_MIN_DESCENT 10000   /* ms — min time in descent state      */
-
-static void check_landing(const fc_telem_state_t *state)
-{
-    uint32_t now = HAL_GetTick();
-
-    /* Guard: must be in descent state for at least 10s */
-    if ((now - s_state_entry_ms) < LANDED_MIN_DESCENT)
-        return;
-
-    bool baro_stable = fabsf(state->baro_alt_m - s_land_baro_ref) < LANDED_ALT_THRESH;
-    bool vel_zero    = fabsf(state->vel_mps) < LANDED_VEL_THRESH;
-
-    if (baro_stable && vel_zero) {
-        if (!s_land_window_active) {
-            s_land_window_active = true;
-            s_land_window_start_ms = now;
-            s_land_baro_ref = state->baro_alt_m;
-        } else if ((now - s_land_window_start_ms) >= T_LANDED_SUSTAIN) {
-            transition_to(FSM_STATE_LANDED);
-            pyro_mgr_disarm_all();
-        }
-    } else {
-        s_land_window_active = false;
-        s_land_baro_ref = state->baro_alt_m;
-    }
-}
-
 /* ── Public API ─────────────────────────────────────────────────── */
 
 void flight_fsm_init(void)
 {
     s_state = FSM_STATE_PAD;
-    s_state_entry_ms = HAL_GetTick();
+    s_state_entry_ms = fsm_get_tick();
     s_mission_start_ms = 0;
     s_mission_started = false;
     s_sim_active = false;
     s_sim_start_ms = 0;
     s_bench_mode = false;
-    s_lsm_launch_count = 0;
-    s_land_baro_ref = 0.0f;
-    s_land_window_start_ms = 0;
-    s_land_window_active = false;
+
+    memset(&s_launch_accel_dwell, 0, sizeof(dwell_timer_t));
+    memset(&s_burnout_dwell, 0, sizeof(dwell_timer_t));
+    memset(&s_sustain_relight_dwell, 0, sizeof(dwell_timer_t));
+    memset(&s_apogee_vel_dwell, 0, sizeof(dwell_timer_t));
+    memset(&s_drogue_fail_dwell, 0, sizeof(dwell_timer_t));
+    memset(&s_landed_dwell, 0, sizeof(dwell_timer_t));
+
+    s_peak_accel_g = 0.0f;
+    s_peak_alt_m = 0.0f;
+    s_landed_alt_ref = 0.0f;
+    s_stage_count = 0;
 }
 
-fsm_state_t flight_fsm_tick(const fc_telem_state_t *state)
+void flight_fsm_reset(void)
 {
-    /* Bench mode: hold state, no auto-transitions */
+    flight_fsm_init();
+}
+
+fsm_state_t flight_fsm_tick(const fsm_input_t *in)
+{
+    /* Bench mode: hold state */
     if (s_bench_mode) return s_state;
 
+    /* Sim mode: run scripted profile (uses internal timing, ignores 'in') */
     if (s_sim_active) {
-        uint32_t now = HAL_GetTick();
+        uint32_t now = fsm_get_tick();
         float sim_t = (float)(now - s_sim_start_ms) / 1000.0f;
 
-        /* Find the target state for current sim time */
         fsm_state_t target = FSM_STATE_PAD;
         for (int i = (int)SIM_PROFILE_LEN - 1; i >= 0; i--) {
             if (sim_t >= s_sim_profile[i].time_s) {
@@ -134,52 +124,123 @@ fsm_state_t flight_fsm_tick(const fc_telem_state_t *state)
                 break;
             }
         }
-
-        /* Transition if needed */
-        if (target != s_state) {
-            transition_to(target);
-        }
-
-        /* End sim when we reach LANDED and stay for 5s */
+        if (target != s_state) transition_to(target);
         if (s_state == FSM_STATE_LANDED) {
             float landed_time = sim_t - s_sim_profile[SIM_PROFILE_LEN - 1].time_s;
-            if (landed_time > 5.0f) {
-                s_sim_active = false;
-            }
+            if (landed_time > 5.0f) s_sim_active = false;
         }
-
         return s_state;
     }
 
-    /* ── Real sensor-based transitions ── */
+    /* ── Sensor-driven transitions ── */
     switch (s_state) {
+
     case FSM_STATE_PAD: {
-        /* Item 10: Dual-sensor launch confirmation */
-        bool lsm_trigger = (state->accel_mag_g > 3.0f);
-        if (lsm_trigger)
-            s_lsm_launch_count++;
-        else
-            s_lsm_launch_count = 0;
-
-        bool lsm_confirmed = (s_lsm_launch_count >= 2);
-        /* Degrade to LSM-only if ADXL not available */
-        bool adxl_ok = !state->adxl_available || state->adxl_activity;
-
-        if (lsm_confirmed && adxl_ok) {
+        /* S4.1: antenna_up AND accel > 2g sustained 100ms AND vel > 15 */
+        bool accel_sustained = dwell_check(&s_launch_accel_dwell,
+                                            in->vert_accel_g > FSM_LAUNCH_ACCEL_G,
+                                            FSM_LAUNCH_ACCEL_DWELL_MS);
+        if (in->antenna_up && accel_sustained && in->vel_mps > FSM_LAUNCH_VEL_MPS) {
             s_mission_started = true;
-            s_mission_start_ms = HAL_GetTick();
+            s_mission_start_ms = fsm_get_tick();
+            s_peak_accel_g = 0.0f;  /* reset for BOOST tracking */
             transition_to(FSM_STATE_BOOST);
         }
         break;
     }
 
-    case FSM_STATE_DROGUE:
-    case FSM_STATE_MAIN:
-    case FSM_STATE_RECOVERY:
-    case FSM_STATE_TUMBLE:
-        /* Item 8: ZUPT-based landing detection */
-        check_landing(state);
+    case FSM_STATE_BOOST: {
+        /* S4.2: Track peak accel, detect burnout */
+        if (in->vert_accel_g > s_peak_accel_g)
+            s_peak_accel_g = in->vert_accel_g;
+
+        if (dwell_check(&s_burnout_dwell,
+                         in->vert_accel_g < FSM_BURNOUT_ACCEL_G,
+                         FSM_BURNOUT_DWELL_MS)) {
+            tlm_queue_event(FC_EVT_BURNOUT,
+                            (uint16_t)(s_peak_accel_g * 1000.0f));
+            s_peak_alt_m = 0.0f;  /* reset for COAST tracking */
+            transition_to(FSM_STATE_COAST);
+        }
         break;
+    }
+
+    case FSM_STATE_COAST: {
+        /* Track peak altitude */
+        if (in->alt_m > s_peak_alt_m)
+            s_peak_alt_m = in->alt_m;
+
+        /* S4.4: Check sustain re-light FIRST */
+        if (dwell_check(&s_sustain_relight_dwell,
+                         in->vert_accel_g > FSM_SUSTAIN_ACCEL_G,
+                         FSM_SUSTAIN_DWELL_MS)) {
+            s_stage_count++;
+            tlm_queue_event(FC_EVT_STAGING, (uint16_t)s_stage_count);
+            s_peak_accel_g = 0.0f;  /* reset peak for new burn */
+            transition_to(FSM_STATE_BOOST);
+            break;  /* Do NOT evaluate apogee */
+        }
+
+        /* S4.3: Check apogee */
+        if (in->flight_time_s > FSM_APOGEE_MIN_FLIGHT_S &&
+            dwell_check(&s_apogee_vel_dwell,
+                         in->vel_mps <= FSM_APOGEE_VEL_MPS,
+                         FSM_APOGEE_VEL_DWELL_MS)) {
+            tlm_queue_event(FC_EVT_APOGEE,
+                            (uint16_t)(s_peak_alt_m / 10.0f));
+            pyro_mgr_auto_fire(in->apogee_pyro_ch, in->apogee_fire_dur_ms);
+            transition_to(FSM_STATE_APOGEE);
+        }
+        break;
+    }
+
+    case FSM_STATE_APOGEE: {
+        /* S4.5: Normal path -- altitude deploy FIRST */
+        if (in->alt_m <= in->main_deploy_alt_m) {
+            pyro_mgr_auto_fire(in->main_pyro_ch, in->main_fire_dur_ms);
+            transition_to(FSM_STATE_MAIN);
+            break;
+        }
+
+        /* S4.6: Backup -- drogue failure detection */
+        float drogue_fail_dwell_ms = in->drogue_fail_time_s * 1000.0f;
+        if (dwell_check(&s_drogue_fail_dwell,
+                         in->vel_mps < -(in->drogue_fail_vel_mps),
+                         (uint32_t)drogue_fail_dwell_ms)) {
+            tlm_queue_event(FC_EVT_ERROR, ERR_DROGUE_FAIL);
+            pyro_mgr_auto_fire(in->main_pyro_ch, in->main_fire_dur_ms);
+            transition_to(FSM_STATE_MAIN);
+        }
+        break;
+    }
+
+    case FSM_STATE_MAIN: {
+        /* S4.7: Landing detection */
+        bool vel_ok = fabsf(in->vel_mps) < FSM_LANDED_VEL_MPS;
+
+        /* Capture altitude reference when dwell begins */
+        if (vel_ok && !s_landed_dwell.active) {
+            s_landed_alt_ref = in->alt_m;
+        }
+
+        bool alt_ok = fabsf(in->alt_m - s_landed_alt_ref) < FSM_LANDED_ALT_DELTA_M;
+
+        if (dwell_check(&s_landed_dwell,
+                         vel_ok && alt_ok,
+                         FSM_LANDED_DWELL_MS)) {
+            transition_to(FSM_STATE_LANDED);
+            pyro_mgr_disarm_all();
+        }
+        break;
+    }
+
+    case FSM_STATE_LANDED: {
+        /* S4.8: Auto-timer to recovery */
+        if ((fsm_get_tick() - s_state_entry_ms) >= (uint32_t)(FSM_LANDED_TO_LOWPOWER_S * 1000)) {
+            transition_to(FSM_STATE_RECOVERY);
+        }
+        break;
+    }
 
     default:
         break;
@@ -195,10 +256,8 @@ fsm_state_t flight_fsm_get_state(void)
 
 float flight_fsm_get_time_s(void)
 {
-    if (!s_mission_started) {
-        return 0.0f;
-    }
-    return (float)(HAL_GetTick() - s_mission_start_ms) / 1000.0f;
+    if (!s_mission_started) return 0.0f;
+    return (float)(fsm_get_tick() - s_mission_start_ms) / 1000.0f;
 }
 
 void flight_fsm_force_state(fsm_state_t new_state)
@@ -208,7 +267,7 @@ void flight_fsm_force_state(fsm_state_t new_state)
     }
     if (!s_mission_started && new_state != FSM_STATE_PAD) {
         s_mission_started = true;
-        s_mission_start_ms = HAL_GetTick();
+        s_mission_start_ms = fsm_get_tick();
     }
     transition_to(new_state);
 }
@@ -216,7 +275,7 @@ void flight_fsm_force_state(fsm_state_t new_state)
 void flight_fsm_sim_start(void)
 {
     s_sim_active = true;
-    s_sim_start_ms = HAL_GetTick();
+    s_sim_start_ms = fsm_get_tick();
     s_mission_started = true;
     s_mission_start_ms = s_sim_start_ms;
     transition_to(FSM_STATE_PAD);
@@ -239,7 +298,7 @@ void flight_fsm_sim_get_state(fc_telem_state_t *out)
         return;
     }
 
-    float sim_t = (float)(HAL_GetTick() - s_sim_start_ms) / 1000.0f;
+    float sim_t = (float)(fsm_get_tick() - s_sim_start_ms) / 1000.0f;
 
     /* Find bounding waypoints and interpolate */
     int lo = 0;
@@ -277,7 +336,7 @@ void flight_fsm_sim_get_state(fc_telem_state_t *out)
     float half_roll = roll_rad * 0.5f;
     out->quat[0] = cosf(half_roll);  /* w */
     out->quat[1] = 0.0f;             /* x */
-    out->quat[2] = sinf(half_roll);  /* y — nose axis */
+    out->quat[2] = sinf(half_roll);  /* y -- nose axis */
     out->quat[3] = 0.0f;             /* z */
 }
 

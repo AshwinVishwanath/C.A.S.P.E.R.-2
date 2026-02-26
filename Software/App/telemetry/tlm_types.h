@@ -53,6 +53,9 @@
 #define FC_EVT_STAGING       0x07
 #define FC_EVT_ARM           0x08
 
+/* ── Error codes ─────────────────────────────────────────────────── */
+#define ERR_DROGUE_FAIL      0x01
+
 /* ── FSM states ──────────────────────────────────────────────────── */
 #define FSM_STATE_PAD        0x0
 #define FSM_STATE_BOOST      0x1
@@ -153,5 +156,40 @@ typedef struct {
 /* ── COBS max overhead ───────────────────────────────────────────── */
 #define COBS_MAX_OVERHEAD    2   /* 1 overhead byte + 1 delimiter */
 #define TLM_TX_BUF_SIZE      (SIZE_FC_MSG_FAST + COBS_MAX_OVERHEAD + 1)
+
+/* ── Ground station message IDs ─────────────────────────────────── */
+#define MSG_ID_GS_STATUS     0x13
+
+/* ── Ground station packet sizes ────────────────────────────────── */
+#define SIZE_GS_MSG_STATUS   24  /* [ID:1][PROF:1][RSSI:1][SNR:1][PKTS:2][FAIL:2][BARO:4][LAT:4][LON:4][CRC:4] = 24 */
+
+/* ── Ground station state structs ───────────────────────────────── */
+typedef struct __attribute__((packed)) {
+    uint8_t  msg_id;              /* 0x13                          */
+    uint8_t  radio_profile;       /* 0=A (SF7), 1=B (SF8)          */
+    int8_t   last_rssi;           /* dBm                           */
+    int8_t   last_snr;            /* dB (signed)                   */
+    uint16_t rx_pkt_count;        /* total packets received        */
+    uint16_t rx_crc_fail;         /* CRC failures                  */
+    uint32_t ground_pressure_pa;  /* Pa as integer (range 0-120000)*/
+    int32_t  ground_lat_1e7;      /* degrees x 10^7 (UBX encoding) */
+    int32_t  ground_lon_1e7;      /* degrees x 10^7 (UBX encoding) */
+    uint32_t crc32;               /* CRC over bytes 0..N-5         */
+} gs_msg_status_t;
+
+/* ── Flight FSM configuration ───────────────────────────────── */
+typedef struct {
+    float    main_deploy_alt;     /* m AGL, default 250.0 */
+    float    drogue_fail_vel;     /* m/s, default 50.0    */
+    float    drogue_fail_time;    /* s, default 3.0       */
+    uint8_t  apogee_pyro_ch;     /* 0-indexed, default 0 */
+    uint8_t  main_pyro_ch;       /* 0-indexed, default 1 */
+    uint16_t apogee_fire_dur;    /* ms, default 1000     */
+    uint16_t main_fire_dur;      /* ms, default 1000     */
+} flight_cfg_t;
+
+/* ── HIL message ────────────────────────────────────────────── */
+#define MSG_ID_HIL_INJECT    0xD1
+#define SIZE_HIL_INJECT      44  /* [ID:1][TICK:4][ALT:4][VEL:4][VA:4][ANT:1][FT:4][MDA:4][DFV:4][DFT:4][ACH:1][MCH:1][AFD:2][MFD:2][CRC:4] = 44 */
 
 #endif /* APP_TELEMETRY_TLM_TYPES_H */

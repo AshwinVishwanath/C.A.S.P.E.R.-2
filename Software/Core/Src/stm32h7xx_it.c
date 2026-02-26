@@ -244,7 +244,9 @@ void OTG_FS_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 void EXTI15_10_IRQHandler(void)
 {
-  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15); /* PC15 = LSM6DSO32 INT2 */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_12); /* PB12 = SX1276 DIO4 (CadDetected)  */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13); /* PB13 = SX1276 DIO5 (ModeReady)    */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15); /* PC15 = LSM6DSO32 INT2             */
 }
 
 void EXTI1_IRQHandler(void)
@@ -254,7 +256,8 @@ void EXTI1_IRQHandler(void)
 
 void EXTI9_5_IRQHandler(void)
 {
-  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_7);  /* PD7 = SX1276 DIO1 (RxTimeout) */
-  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_8);  /* PC8 = MMC5983MA DRDY */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_6);  /* PD6 = SX1276 DIO2 (FhssChange)    */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_7);  /* PD7 = SX1276 DIO1 (RxTimeout)     */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_8);  /* PC8 = MMC5983MA DRDY              */
 }
 /* USER CODE END 1 */

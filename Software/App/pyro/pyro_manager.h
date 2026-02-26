@@ -76,4 +76,24 @@ void pyro_mgr_set_test_mode(bool enable);
  */
 bool pyro_mgr_is_test_mode(void);
 
+/**
+ * Auto-arm all flight channels on BOOST entry.
+ * Arms channels 0-3 that have continuity and are not excluded.
+ * Skips already-armed channels (idempotent).
+ * Emits FC_EVT_ARM for each newly armed channel.
+ * Called from FSM transition_to(BOOST).
+ */
+void pyro_mgr_auto_arm_flight(void);
+
+/**
+ * FSM-triggered pyro fire (0-indexed channels).
+ * Unlike pyro_mgr_fire() (1-indexed, CAC path), this is for FSM auto-fire.
+ * Enforces PAD lockout, channel exclusion, arm check, continuity check.
+ *
+ * @param ch          Channel number (0-3, 0-indexed)
+ * @param duration_ms Fire duration in milliseconds (capped at PYRO_MAX_FIRE_MS)
+ * @return            0 on success, -1 on precondition failure
+ */
+int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms);
+
 #endif /* APP_PYRO_PYRO_MANAGER_H */
