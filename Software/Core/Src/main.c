@@ -58,6 +58,7 @@
 #include "self_test.h"
 #include "flight_loop.h"
 #include "radio_manager.h"
+#include "flight_logger.h"
 #endif /* !BUILD_TARGET_GROUND */
 #include "crc32_hw.h"
 #include "radio_irq.h"
@@ -118,6 +119,7 @@ casper_attitude_t att;
 max_m10m_t gps;
 #ifndef BUILD_TARGET_GROUND
 mmc5983ma_t mag;
+flight_logger_t logger;
 #endif
 /* USER CODE END PV */
 
@@ -450,6 +452,9 @@ int main(void)
     }
   }
 
+  /* Flight data logger init (reads flight index, sets up ring buffers) */
+  flight_logger_init(&logger, &flash);
+
     DBG_PRINT("[INIT] all init complete\r\n");
 
   /* Startup beep: 3 short = radio OK, 5 long = radio FAIL */
@@ -631,6 +636,7 @@ int main(void)
   }
 #else
   flight_loop_init();
+  flight_logger_start(&logger);  /* Begin PAD-state ring filling + erase-ahead */
 #endif
 
 #endif /* BUILD_TARGET_GROUND */

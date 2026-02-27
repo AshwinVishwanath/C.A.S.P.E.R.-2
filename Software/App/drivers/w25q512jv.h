@@ -132,12 +132,31 @@
 #define W25Q_DUMMY_FAST_READ        8u
 
 /* ------------------------------------------------------------------ */
+/*  IT (interrupt) mode state machine                                  */
+/* ------------------------------------------------------------------ */
+typedef enum {
+    W25Q_IT_IDLE = 0,
+    W25Q_IT_WRITE_DATA,         /* Transmit_IT sending page data     */
+    W25Q_IT_WRITE_POLL,         /* AutoPolling_IT waiting WIP clear  */
+    W25Q_IT_ERASE_POLL          /* AutoPolling_IT waiting erase done */
+} w25q_it_state_t;
+
+/* Callback function type for non-blocking operations */
+typedef void (*w25q_callback_t)(void *ctx, bool success);
+
+/* ------------------------------------------------------------------ */
 /*  Driver struct                                                      */
 /* ------------------------------------------------------------------ */
 typedef struct {
     QSPI_HandleTypeDef *hqspi;
     uint8_t  jedec_id[3];       /* Manufacturer, MemType, Capacity */
     bool     initialized;
+
+    /* IT mode state */
+    volatile uint8_t  it_state; /* w25q_it_state_t — volatile for ISR access */
+    w25q_callback_t   on_complete;
+    w25q_callback_t   on_error;
+    void             *cb_ctx;
 } w25q512jv_t;
 
 /* ------------------------------------------------------------------ */
@@ -175,5 +194,29 @@ int w25q512jv_erase_chip(w25q512jv_t *dev);
 /* Write-read-verify test on sector 0.
  * Returns true if data matches. */
 bool w25q512jv_test(w25q512jv_t *dev);
+
+/* ------------------------------------------------------------------ */
+/*  Non-blocking (IT mode) API                                         */
+/* ------------------------------------------------------------------ */
+
+/* Register callbacks for IT completion/error.
+ * ctx is passed as first argument to the callbacks. */
+void w25q512jv_set_callbacks(w25q512jv_t *dev,
+                             w25q_callback_t on_complete,
+                             w25q_callback_t on_error,
+                             void *ctx);
+
+/* Write one full 256-byte page asynchronously (IT mode).
+ * buf must remain valid until the callback fires.
+ * Returns W25Q_OK if the transfer was started, W25Q_ERROR if busy. */
+int  w25q512jv_write_page_it(w25q512jv_t *dev, uint32_t addr,
+                             const uint8_t *buf);
+
+/* Erase 4 KB sector asynchronously (IT mode).
+ * Returns W25Q_OK if the erase was started, W25Q_ERROR if busy. */
+int  w25q512jv_erase_sector_it(w25q512jv_t *dev, uint32_t addr);
+
+/* Returns true if no IT operation is in progress. */
+bool w25q512jv_is_idle(const w25q512jv_t *dev);
 
 #endif /* W25Q512JV_H */

@@ -325,3 +325,178 @@ bool w25q512jv_test(w25q512jv_t *dev)
     /* Compare */
     return (memcmp(tx_buf, rx_buf, 256) == 0);
 }
+
+/* ------------------------------------------------------------------ */
+/*  Non-blocking (IT mode) API                                         */
+/* ------------------------------------------------------------------ */
+
+void w25q512jv_set_callbacks(w25q512jv_t *dev,
+                             w25q_callback_t on_complete,
+                             w25q_callback_t on_error,
+                             void *ctx)
+{
+    dev->on_complete = on_complete;
+    dev->on_error    = on_error;
+    dev->cb_ctx      = ctx;
+}
+
+bool w25q512jv_is_idle(const w25q512jv_t *dev)
+{
+    return dev->it_state == W25Q_IT_IDLE;
+}
+
+int w25q512jv_write_page_it(w25q512jv_t *dev, uint32_t addr,
+                            const uint8_t *buf)
+{
+    if (dev->it_state != W25Q_IT_IDLE)
+        return W25Q_ERROR;
+
+    /* Write Enable (blocking — ~1 us, just the command phase) */
+    if (w25q_write_enable(dev) != W25Q_OK)
+        return W25Q_ERROR;
+
+    /* Page Program command header (blocking — no data yet) */
+    QSPI_CommandTypeDef cmd = {0};
+    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
+    cmd.Instruction       = W25Q_CMD_PAGE_PROGRAM_4B;
+    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
+    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
+    cmd.Address           = addr;
+    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
+    cmd.DataMode          = QSPI_DATA_1_LINE;
+    cmd.DummyCycles       = 0;
+    cmd.NbData            = W25Q512JV_PAGE_SIZE;
+    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
+    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+
+    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+        return W25Q_ERROR;
+
+    /* Start async data transfer — ISR fires HAL_QSPI_TxCpltCallback */
+    dev->it_state = W25Q_IT_WRITE_DATA;
+    if (HAL_QSPI_Transmit_IT(dev->hqspi, (uint8_t *)buf) != HAL_OK) {
+        dev->it_state = W25Q_IT_IDLE;
+        return W25Q_ERROR;
+    }
+
+    return W25Q_OK;
+}
+
+int w25q512jv_erase_sector_it(w25q512jv_t *dev, uint32_t addr)
+{
+    if (dev->it_state != W25Q_IT_IDLE)
+        return W25Q_ERROR;
+
+    /* Align to sector boundary */
+    addr &= ~(W25Q512JV_SECTOR_SIZE - 1u);
+
+    /* Write Enable (blocking) */
+    if (w25q_write_enable(dev) != W25Q_OK)
+        return W25Q_ERROR;
+
+    /* Sector Erase command (blocking — no data phase) */
+    QSPI_CommandTypeDef cmd = {0};
+    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
+    cmd.Instruction       = W25Q_CMD_SECTOR_ERASE_4B;
+    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
+    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
+    cmd.Address           = addr;
+    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
+    cmd.DataMode          = QSPI_DATA_NONE;
+    cmd.DummyCycles       = 0;
+    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
+    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+
+    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+        return W25Q_ERROR;
+
+    /* Start auto-polling for WIP (Write In Progress) bit clear */
+    QSPI_CommandTypeDef poll_cmd = {0};
+    poll_cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
+    poll_cmd.Instruction       = W25Q_CMD_READ_SR1;
+    poll_cmd.AddressMode       = QSPI_ADDRESS_NONE;
+    poll_cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
+    poll_cmd.DataMode          = QSPI_DATA_1_LINE;
+    poll_cmd.DummyCycles       = 0;
+    poll_cmd.NbData            = 1;
+    poll_cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
+    poll_cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+
+    QSPI_AutoPollingTypeDef cfg = {0};
+    cfg.Match           = 0x00;
+    cfg.Mask            = W25Q_SR1_BUSY;
+    cfg.MatchMode       = QSPI_MATCH_MODE_AND;
+    cfg.StatusBytesSize = 1;
+    cfg.Interval        = 0x10;
+    cfg.AutomaticStop   = QSPI_AUTOMATIC_STOP_ENABLE;
+
+    dev->it_state = W25Q_IT_ERASE_POLL;
+    if (HAL_QSPI_AutoPolling_IT(dev->hqspi, &poll_cmd, &cfg) != HAL_OK) {
+        dev->it_state = W25Q_IT_IDLE;
+        return W25Q_ERROR;
+    }
+
+    return W25Q_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  HAL QSPI callbacks (called from ISR context)                       */
+/* ------------------------------------------------------------------ */
+
+void HAL_QSPI_TxCpltCallback(QSPI_HandleTypeDef *hqspi)
+{
+    /* Called when Transmit_IT finishes sending page data.
+     * Now poll BUSY flag to know when the flash has committed. */
+    extern w25q512jv_t flash;
+
+    if (flash.it_state == W25Q_IT_WRITE_DATA) {
+        QSPI_CommandTypeDef cmd = {0};
+        cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
+        cmd.Instruction       = W25Q_CMD_READ_SR1;
+        cmd.AddressMode       = QSPI_ADDRESS_NONE;
+        cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
+        cmd.DataMode          = QSPI_DATA_1_LINE;
+        cmd.DummyCycles       = 0;
+        cmd.NbData            = 1;
+        cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
+        cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+
+        QSPI_AutoPollingTypeDef cfg = {0};
+        cfg.Match           = 0x00;
+        cfg.Mask            = W25Q_SR1_BUSY;
+        cfg.MatchMode       = QSPI_MATCH_MODE_AND;
+        cfg.StatusBytesSize = 1;
+        cfg.Interval        = 0x10;
+        cfg.AutomaticStop   = QSPI_AUTOMATIC_STOP_ENABLE;
+
+        flash.it_state = W25Q_IT_WRITE_POLL;
+        if (HAL_QSPI_AutoPolling_IT(hqspi, &cmd, &cfg) != HAL_OK) {
+            flash.it_state = W25Q_IT_IDLE;
+            if (flash.on_error)
+                flash.on_error(flash.cb_ctx, false);
+        }
+    }
+}
+
+void HAL_QSPI_StatusMatchCallback(QSPI_HandleTypeDef *hqspi)
+{
+    /* Called when auto-polling matches (BUSY cleared) — write or erase done */
+    extern w25q512jv_t flash;
+    (void)hqspi;
+
+    flash.it_state = W25Q_IT_IDLE;
+
+    if (flash.on_complete)
+        flash.on_complete(flash.cb_ctx, true);
+}
+
+void HAL_QSPI_ErrorCallback(QSPI_HandleTypeDef *hqspi)
+{
+    extern w25q512jv_t flash;
+    (void)hqspi;
+
+    flash.it_state = W25Q_IT_IDLE;
+
+    if (flash.on_error)
+        flash.on_error(flash.cb_ctx, false);
+}

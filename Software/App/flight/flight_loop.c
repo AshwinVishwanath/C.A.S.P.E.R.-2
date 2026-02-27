@@ -78,7 +78,8 @@ flight_cfg_t g_flight_cfg = {
     .main_fire_dur     = 1000,
 };
 
-/* ── Bench test mode: CDC text command parser ── */
+/* ── Bench test mode: CDC text command parser (TEST_MODE 2 only) ── */
+#if TEST_MODE == 2
 static char    bench_cmd_buf[32];
 static uint8_t bench_cmd_idx = 0;
 
@@ -192,6 +193,7 @@ static void bench_process_cdc(void)
         /* ignore other control chars */
     }
 }
+#endif
 
 /* ─────────────────────────────────────────────────────────────── */
 
@@ -354,6 +356,33 @@ void flight_loop_tick(void)
 
           imu_subsample_count = 0;
         }
+
+#if TEST_MODE == 1
+        /* ── Logger: HR record + peak tracking (833 Hz, internal divider) ── */
+        {
+            uint8_t fsm_now = (uint8_t)flight_fsm_get_state();
+            float tilt_deg = acosf(R_mat[8]) * 57.2957795f;
+            float roll_dps = fabsf(imu.gyro_dps[2]);
+
+            uint8_t flags = 0;
+            if (gps.fix_type >= 2)                    flags |= 0x02;
+            if (adxl372_activity_detected(&high_g))   flags |= 0x04;
+            if (diag_zupt_fired)                      flags |= 0x08;
+            if (ekf.baro_gated)                       flags |= 0x10;
+            if (mag_new)                              flags |= 0x20;
+            if (pyro_mgr_get_arm_bitmap())            flags |= 0x40;
+
+            flight_logger_push_hr(&logger, &imu, &baro, &high_g, &mag,
+                                  &ekf, &att, fsm_now, flags, 0);
+
+            flight_logger_summary_imu(&logger, last_accel_mag_g, tilt_deg,
+                                      roll_dps, fsm_now);
+
+            float temp_k = imu.temp_c + 273.15f;
+            flight_logger_summary_ekf(&logger, ekf.x[1], ekf.x[0],
+                                      baro.pressure, temp_k);
+        }
+#endif
       }
 
       mag_new = false;
@@ -390,6 +419,9 @@ void flight_loop_tick(void)
         casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
         casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
       }
+#if TEST_MODE == 1
+      flight_logger_summary_gps(&logger, &gps);
+#endif
     }
 
     /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
@@ -451,12 +483,41 @@ void flight_loop_tick(void)
 
       fsm_state_t fsm = flight_fsm_tick(&fsm_in);
 
-      /* On launch: transition ADXL372 from wake-up to measurement mode */
+      /* On state transitions: ADXL mode, logger lifecycle */
       {
         static fsm_state_t prev_fsm = FSM_STATE_PAD;
+        if (prev_fsm != fsm) {
+#if TEST_MODE == 1
+          flight_logger_summary_event(&logger, (uint8_t)fsm, (uint8_t)prev_fsm);
+          flight_logger_set_rate(&logger, (uint8_t)fsm);
+#endif
+        }
+
         if (prev_fsm == FSM_STATE_PAD && fsm == FSM_STATE_BOOST) {
           adxl372_enter_measurement(&high_g);
+#if TEST_MODE == 1
+          flight_logger_launch(&logger);
+#endif
         }
+
+#if TEST_MODE == 1
+        /* Apogee: snapshot EKF/baro/GPS altitude, write partial summary */
+        if (prev_fsm != FSM_STATE_APOGEE && fsm == FSM_STATE_APOGEE) {
+          logger.summary.apogee_ekf_m    = ekf.x[0];
+          logger.summary.apogee_baro_m   = last_baro_alt_agl;
+          logger.summary.apogee_gps_msl_m = gps.alt_msl_m;
+          flight_logger_write_partial_summary(&logger);
+        }
+
+        /* Main deploy: stop ADXL stream */
+        if (prev_fsm != FSM_STATE_MAIN && fsm == FSM_STATE_MAIN)
+          log_stream_finalize(&logger.adxl);
+
+        /* Landed: finalize all logging */
+        if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED)
+          flight_logger_finalize(&logger);
+#endif
+
         prev_fsm = fsm;
       }
 
@@ -490,6 +551,19 @@ void flight_loop_tick(void)
 
         /* ── Radio telemetry TX + RX window ── */
         radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+
+        /* ── Logger: LR record (pyro + radio + GPS) ── */
+        {
+          uint16_t pyro_cont[4];
+          pyro_mgr_get_cont_adc(pyro_cont);
+          uint8_t pyro_st = (uint8_t)((pyro_mgr_get_cont_bitmap() << 4)
+                                     | pyro_mgr_get_arm_bitmap());
+          int8_t rssi, snr;
+          uint16_t tx_cnt, rx_cnt, fail_cnt;
+          radio_get_stats(&rssi, &snr, &tx_cnt, &rx_cnt, &fail_cnt);
+          flight_logger_push_lr(&logger, pyro_st, pyro_cont,
+                                rssi, snr, tx_cnt, rx_cnt, fail_cnt, &gps);
+        }
       }
 #endif /* TEST_MODE == 1 */
     }
@@ -503,6 +577,9 @@ void flight_loop_tick(void)
 
     /* ── CAC confirm timeout check ── */
     cac_tick();
+
+    /* ── Flight logger QSPI dispatch (erase-ahead on PAD, page writes in flight) ── */
+    flight_logger_tick(&logger);
 #elif TEST_MODE == 2
     /* ── Bench test: process text commands from CDC ── */
     bench_process_cdc();

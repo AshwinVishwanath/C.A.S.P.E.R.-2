@@ -177,6 +177,12 @@ void pyro_mgr_auto_arm_flight(void)
     }
 }
 
+void pyro_mgr_get_cont_adc(uint16_t adc_out[4])
+{
+    for (int i = 0; i < PYRO_MGR_NUM_CHANNELS; i++)
+        adc_out[i] = pyro.adc_raw[i];
+}
+
 int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms)
 {
     /* Hard safety: never fire on pad */

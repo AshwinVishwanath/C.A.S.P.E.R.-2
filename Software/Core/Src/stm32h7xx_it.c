@@ -242,6 +242,12 @@ void OTG_FS_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+void QUADSPI_IRQHandler(void)
+{
+  extern QSPI_HandleTypeDef hqspi;
+  HAL_QSPI_IRQHandler(&hqspi);
+}
+
 void EXTI15_10_IRQHandler(void)
 {
   HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_12); /* PB12 = SX1276 DIO4 (CadDetected)  */

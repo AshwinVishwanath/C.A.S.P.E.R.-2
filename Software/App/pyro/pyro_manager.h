@@ -96,4 +96,9 @@ void pyro_mgr_auto_arm_flight(void);
  */
 int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms);
 
+/**
+ * Get raw ADC continuity values for all channels.
+ */
+void pyro_mgr_get_cont_adc(uint16_t adc_out[4]);
+
 #endif /* APP_PYRO_PYRO_MANAGER_H */

@@ -565,6 +565,10 @@ void HAL_QSPI_MspInit(QSPI_HandleTypeDef* hqspi)
     GPIO_InitStruct.Pin = GPIO_PIN_6;
     GPIO_InitStruct.Alternate = GPIO_AF10_QUADSPI;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);   // PB6 = NCS
+
+    /* NVIC for QUADSPI — needed for IT mode (Transmit_IT, AutoPolling_IT) */
+    HAL_NVIC_SetPriority(QUADSPI_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(QUADSPI_IRQn);
     /* USER CODE END QUADSPI_MspInit 1 */
 
   }

@@ -153,7 +153,11 @@ App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
 App/flight/flight_loop.c \
-App/radio/radio_manager.c
+App/radio/radio_manager.c \
+App/logging/flight_logger.c \
+App/logging/log_stream.c \
+App/logging/log_index.c \
+App/logging/hamming.c
 
 endif
 
@@ -255,7 +259,8 @@ C_INCLUDES =  \
 -IApp/flight \
 -IApp/radio \
 -IApp/buzzer \
--IApp/ground
+-IApp/ground \
+-IApp/logging
 
 
 # compile gcc flags

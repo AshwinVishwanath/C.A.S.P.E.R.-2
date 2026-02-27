@@ -56,6 +56,11 @@ static uint32_t s_tx_start_ms;
 static uint32_t s_rx_start_ms;
 static uint32_t s_consec_crc_errors;
 static uint32_t s_tx_error_count;
+static uint16_t s_total_tx_count;
+static uint16_t s_total_rx_count;
+static uint16_t s_total_fail_count;
+static int8_t   s_last_rssi;
+static int8_t   s_last_snr;
 
 /* TX packet buffer */
 static uint8_t s_tx_buf[RADIO_MAX_PACKET_SIZE];
@@ -258,6 +263,7 @@ static void start_tx(const uint8_t *pkt, uint8_t len)
 
     s_radio_state = RADIO_STATE_TX;
     s_tx_start_ms = HAL_GetTick();
+    s_total_tx_count++;
 }
 
 /* ── RX: open single-receive window after TX ───────────────────────── */
@@ -296,6 +302,7 @@ static void handle_rx_packet(void)
     /* Check hardware CRC error */
     if (irq & SX1276_IRQ_PAYLOAD_CRC_ERROR) {
         s_consec_crc_errors++;
+        s_total_fail_count++;
         return;
     }
 
@@ -348,6 +355,9 @@ static void handle_rx_packet(void)
 
     /* CRC passed — reset error counter */
     s_consec_crc_errors = 0;
+    s_total_rx_count++;
+    s_last_rssi = (int8_t)sx1276_get_packet_rssi();
+    s_last_snr  = sx1276_get_packet_snr();
 
     /* Dispatch to CAC handlers */
     switch (msg_id) {
@@ -537,6 +547,7 @@ void radio_manager_tick(const casper_ekf_t *ekf,
         /* TX timeout */
         else if (now - s_tx_start_ms > RADIO_TX_TIMEOUT_MS) {
             s_tx_error_count++;
+            s_total_fail_count++;
             radio_reinit();
         }
         break;
@@ -607,4 +618,15 @@ int radio_send_response(const uint8_t *buf, uint8_t len)
 int radio_is_active(void)
 {
     return (s_radio_state != RADIO_STATE_DISABLED) ? 1 : 0;
+}
+
+void radio_get_stats(int8_t *rssi, int8_t *snr,
+                     uint16_t *tx_count, uint16_t *rx_count,
+                     uint16_t *fail_count)
+{
+    if (rssi)       *rssi       = s_last_rssi;
+    if (snr)        *snr        = s_last_snr;
+    if (tx_count)   *tx_count   = s_total_tx_count;
+    if (rx_count)   *rx_count   = s_total_rx_count;
+    if (fail_count) *fail_count = s_total_fail_count;
 }

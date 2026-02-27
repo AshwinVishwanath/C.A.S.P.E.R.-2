@@ -38,4 +38,9 @@ int radio_send_response(const uint8_t *buf, uint8_t len);
 /* Check if radio initialized OK */
 int radio_is_active(void);
 
+/* Get radio stats for data logging */
+void radio_get_stats(int8_t *rssi, int8_t *snr,
+                     uint16_t *tx_count, uint16_t *rx_count,
+                     uint16_t *fail_count);
+
 #endif /* APP_RADIO_RADIO_MANAGER_H */

@@ -196,7 +196,16 @@ SECTIONS
     . = ALIGN(8);
   } >DTCMRAM
 
-
+  /* AXI SRAM section for ring buffers (uninitialized) */
+  .axi_sram (NOLOAD) :
+  {
+    . = ALIGN(4);
+    _saxi_sram = .;
+    *(.axi_sram)
+    *(.axi_sram*)
+    . = ALIGN(4);
+    _eaxi_sram = .;
+  } >RAM
 
   /* Remove information from the standard libraries */
   /DISCARD/ :
