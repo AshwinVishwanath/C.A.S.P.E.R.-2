@@ -96,6 +96,23 @@ void flight_logger_summary_gps(flight_logger_t *log, const max_m10m_t *gps);
 void flight_logger_write_partial_summary(flight_logger_t *log);
 void flight_logger_write_final_summary(flight_logger_t *log);
 
+/* ── Status queries ──────────────────────────────────────────────────── */
+
+static inline bool flight_logger_is_launched(const flight_logger_t *log)
+    { return log->launched; }
+static inline bool flight_logger_is_finalized(const flight_logger_t *log)
+    { return log->finalized; }
+static inline qspi_state_t flight_logger_qspi_get_state(const flight_logger_t *log)
+    { return log->qspi_state; }
+static inline uint32_t flight_logger_hr_records(const flight_logger_t *log)
+    { return log->hr.records_written; }
+static inline uint32_t flight_logger_lr_records(const flight_logger_t *log)
+    { return log->lr.records_written; }
+static inline uint16_t flight_logger_drop_count(const flight_logger_t *log)
+    { return (uint16_t)(log->hr.drop_count + log->lr.drop_count + log->adxl.drop_count); }
+static inline uint16_t flight_logger_err_count(const flight_logger_t *log)
+    { return (uint16_t)(log->hr.err_count + log->lr.err_count + log->adxl.err_count); }
+
 /* ── QSPI callbacks (ISR context) ─────────────────────────────────────── */
 
 void flight_logger_qspi_complete(flight_logger_t *log);

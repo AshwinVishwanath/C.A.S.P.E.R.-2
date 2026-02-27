@@ -497,6 +497,7 @@ void flight_loop_tick(void)
           adxl372_enter_measurement(&high_g);
 #if TEST_MODE == 1
           flight_logger_launch(&logger);
+          buzzer_beep_n(30, 2, 100, 200);  /* 2 short beeps = launch */
 #endif
         }
 
@@ -507,6 +508,7 @@ void flight_loop_tick(void)
           logger.summary.apogee_baro_m   = last_baro_alt_agl;
           logger.summary.apogee_gps_msl_m = gps.alt_msl_m;
           flight_logger_write_partial_summary(&logger);
+          buzzer_beep_n(30, 3, 100, 200);  /* 3 short beeps = apogee */
         }
 
         /* Main deploy: stop ADXL stream */
@@ -514,8 +516,10 @@ void flight_loop_tick(void)
           log_stream_finalize(&logger.adxl);
 
         /* Landed: finalize all logging */
-        if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED)
+        if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED) {
           flight_logger_finalize(&logger);
+          buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
+        }
 #endif
 
         prev_fsm = fsm;
@@ -580,6 +584,23 @@ void flight_loop_tick(void)
 
     /* ── Flight logger QSPI dispatch (erase-ahead on PAD, page writes in flight) ── */
     flight_logger_tick(&logger);
+
+    /* ── Logger status LEDs ── */
+    {
+      /* LED2 (PB14): SOLID = launched (DRAIN), FAST BLINK = finalized */
+      if (logger.launched && !logger.finalized) {
+        HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+      } else if (logger.finalized) {
+        static uint32_t fin_blink = 0;
+        if (now - fin_blink >= 200) {
+          HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+          fin_blink = now;
+        }
+      }
+      /* LED3 (PE8): ON when QSPI busy, OFF when idle */
+      HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin,
+          logger.qspi_state != QSPI_IDLE ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    }
 #elif TEST_MODE == 2
     /* ── Bench test: process text commands from CDC ── */
     bench_process_cdc();
