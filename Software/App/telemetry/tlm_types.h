@@ -188,6 +188,9 @@ typedef struct {
     uint16_t main_fire_dur;      /* ms, default 1000     */
 } flight_cfg_t;
 
+/* ── Flash dump ─────────────────────────────────────────────── */
+#define MSG_ID_DUMP_FLASH    0xD2
+
 /* ── HIL message ────────────────────────────────────────────── */
 #define MSG_ID_HIL_INJECT    0xD1
 #define SIZE_HIL_INJECT      44  /* [ID:1][TICK:4][ALT:4][VEL:4][VA:4][ANT:1][FT:4][MDA:4][DFV:4][DFT:4][ACH:1][MCH:1][AFD:2][MFD:2][CRC:4] = 44 */

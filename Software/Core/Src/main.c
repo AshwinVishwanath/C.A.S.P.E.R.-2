@@ -300,11 +300,15 @@ int main(void)
 
   {
     char _dbg[80]; int _len;
+#if (USB_MODE == 2)
+    #define DBG_PRINT(msg) do { (void)_dbg; (void)_len; } while(0)
+#else
     #define DBG_PRINT(msg) do { \
       _len = snprintf(_dbg, sizeof(_dbg), msg); \
       CDC_Transmit_FS((uint8_t *)_dbg, (uint16_t)_len); \
       HAL_Delay(20); \
     } while(0)
+#endif
 
     DBG_PRINT("[INIT] USB up, starting sensor init\r\n");
 
@@ -437,9 +441,11 @@ int main(void)
   {
     int rc = radio_manager_init(&hspi1);
     radio_init_ok = (rc == 0);
+#if (USB_MODE != 2)
     _len = snprintf(_dbg, sizeof(_dbg), "[INIT] radio returned %d\r\n", rc);
     CDC_Transmit_FS((uint8_t *)_dbg, (uint16_t)_len);
     HAL_Delay(20);
+#endif
 
     if (rc != 0) {
       for (int i = 0; i < 10; i++) {
@@ -652,6 +658,7 @@ int main(void)
 #if defined(BUILD_TARGET_GROUND)
     ground_main_tick();
 #elif (USB_MODE == 2)
+    buzzer_tick();
     // MSC mode: pyro continuity LEDs at 10 Hz (replaces old ping-pong)
     {
       static uint32_t last_pyro_tick = 0;

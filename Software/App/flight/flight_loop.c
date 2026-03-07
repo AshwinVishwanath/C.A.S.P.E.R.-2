@@ -216,6 +216,102 @@ void flight_loop_init(void)
 #endif
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Flash dump over CDC — blocking, called post-flight
+ *
+ *  Protocol:
+ *    FW → PC:  "CDMP" (4B magic)
+ *    FW → PC:  num_regions (1B)
+ *    For each region:
+ *      FW → PC:  region_id (1B) + flash_offset (4B LE) + size (4B LE)
+ *      For each 4KB chunk:
+ *        FW → PC:  4096 bytes (or remainder)
+ *        PC → FW:  ACK 0x06 (1 byte)
+ *    FW → PC:  "DONE" (4B)
+ * ═══════════════════════════════════════════════════════════════════════ */
+#if TEST_MODE == 1
+
+#define DUMP_CHUNK  4096
+#define DUMP_ACK    0x06
+#define DUMP_TIMEOUT_MS  5000
+
+static void cdc_send_blocking(const uint8_t *buf, uint16_t len)
+{
+    while (CDC_Transmit_FS((uint8_t *)buf, len) == USBD_BUSY) {}
+    /* Small delay for USB IN transfer to complete */
+    HAL_Delay(2);
+}
+
+static bool wait_for_ack(void)
+{
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_GetTick() - t0 < DUMP_TIMEOUT_MS) {
+        if (cdc_ring_available() > 0) {
+            uint8_t b = cdc_ring_read_byte();
+            if (b == DUMP_ACK) return true;
+        }
+    }
+    return false;  /* timeout */
+}
+
+static void flash_dump_over_cdc(w25q512jv_t *fl)
+{
+    typedef struct { uint8_t id; uint32_t offset; uint32_t size; } region_t;
+    static const region_t regions[] = {
+        { 0, FLASH_INDEX_BASE,   FLASH_INDEX_SIZE   },
+        { 1, FLASH_SUMMARY_BASE, FLASH_SUMMARY_SIZE },
+        { 2, FLASH_LR_BASE,     FLASH_LR_SIZE      },
+        { 3, FLASH_ADXL_BASE,   FLASH_ADXL_SIZE    },
+        { 4, FLASH_HR_BASE,     FLASH_HR_SIZE       },
+    };
+    static const uint8_t num_regions = sizeof(regions) / sizeof(regions[0]);
+
+    /* Let any in-flight CDC TX drain, then flush RX */
+    HAL_Delay(50);
+    while (cdc_ring_available() > 0) cdc_ring_read_byte();
+
+    /* Header: magic + region count */
+    uint8_t hdr[5] = { 'C', 'D', 'M', 'P', num_regions };
+    cdc_send_blocking(hdr, sizeof(hdr));
+
+    /* Region descriptors */
+    for (int r = 0; r < num_regions; r++) {
+        uint8_t desc[9];
+        desc[0] = regions[r].id;
+        memcpy(&desc[1], &regions[r].offset, 4);
+        memcpy(&desc[5], &regions[r].size, 4);
+        cdc_send_blocking(desc, sizeof(desc));
+    }
+
+    /* Wait for initial ACK (PC is ready) */
+    if (!wait_for_ack()) return;
+
+    /* Stream each region */
+    static uint8_t chunk_buf[DUMP_CHUNK];
+    for (int r = 0; r < num_regions; r++) {
+        uint32_t addr = regions[r].offset;
+        uint32_t remain = regions[r].size;
+
+        while (remain > 0) {
+            uint32_t n = (remain > DUMP_CHUNK) ? DUMP_CHUNK : remain;
+            if (w25q512jv_read(fl, addr, chunk_buf, n) != W25Q_OK) {
+                /* Fill with 0xFF on read error */
+                memset(chunk_buf, 0xFF, n);
+            }
+            cdc_send_blocking(chunk_buf, (uint16_t)n);
+            if (!wait_for_ack()) return;  /* PC timed out */
+            addr   += n;
+            remain -= n;
+        }
+    }
+
+    /* End marker */
+    uint8_t end[4] = { 'D', 'O', 'N', 'E' };
+    cdc_send_blocking(end, sizeof(end));
+}
+
+#endif /* TEST_MODE == 1 */
+
 void flight_loop_tick(void)
 {
     /* ── Buzzer state machine ── */
@@ -407,14 +503,7 @@ void flight_loop_tick(void)
     }
 
     /* ── GPS: non-blocking poll (10 Hz NAV-PVT) ── */
-#if TEST_MODE == 1
-    static bool gps_new_fix = false;
-    gps_new_fix = false;
-#endif
     if (max_m10m_tick(&gps)) {
-#if TEST_MODE == 1
-      gps_new_fix = true;
-#endif
       if (cal_done && max_m10m_has_3d_fix(&gps)) {
         casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
         casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
@@ -515,10 +604,16 @@ void flight_loop_tick(void)
         if (prev_fsm != FSM_STATE_MAIN && fsm == FSM_STATE_MAIN)
           log_stream_finalize(&logger.adxl);
 
-        /* Landed: finalize all logging */
+        /* Landed: record 5 more seconds, then finalize */
+        static uint32_t landed_at = 0;
         if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED) {
+          landed_at = now;
+        }
+        if (fsm == FSM_STATE_LANDED && landed_at != 0
+            && (now - landed_at >= 5000) && !logger.finalized) {
           flight_logger_finalize(&logger);
           buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
+          landed_at = 0;
         }
 #endif
 
@@ -526,35 +621,36 @@ void flight_loop_tick(void)
       }
 
 #if TEST_MODE == 1
-      /* ── COBS binary telemetry (10 Hz via tlm_tick) ── */
-      {
-        pyro_state_t pstate = {0};
-        uint8_t arm_bm  = pyro_mgr_get_arm_bitmap();
-        uint8_t cont_bm = pyro_mgr_get_cont_bitmap();
-        pstate.armed[0] = (arm_bm & 0x01) != 0;
-        pstate.armed[1] = (arm_bm & 0x02) != 0;
-        pstate.armed[2] = (arm_bm & 0x04) != 0;
-        pstate.armed[3] = (arm_bm & 0x08) != 0;
-        pstate.continuity[0] = (cont_bm & 0x01) != 0;
-        pstate.continuity[1] = (cont_bm & 0x02) != 0;
-        pstate.continuity[2] = (cont_bm & 0x04) != 0;
-        pstate.continuity[3] = (cont_bm & 0x08) != 0;
-        pstate.fired = pyro_mgr_is_firing();
-        tlm_tick(&tstate, &pstate, fsm);
-
-        /* ── GPS telemetry on new fix ── */
-        if (gps_new_fix) {
-          fc_gps_state_t gstate;
-          gstate.dlat_mm   = 0;
-          gstate.dlon_mm   = 0;
-          gstate.alt_msl_m = gps.alt_msl_m;
-          gstate.fix_type  = gps.fix_type;
-          gstate.sat_count = gps.num_sv;
-          tlm_send_gps(&gstate);
+      /* ── ASCII telemetry (10 Hz, suppressed during flash dump) ── */
+      if (!cmd_router_dump_requested()) {
+        static uint32_t ascii_last = 0;
+        if (now - ascii_last >= 100) {
+          ascii_last = now;
+          char buf[128];
+          int len = snprintf(buf, sizeof(buf),
+              "FSM:%u alt:%.1f vel:%.1f ag:%.1f t:%.1f\r\n",
+              (unsigned)fsm, (double)tstate.alt_m, (double)tstate.vel_mps,
+              (double)tstate.accel_mag_g, (double)tstate.flight_time_s);
+          if (len > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)len);
         }
+      }
 
-        /* ── Radio telemetry TX + RX window ── */
-        radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+        /* ── Radio TX + RX window ── */
+        {
+          pyro_state_t pstate = {0};
+          uint8_t arm_bm  = pyro_mgr_get_arm_bitmap();
+          uint8_t cont_bm = pyro_mgr_get_cont_bitmap();
+          pstate.armed[0] = (arm_bm & 0x01) != 0;
+          pstate.armed[1] = (arm_bm & 0x02) != 0;
+          pstate.armed[2] = (arm_bm & 0x04) != 0;
+          pstate.armed[3] = (arm_bm & 0x08) != 0;
+          pstate.continuity[0] = (cont_bm & 0x01) != 0;
+          pstate.continuity[1] = (cont_bm & 0x02) != 0;
+          pstate.continuity[2] = (cont_bm & 0x04) != 0;
+          pstate.continuity[3] = (cont_bm & 0x08) != 0;
+          pstate.fired = pyro_mgr_is_firing();
+          radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+        }
 
         /* ── Logger: LR record (pyro + radio + GPS) ── */
         {
@@ -568,7 +664,6 @@ void flight_loop_tick(void)
           flight_logger_push_lr(&logger, pyro_st, pyro_cont,
                                 rssi, snr, tx_cnt, rx_cnt, fail_cnt, &gps);
         }
-      }
 #endif /* TEST_MODE == 1 */
     }
 #endif /* TEST_MODE != 2 */
@@ -577,6 +672,12 @@ void flight_loop_tick(void)
     /* ── Process incoming CDC commands ── */
     if (cdc_ring_available() > 0) {
       cmd_router_process();
+    }
+
+    /* ── Flash dump over CDC (blocking, post-flight only) ── */
+    if (cmd_router_dump_requested()) {
+      cmd_router_dump_clear();
+      flash_dump_over_cdc(&flash);
     }
 
     /* ── CAC confirm timeout check ── */

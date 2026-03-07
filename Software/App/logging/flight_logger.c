@@ -143,6 +143,12 @@ void flight_logger_launch(flight_logger_t *log)
     log_stream_launch(&log->lr);
     log_stream_launch(&log->adxl);
 
+    /* Wait for any in-progress IT erase to complete before blocking ops.
+     * The ring buffers absorb records during this spin (~400 ms worst case). */
+    while (!w25q512jv_is_idle(log->index.flash)) { /* spin */ }
+    log->qspi_state    = QSPI_IDLE;
+    log->active_stream = NULL;
+
     log_index_start_flight(&log->index, HAL_GetTick());
 
     /* Pre-erase summary sector if this flight starts a new 4 KB sector.

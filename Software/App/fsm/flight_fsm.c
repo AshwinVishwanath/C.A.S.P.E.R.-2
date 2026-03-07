@@ -16,6 +16,7 @@ static uint32_t    s_mission_start_ms;
 static bool        s_mission_started;
 
 /* Sim + bench */
+#define SIM_TIME_SCALE  10   /* 10x faster than real-time (1 = real-time) */
 static bool        s_sim_active;
 static uint32_t    s_sim_start_ms;
 static bool        s_bench_mode;
@@ -115,7 +116,7 @@ fsm_state_t flight_fsm_tick(const fsm_input_t *in)
     /* Sim mode: run scripted profile (uses internal timing, ignores 'in') */
     if (s_sim_active) {
         uint32_t now = fsm_get_tick();
-        float sim_t = (float)(now - s_sim_start_ms) / 1000.0f;
+        float sim_t = (float)(now - s_sim_start_ms) * SIM_TIME_SCALE / 1000.0f;
 
         fsm_state_t target = FSM_STATE_PAD;
         for (int i = (int)SIM_PROFILE_LEN - 1; i >= 0; i--) {
@@ -298,7 +299,7 @@ void flight_fsm_sim_get_state(fc_telem_state_t *out)
         return;
     }
 
-    float sim_t = (float)(fsm_get_tick() - s_sim_start_ms) / 1000.0f;
+    float sim_t = (float)(fsm_get_tick() - s_sim_start_ms) * SIM_TIME_SCALE / 1000.0f;
 
     /* Find bounding waypoints and interpolate */
     int lo = 0;

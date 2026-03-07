@@ -75,7 +75,7 @@ static int8_t STORAGE_IsReady(uint8_t lun)
 static int8_t STORAGE_IsWriteProtected(uint8_t lun)
 {
   (void)lun;
-  return 0;
+  return 1;  /* read-only: protect flight data from accidental format */
 }
 
 static int8_t STORAGE_Read(uint8_t lun, uint8_t *buf, uint32_t blk_addr,

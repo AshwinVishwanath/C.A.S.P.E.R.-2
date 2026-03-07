@@ -32,6 +32,11 @@ static int     s_frame_pos;
 #define DECODE_BUF_SIZE 64
 static uint8_t s_decode_buf[DECODE_BUF_SIZE];
 
+/* ── Flash dump request flag (picked up by flight_loop) ─────── */
+static volatile bool s_dump_requested = false;
+bool cmd_router_dump_requested(void) { return s_dump_requested; }
+void cmd_router_dump_clear(void)    { s_dump_requested = false; }
+
 /* ── Handshake handler (0xC0) — implemented here ────────────── */
 static void cmd_handle_handshake(void)
 {
@@ -96,6 +101,7 @@ static void dispatch_frame(const uint8_t *decoded, int len)
     case MSG_ID_READLOG:       cfg_handle_readlog(decoded, len);     break;
     case MSG_ID_ERASELOG:      cfg_handle_eraselog(decoded, len);     break;
     case MSG_ID_SIM_FLIGHT:    cmd_handle_sim_flight(decoded, len);  break;
+    case MSG_ID_DUMP_FLASH:    s_dump_requested = true;              break;
 
 #ifdef HIL_MODE
     case MSG_ID_HIL_INJECT:    hil_handle_inject(decoded, len);  break;

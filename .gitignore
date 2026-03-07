@@ -82,5 +82,11 @@ CSVs/
 # Build log
 Software/build_out.txt
 
+# Flight data images
+*.png
+
+# Python cache
+__pycache__/
+
 # Claude Code
 .claude/
