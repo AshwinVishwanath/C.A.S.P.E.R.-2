@@ -102,6 +102,49 @@ static HAL_StatusTypeDef max_m10m_send_valset(max_m10m_t *dev,
                                    payload, 8 + val_size);
 }
 
+/**
+ * Same as send_valset but writes to RAM+BBR layers (0x03) so the
+ * config survives GNSS subsystem restarts.
+ */
+static HAL_StatusTypeDef max_m10m_send_valset_persist(max_m10m_t *dev,
+    uint32_t key, uint32_t value, uint8_t val_size)
+{
+    uint8_t payload[12];
+    payload[0] = 0x01;   /* version */
+    payload[1] = 0x03;   /* layers: RAM + BBR */
+    payload[2] = 0x00;
+    payload[3] = 0x00;
+    payload[4] = (uint8_t)(key);
+    payload[5] = (uint8_t)(key >> 8);
+    payload[6] = (uint8_t)(key >> 16);
+    payload[7] = (uint8_t)(key >> 24);
+    payload[8]  = (uint8_t)(value);
+    if (val_size >= 2) payload[9]  = (uint8_t)(value >> 8);
+    if (val_size >= 4) {
+        payload[10] = (uint8_t)(value >> 16);
+        payload[11] = (uint8_t)(value >> 24);
+    }
+    return max_m10m_i2c_write_ubx(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID,
+                                   payload, 8 + val_size);
+}
+
+/**
+ * Drain all pending data from the GPS I2C buffer (discard).
+ * Used after GNSS restart to clear stale data before re-configuring.
+ */
+static void max_m10m_drain(max_m10m_t *dev)
+{
+    for (int i = 0; i < 50; i++) {
+        uint16_t avail = max_m10m_read_bytes_available(dev);
+        if (avail == 0 || avail == 0xFFFF) break;
+        uint8_t junk[64];
+        uint16_t chunk = avail > 64 ? 64 : avail;
+        HAL_I2C_Mem_Read(dev->hi2c, MAX_M10M_I2C_ADDR << 1,
+            MAX_M10M_REG_DATA_STREAM, I2C_MEMADD_SIZE_8BIT,
+            junk, chunk, 50);
+    }
+}
+
 /* Forward declarations for parser */
 static int  ubx_parse_byte(max_m10m_t *dev, uint8_t byte);
 static void ubx_handle_frame(max_m10m_t *dev);
@@ -265,6 +308,8 @@ static uint16_t read_u16_le(const uint8_t *p)
  */
 static void ubx_handle_frame(max_m10m_t *dev)
 {
+    dev->dbg_frames_ok++;
+
     if (dev->parse_class == UBX_CLASS_NAV &&
         dev->parse_id == UBX_NAV_PVT_ID &&
         dev->parse_len == UBX_NAV_PVT_LEN) {
@@ -316,6 +361,18 @@ static void ubx_handle_frame(max_m10m_t *dev)
         dev->ack_class    = dev->parse_buf[0];
         dev->ack_id       = dev->parse_buf[1];
         dev->nak_received = true;
+
+    } else if (dev->parse_class == UBX_CLASS_MON &&
+               dev->parse_id == UBX_MON_RF_ID &&
+               dev->parse_len >= 28) {
+        /* ── MON-RF ── first RF block starts at offset 4 */
+        const uint8_t *b = &dev->parse_buf[4];
+        dev->ant_status      = b[2];
+        dev->ant_power       = b[3];
+        dev->rf_noise_per_ms = read_u16_le(&b[8]);
+        dev->rf_agc_cnt      = read_u16_le(&b[10]);
+        dev->rf_jam_ind      = b[12];
+        dev->mon_rf_valid    = true;
     }
     /* All other messages silently discarded */
 }
@@ -348,48 +405,44 @@ bool max_m10m_init(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
     }
     dev->alive = true;
 
-    /* 3. Disable all NMEA output on I2C port */
-    max_m10m_send_valset(dev, CFG_MSGOUT_NMEA_GGA_I2C, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
+    /* 2b. Factory reset: clear BBR + RAM, cold start */
+    {
+        uint8_t rst_payload[4] = {0xFF, 0xFF, 0x00, 0x00};
+        max_m10m_i2c_write_ubx(dev, 0x06, 0x04, rst_payload, 4);
 
-    max_m10m_send_valset(dev, CFG_MSGOUT_NMEA_GLL_I2C, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
+        /* Wait for reboot, actively reading to prevent I2C timeout
+         * (M10 stops output if master doesn't read for 1.5s) */
+        uint32_t t0 = HAL_GetTick();
+        while (HAL_GetTick() - t0 < 2000) {
+            HAL_Delay(100);
+            rc = HAL_I2C_IsDeviceReady(hi2c, MAX_M10M_I2C_ADDR << 1, 1, 50);
+            if (rc == HAL_OK) {
+                /* Module is back — drain any startup data */
+                max_m10m_drain(dev);
+            }
+        }
+        rc = HAL_I2C_IsDeviceReady(hi2c, MAX_M10M_I2C_ADDR << 1, 5, 200);
+        if (rc != HAL_OK) { dev->alive = false; return false; }
+        max_m10m_drain(dev);
+    }
 
-    max_m10m_send_valset(dev, CFG_MSGOUT_NMEA_GSA_I2C, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
+    /* 3. Configure I2C output: UBX only (no NMEA), enable NAV-PVT, 10Hz */
+    dev->init_ack_mask = 0;
+    dev->init_cmd_count = 0;
 
-    max_m10m_send_valset(dev, CFG_MSGOUT_NMEA_GSV_I2C, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
+    #define SEND_CFG(key, val, sz) do { \
+        max_m10m_send_valset(dev, (key), (val), (sz)); \
+        bool _ok = max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 500); \
+        if (_ok) dev->init_ack_mask |= (1u << dev->init_cmd_count); \
+        dev->init_cmd_count++; \
+    } while(0)
 
-    max_m10m_send_valset(dev, CFG_MSGOUT_NMEA_RMC_I2C, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
+    SEND_CFG(CFG_I2COUTPROT_UBX, 1, 1);          /* bit 0: UBX output ON  */
+    SEND_CFG(CFG_I2COUTPROT_NMEA, 0, 1);         /* bit 1: NMEA output OFF */
+    SEND_CFG(CFG_MSGOUT_UBX_NAV_PVT_I2C, 1, 1);  /* bit 2: PVT every epoch */
+    SEND_CFG(CFG_RATE_MEAS, 100, 2);              /* bit 3: 10Hz rate       */
 
-    max_m10m_send_valset(dev, CFG_MSGOUT_NMEA_VTG_I2C, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
-
-    /* 4. Enable UBX-NAV-PVT on I2C at every measurement epoch */
-    max_m10m_send_valset(dev, CFG_MSGOUT_UBX_NAV_PVT_I2C, 1, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
-
-    /* 5. Set measurement rate to 100ms (10 Hz) */
-    max_m10m_send_valset(dev, CFG_RATE_MEAS, 100, 2);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
-
-    /* 6. GPS-only constellation (required for 10 Hz) */
-    max_m10m_send_valset(dev, CFG_SIGNAL_GPS_ENA, 1, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
-
-    max_m10m_send_valset(dev, CFG_SIGNAL_GAL_ENA, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
-
-    max_m10m_send_valset(dev, CFG_SIGNAL_BDS_ENA, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
-
-    max_m10m_send_valset(dev, CFG_SIGNAL_GLO_ENA, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
-
-    max_m10m_send_valset(dev, CFG_SIGNAL_QZSS_ENA, 0, 1);
-    max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200);
+    #undef SEND_CFG
 
     return true;
 }
@@ -409,8 +462,15 @@ int max_m10m_tick(max_m10m_t *dev)
         /* fall through */
 
     case GPS_TICK_READ_AVAIL: {
+        dev->dbg_polls++;
         uint16_t avail = max_m10m_read_bytes_available(dev);
-        if (avail == 0 || avail == 0xFFFF) {
+        if (avail == 0) {
+            dev->dbg_avail_zero++;
+            dev->tick_state = GPS_TICK_IDLE;
+            return 0;
+        }
+        if (avail == 0xFFFF) {
+            dev->dbg_avail_ffff++;
             dev->tick_state = GPS_TICK_IDLE;
             return 0;
         }
@@ -430,8 +490,17 @@ int max_m10m_tick(max_m10m_t *dev)
             I2C_MEMADD_SIZE_8BIT, buf, chunk, 50);
 
         if (rc != HAL_OK) {
+            dev->dbg_i2c_err++;
             dev->tick_state = GPS_TICK_IDLE;
             return 0;
+        }
+        dev->dbg_bytes_read += chunk;
+
+        /* Snapshot first bytes for hex dump debug */
+        if (dev->dbg_raw_len == 0 && chunk > 0) {
+            uint8_t n = chunk > 32 ? 32 : (uint8_t)chunk;
+            memcpy(dev->dbg_raw, buf, n);
+            dev->dbg_raw_len = n;
         }
 
         int got_pvt = 0;
@@ -452,6 +521,84 @@ int max_m10m_tick(max_m10m_t *dev)
     return 0;
 }
 
+bool max_m10m_init_minimal(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
+                            GPIO_TypeDef *nrst_port, uint16_t nrst_pin)
+{
+    memset(dev, 0, sizeof(*dev));
+    dev->hi2c      = hi2c;
+    dev->nrst_port = nrst_port;
+    dev->nrst_pin  = nrst_pin;
+    dev->parse_state = UBX_PARSE_SYNC1;
+
+    /* Hard reset */
+    HAL_GPIO_WritePin(nrst_port, nrst_pin, GPIO_PIN_RESET);
+    HAL_Delay(10);
+    HAL_GPIO_WritePin(nrst_port, nrst_pin, GPIO_PIN_SET);
+    HAL_Delay(1000);
+
+    /* I2C check */
+    HAL_StatusTypeDef rc = HAL_I2C_IsDeviceReady(hi2c,
+        MAX_M10M_I2C_ADDR << 1, 3, 100);
+    if (rc != HAL_OK) {
+        dev->alive = false;
+        return false;
+    }
+    dev->alive = true;
+
+    /* Drain any startup data */
+    max_m10m_drain(dev);
+
+    return true;
+}
+
+int max_m10m_tick_nmea(max_m10m_t *dev)
+{
+    if (!dev->alive) return 0;
+
+    uint32_t now = HAL_GetTick();
+
+    /* Poll every 25ms */
+    if (now - dev->tick_last_poll < 25) return 0;
+    dev->tick_last_poll = now;
+    dev->dbg_polls++;
+
+    uint16_t avail = max_m10m_read_bytes_available(dev);
+    if (avail == 0) { dev->dbg_avail_zero++; return 0; }
+    if (avail == 0xFFFF) { dev->dbg_avail_ffff++; return 0; }
+
+    /* Read up to 64 bytes */
+    uint16_t chunk = avail > 64 ? 64 : avail;
+    uint8_t buf[64];
+    HAL_StatusTypeDef rc = HAL_I2C_Mem_Read(dev->hi2c,
+        MAX_M10M_I2C_ADDR << 1, MAX_M10M_REG_DATA_STREAM,
+        I2C_MEMADD_SIZE_8BIT, buf, chunk, 50);
+    if (rc != HAL_OK) { dev->dbg_i2c_err++; return 0; }
+    dev->dbg_bytes_read += chunk;
+
+    /* Buffer into NMEA lines + feed UBX parser (for MON-RF responses) */
+    int got_line = 0;
+    for (uint16_t i = 0; i < chunk; i++) {
+        uint8_t b = buf[i];
+
+        /* Feed UBX parser to catch MON-RF responses */
+        ubx_parse_byte(dev, b);
+
+        /* Buffer NMEA lines */
+        char c = (char)b;
+        if (c == '\n' || c == '\r') {
+            if (dev->nmea_idx > 0) {
+                dev->nmea_line[dev->nmea_idx] = '\0';
+                dev->nmea_line_ready = true;
+                dev->nmea_idx = 0;
+                got_line = 1;
+            }
+        } else if (dev->nmea_idx < sizeof(dev->nmea_line) - 1) {
+            dev->nmea_line[dev->nmea_idx++] = c;
+        }
+    }
+    return got_line;
+}
+
 bool max_m10m_has_3d_fix(const max_m10m_t *dev)
 {
     return dev->has_fix && (dev->fix_type >= GPS_FIX_3D);
@@ -460,4 +607,54 @@ bool max_m10m_has_3d_fix(const max_m10m_t *dev)
 void max_m10m_irq_handler(max_m10m_t *dev)
 {
     dev->data_ready = true;
+}
+
+bool max_m10m_configure_gps_test(max_m10m_t *dev)
+{
+    if (!dev->alive) return false;
+    bool ok = true;
+
+    /* Airborne <4g dynamic model */
+    max_m10m_send_valset(dev, CFG_NAVSPG_DYNMODEL, 8, 1);
+    if (!max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200))
+        ok = false;
+
+    /* LNA bypass — FEM (SKY65943) provides external gain */
+    max_m10m_send_valset(dev, CFG_HW_RF_LNA_MODE, 2, 1);
+    if (!max_m10m_wait_ack(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID, 200))
+        ok = false;
+
+    return ok;
+}
+
+bool max_m10m_poll_mon_rf(max_m10m_t *dev)
+{
+    if (!dev->alive) return false;
+
+    dev->mon_rf_valid = false;
+
+    /* Send empty UBX-MON-RF poll (no payload) */
+    max_m10m_i2c_write_ubx(dev, UBX_CLASS_MON, UBX_MON_RF_ID, NULL, 0);
+
+    /* Blocking wait for MON-RF response */
+    uint32_t start = HAL_GetTick();
+    while (HAL_GetTick() - start < 500) {
+        uint16_t avail = max_m10m_read_bytes_available(dev);
+        if (avail == 0 || avail == 0xFFFF) {
+            HAL_Delay(10);
+            continue;
+        }
+        uint16_t chunk = avail > 64 ? 64 : avail;
+        uint8_t buf[64];
+        HAL_StatusTypeDef rc = HAL_I2C_Mem_Read(dev->hi2c,
+            MAX_M10M_I2C_ADDR << 1, MAX_M10M_REG_DATA_STREAM,
+            I2C_MEMADD_SIZE_8BIT, buf, chunk, 50);
+        if (rc != HAL_OK) continue;
+
+        for (uint16_t i = 0; i < chunk; i++)
+            ubx_parse_byte(dev, buf[i]);
+
+        if (dev->mon_rf_valid) return true;
+    }
+    return false;
 }
