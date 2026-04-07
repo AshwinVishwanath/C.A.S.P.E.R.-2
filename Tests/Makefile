@@ -3,8 +3,9 @@
 # Usage: make -j8 && make test
 
 # Ensure temp dir is writable (Windows workaround)
-export TMP := $(if $(TMP),$(TMP),$(USERPROFILE)/AppData/Local/Temp)
-export TEMP := $(if $(TEMP),$(TEMP),$(USERPROFILE)/AppData/Local/Temp)
+# msys2 make inherits a bogus TMP from its own profile; force user's real temp dir
+export TMP  := $(shell python -c "import tempfile; print(tempfile.gettempdir())" 2>/dev/null || echo C:/Windows/Temp)
+export TEMP := $(TMP)
 
 CC = gcc
 CFLAGS = -std=c11 -Wall -Wextra -DUNIT_TEST -DARM_MATH_CM7 -pipe
@@ -158,10 +159,10 @@ $(BUILD_DIR)/test_crc32: tier1_unit/test_crc32.c $(CRC_SRC) $(COMMON) | $(BUILD_
 $(BUILD_DIR)/test_status_pack: tier1_unit/test_status_pack.c $(STATUS_SRC) $(COMMON) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
 
-$(BUILD_DIR)/test_ms5611_math: tier1_unit/test_ms5611_math.c $(MS5611_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
+$(BUILD_DIR)/test_ms5611_math: tier1_unit/test_ms5611_math.c $(MS5611_SRC) $(COMMON) $(MOCK_TICK_SRC) $(MOCK_GPIO_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
 
-$(BUILD_DIR)/test_tlm_pack: tier1_unit/test_tlm_pack.c $(QPACK_SRC) $(COMMON) | $(BUILD_DIR)
+$(BUILD_DIR)/test_tlm_pack: tier1_unit/test_tlm_pack.c $(QPACK_SRC) $(STATUS_SRC) $(QUAT_SRC) $(COMMON) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
 
 $(BUILD_DIR)/test_fsm_util: tier1_unit/test_fsm_util.c $(FSM_UTIL_SRC) $(QUAT_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
@@ -184,8 +185,8 @@ $(BUILD_DIR)/test_pyro_manager: tier2_protocol/test_pyro_manager.c $(PYRO_MGR_SR
 $(BUILD_DIR)/test_pyro_safety: tier2_protocol/test_pyro_safety.c $(PYRO_MGR_SRC) $(PYRO_DRV_SRC) $(FSM_SRC) $(FSM_UTIL_SRC) $(QUAT_SRC) $(COMMON) $(MOCK_TICK_SRC) $(MOCK_GPIO_SRC) $(MOCK_ADC_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -DHIL_MODE -DPYRO_EXCLUDE_MASK=0x04 -o $@ $^ $(LDFLAGS)
 
-$(BUILD_DIR)/test_cac_handler: tier2_protocol/test_cac_handler.c $(CAC_SRC) $(COBS_SRC) $(CRC_SRC) $(PYRO_MGR_SRC) $(PYRO_DRV_SRC) $(COMMON) $(MOCK_TICK_SRC) $(MOCK_GPIO_SRC) $(MOCK_ADC_SRC) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
+$(BUILD_DIR)/test_cac_handler: tier2_protocol/test_cac_handler.c $(CAC_SRC) $(COBS_SRC) $(CRC_SRC) $(PYRO_MGR_SRC) $(PYRO_DRV_SRC) $(FSM_SRC) $(FSM_UTIL_SRC) $(QUAT_SRC) $(COMMON) $(MOCK_TICK_SRC) $(MOCK_GPIO_SRC) $(MOCK_ADC_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -DHIL_MODE -o $@ $^ $(LDFLAGS)
 
 $(BUILD_DIR)/test_cmd_router: tier2_protocol/test_cmd_router.c $(CMD_SRC) $(COBS_SRC) $(CRC_SRC) $(COMMON) $(MOCK_TICK_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
@@ -211,7 +212,7 @@ $(BUILD_DIR)/test_attitude_regression: regression/test_attitude_regression.c $(A
 
 # ---- COMPLIANCE ----
 
-$(BUILD_DIR)/test_ekf_spec: compliance/test_ekf_spec.c $(EKF_SRC) $(QUAT_SRC) $(COMMON) | $(BUILD_DIR)
+$(BUILD_DIR)/test_ekf_spec: compliance/test_ekf_spec.c $(EKF_SRC) $(ATT_SRC) $(QUAT_SRC) $(COMMON) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
 
 $(BUILD_DIR)/test_interface_spec: compliance/test_interface_spec.c $(COMMON) | $(BUILD_DIR)

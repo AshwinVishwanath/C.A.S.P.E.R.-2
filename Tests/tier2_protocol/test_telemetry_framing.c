@@ -3,9 +3,9 @@
  * @brief Tier-2 tests for end-to-end COBS framing of telemetry packets.
  *
  * Tests:
- *   - Build FC_MSG_FAST (20 bytes), COBS-encode, verify no 0x00 in encoded data
+ *   - Build FC_MSG_FAST (21 bytes), COBS-encode, verify no 0x00 in encoded data
  *   - Build FC_MSG_EVENT (11 bytes), COBS-encode, verify round-trip decode matches original
- *   - Build FC_MSG_GPS (17 bytes), COBS-encode, verify round-trip
+ *   - Build FC_MSG_GPS (18 bytes), COBS-encode, verify round-trip
  *   - Verify CRC-32 is last 4 bytes in each packet type
  *   - COBS round-trip with zero-heavy payload
  */
@@ -31,38 +31,38 @@ void tearDown(void) { }
 /*  Helpers                                                             */
 /* ================================================================== */
 
-/* Build a synthetic FC_MSG_FAST packet (20 bytes) */
+/* Build a synthetic FC_MSG_FAST packet (21 bytes) */
 static void build_fc_msg_fast(uint8_t *buf)
 {
-    /* [ID:1][STATUS:2][ALT:2][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 20 */
+    /* [ID:1][STATUS:2][ALT:3][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 21 */
     memset(buf, 0, SIZE_FC_MSG_FAST);
     buf[0] = MSG_ID_FAST;            /* 0x01 */
 
     /* STATUS: state=BOOST(1), arm=0x00 */
     put_le16(&buf[1], 0x0100);
 
-    /* ALT: 1500m (scaled 1:1 -> 0x05DC) */
-    put_le16(&buf[3], 1500);
+    /* ALT: 1500m -> 150000 cm (u24 LE, ALT_SCALE_M=0.01) */
+    put_le24(&buf[3], 150000);
 
     /* VEL: 250 dm/s (25 m/s * 10) */
-    put_le16(&buf[5], 250);
+    put_le16(&buf[6], 250);
 
     /* QUAT: 5-byte packed (smallest-three) — use dummy */
-    buf[7] = 0x00; buf[8] = 0x7F; buf[9] = 0x00;
-    buf[10] = 0x00; buf[11] = 0x00;
+    buf[8] = 0x00; buf[9] = 0x7F; buf[10] = 0x00;
+    buf[11] = 0x00; buf[12] = 0x00;
 
     /* TIME: 100 * 100ms = 10.0 s */
-    put_le16(&buf[12], 100);
+    put_le16(&buf[13], 100);
 
     /* BATT: (12.6 - 6.0) / 0.012 = 550 -> clamped to uint8 = 255 */
-    buf[14] = 200;
+    buf[15] = 200;
 
     /* SEQ */
-    buf[15] = 42;
+    buf[16] = 42;
 
-    /* CRC-32 over bytes 0..15 */
-    uint32_t crc = crc32_hw_compute(buf, 16);
-    put_le32(&buf[16], crc);
+    /* CRC-32 over bytes 0..16 */
+    uint32_t crc = crc32_hw_compute(buf, 17);
+    put_le32(&buf[17], crc);
 }
 
 /* Build a synthetic FC_MSG_EVENT packet (11 bytes) */
@@ -80,20 +80,20 @@ static void build_fc_msg_event(uint8_t *buf, uint8_t evt_type, uint16_t evt_data
     put_le32(&buf[7], crc);
 }
 
-/* Build a synthetic FC_MSG_GPS packet (17 bytes) */
+/* Build a synthetic FC_MSG_GPS packet (18 bytes) */
 static void build_fc_msg_gps(uint8_t *buf)
 {
-    /* [ID:1][DLAT:4][DLON:4][ALT:2][FIX:1][SAT:1][CRC:4] = 17 */
+    /* [ID:1][DLAT:4][DLON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
     memset(buf, 0, SIZE_FC_MSG_GPS);
     buf[0] = MSG_ID_GPS;
     put_le32(&buf[1], 1234567);     /* dlat_mm */
     put_le32(&buf[5], -7654321);    /* dlon_mm */
-    put_le16(&buf[9], 456);         /* alt */
-    buf[11] = 3;                     /* fix type */
-    buf[12] = 12;                    /* sat count */
+    put_le24(&buf[9], 45600);       /* alt in cm (u24 LE) */
+    buf[12] = 3;                     /* fix type */
+    buf[13] = 12;                    /* sat count */
 
-    uint32_t crc = crc32_hw_compute(buf, 13);
-    put_le32(&buf[13], crc);
+    uint32_t crc = crc32_hw_compute(buf, 14);
+    put_le32(&buf[14], crc);
 }
 
 /* ================================================================== */
@@ -121,9 +121,9 @@ void test_fc_msg_fast_crc_position(void)
     uint8_t raw[SIZE_FC_MSG_FAST];
     build_fc_msg_fast(raw);
 
-    /* CRC should be at bytes 16-19 (last 4 bytes) */
-    uint32_t stored_crc = get_le32(&raw[16]);
-    uint32_t computed_crc = crc32_hw_compute(raw, 16);
+    /* CRC should be at bytes 17-20 (last 4 bytes) */
+    uint32_t stored_crc = get_le32(&raw[17]);
+    uint32_t computed_crc = crc32_hw_compute(raw, 17);
     TEST_ASSERT_EQUAL_HEX32(computed_crc, stored_crc);
 }
 
@@ -177,9 +177,9 @@ void test_fc_msg_gps_crc_position(void)
     uint8_t raw[SIZE_FC_MSG_GPS];
     build_fc_msg_gps(raw);
 
-    /* CRC at bytes 13-16 (last 4 bytes of 17-byte packet) */
-    uint32_t stored_crc = get_le32(&raw[13]);
-    uint32_t computed_crc = crc32_hw_compute(raw, 13);
+    /* CRC at bytes 14-17 (last 4 bytes of 18-byte packet) */
+    uint32_t stored_crc = get_le32(&raw[14]);
+    uint32_t computed_crc = crc32_hw_compute(raw, 14);
     TEST_ASSERT_EQUAL_HEX32(computed_crc, stored_crc);
 }
 

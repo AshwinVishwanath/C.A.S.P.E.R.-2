@@ -75,8 +75,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#if defined(MAG_CAL) + defined(MAG_VAL) + defined(GYRO_TEMP_CAL) > 1
-#error "Only one calibration mode may be defined at a time"
+#if defined(MAG_CAL) + defined(MAG_VAL) + defined(GYRO_TEMP_CAL) + defined(GPS_TEST) > 1
+#error "Only one calibration/test mode may be defined at a time"
 #endif
 
 /* USER CODE END PD */
@@ -394,6 +394,40 @@ int main(void)
 
     DBG_PRINT("[INIT] GPS...\r\n");
 #ifndef GYRO_TEMP_CAL
+#ifdef GPS_TEST
+  /* Minimal init — no UBX config, just reset + I2C check.
+   * Module outputs default NMEA which we passthrough to CDC. */
+  if (!max_m10m_init_minimal(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
+    for (int i = 0; i < 6; i++) {
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(200);
+    }
+  }
+  if (gps.alive) {
+    bool cfg_ok = max_m10m_configure_gps_test(&gps);
+    bool rf_ok  = max_m10m_poll_mon_rf(&gps);
+    {
+      char _msg[160]; int _ml;
+      static const char *ant_str[] = {"INIT","DONTKNOW","OK","SHORT","OPEN"};
+      static const char *pwr_str[] = {"OFF","ON","DONTKNOW"};
+      if (rf_ok) {
+        _ml = snprintf(_msg, sizeof(_msg),
+          "[INIT] GPS cfg=%s ant=%s pwr=%s noise=%u agc=%u jam=%u\r\n",
+          cfg_ok ? "OK" : "FAIL",
+          gps.ant_status <= 4 ? ant_str[gps.ant_status] : "?",
+          gps.ant_power <= 2 ? pwr_str[gps.ant_power] : "?",
+          gps.rf_noise_per_ms, gps.rf_agc_cnt, gps.rf_jam_ind);
+      } else {
+        _ml = snprintf(_msg, sizeof(_msg),
+          "[INIT] GPS cfg=%s (MON-RF timeout)\r\n",
+          cfg_ok ? "OK" : "FAIL");
+      }
+      CDC_Transmit_FS((uint8_t *)_msg, (uint16_t)_ml);
+      HAL_Delay(20);
+    }
+  }
+#else
   if (!max_m10m_init(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
@@ -401,6 +435,7 @@ int main(void)
       HAL_Delay(200);
     }
   }
+#endif
 #endif
 
   // Reconfigure I2C_3_INT (PC8) from output to EXTI rising edge
@@ -434,7 +469,9 @@ int main(void)
   cfg_manager_init();
   flight_fsm_init();
   pyro_mgr_init(&hadc1, &hadc2, &hadc3);
+#ifndef GPS_TEST
   buzzer_init(&htim4);
+#endif
 
     DBG_PRINT("[INIT] radio...\r\n");
   int radio_init_ok = 0;
@@ -463,12 +500,14 @@ int main(void)
 
     DBG_PRINT("[INIT] all init complete\r\n");
 
+#ifndef GPS_TEST
   /* Startup beep: 3 short = radio OK, 5 long = radio FAIL */
   if (radio_init_ok) {
     buzzer_beep_n(50, 3, 100, 150);
   } else {
     buzzer_beep_n(50, 5, 300, 100);
   }
+#endif
 
   } /* end DBG_PRINT scope */
 
@@ -741,6 +780,67 @@ int main(void)
         HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
         HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
         while (1) { HAL_Delay(1000); }
+      }
+    }
+#elif defined(GPS_TEST)
+    {
+      static uint32_t last_status = 0;
+      uint32_t now = HAL_GetTick();
+
+      /* NMEA passthrough: read I2C, forward complete lines to CDC */
+      max_m10m_tick_nmea(&gps);
+
+      if (gps.nmea_line_ready) {
+        gps.nmea_line_ready = false;
+        uint8_t len = (uint8_t)strlen(gps.nmea_line);
+        /* Add \r\n for serial monitor display */
+        if (len < sizeof(gps.nmea_line) - 2) {
+          gps.nmea_line[len]   = '\r';
+          gps.nmea_line[len+1] = '\n';
+          CDC_Transmit_FS((uint8_t *)gps.nmea_line, len + 2);
+          HAL_Delay(5);
+        }
+      }
+
+      /* Status line every 5s with RF diagnostics */
+      if (now - last_status >= 5000) {
+        last_status = now;
+        char sbuf[180];
+        int slen;
+
+        static const char *ant_str[] = {"INIT","DONTKNOW","OK","SHORT","OPEN"};
+        static const char *pwr_str[] = {"OFF","ON","DONTKNOW"};
+
+        if (gps.mon_rf_valid) {
+          slen = snprintf(sbuf, sizeof(sbuf),
+            ">-- ant=%s pwr=%s agc=%u noise=%u jam=%u | polls=%lu avZ=%lu i2cE=%lu bytes=%lu --\r\n",
+            gps.ant_status <= 4 ? ant_str[gps.ant_status] : "?",
+            gps.ant_power <= 2 ? pwr_str[gps.ant_power] : "?",
+            gps.rf_agc_cnt, gps.rf_noise_per_ms, gps.rf_jam_ind,
+            (unsigned long)gps.dbg_polls,
+            (unsigned long)gps.dbg_avail_zero,
+            (unsigned long)gps.dbg_i2c_err,
+            (unsigned long)gps.dbg_bytes_read);
+        } else {
+          slen = snprintf(sbuf, sizeof(sbuf),
+            ">-- ant=? (no MON-RF) | polls=%lu avZ=%lu i2cE=%lu bytes=%lu --\r\n",
+            (unsigned long)gps.dbg_polls,
+            (unsigned long)gps.dbg_avail_zero,
+            (unsigned long)gps.dbg_i2c_err,
+            (unsigned long)gps.dbg_bytes_read);
+        }
+        CDC_Transmit_FS((uint8_t *)sbuf, (uint16_t)slen);
+        HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+      }
+
+      /* Re-poll MON-RF every 30s for fresh RF diagnostics */
+      {
+        static uint32_t last_rf_poll = 0;
+        if (now - last_rf_poll >= 30000) {
+          last_rf_poll = now;
+          /* Non-blocking: send poll, response parsed in tick_nmea's UBX parser */
+          max_m10m_poll_mon_rf(&gps);
+        }
       }
     }
 #else

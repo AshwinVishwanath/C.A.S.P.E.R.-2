@@ -87,14 +87,14 @@ static void test_msg_id_ack_fire(void)
 
 static void test_size_fc_msg_fast(void)
 {
-    /* [ID:1][STATUS:2][ALT:2][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 20 */
-    TEST_ASSERT_EQUAL_INT(20, SIZE_FC_MSG_FAST);
+    /* [ID:1][STATUS:2][ALT:3][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 21 */
+    TEST_ASSERT_EQUAL_INT(21, SIZE_FC_MSG_FAST);
 }
 
 static void test_size_fc_msg_gps(void)
 {
-    /* [ID:1][DLAT:4][DLON:4][ALT:2][FIX:1][SAT:1][CRC:4] = 17 */
-    TEST_ASSERT_EQUAL_INT(17, SIZE_FC_MSG_GPS);
+    /* [ID:1][DLAT:4][DLON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
+    TEST_ASSERT_EQUAL_INT(18, SIZE_FC_MSG_GPS);
 }
 
 static void test_size_fc_msg_event(void)
@@ -239,7 +239,7 @@ static void test_cobs_max_overhead(void)
 
 static void test_tlm_tx_buf_size(void)
 {
-    /* SIZE_FC_MSG_FAST + COBS_MAX_OVERHEAD + 1 = 20 + 2 + 1 = 23 */
+    /* SIZE_FC_MSG_FAST + COBS_MAX_OVERHEAD + 1 = 21 + 2 + 1 = 24 */
     TEST_ASSERT_EQUAL_INT(SIZE_FC_MSG_FAST + COBS_MAX_OVERHEAD + 1,
                            TLM_TX_BUF_SIZE);
 }

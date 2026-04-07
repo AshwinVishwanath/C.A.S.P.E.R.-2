@@ -71,8 +71,8 @@
 #define FSM_STATE_LANDED     0xB
 
 /* ── Packet sizes (byte-counted per INTERFACE_SPEC.md) ───────────── */
-#define SIZE_FC_MSG_FAST     20  /* [ID:1][STATUS:2][ALT:2][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 20 */
-#define SIZE_FC_MSG_GPS      17  /* [ID:1][DLAT:4][DLON:4][ALT:2][FIX:1][SAT:1][CRC:4] = 17 */
+#define SIZE_FC_MSG_FAST     21  /* [ID:1][STATUS:2][ALT:3][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 21 */
+#define SIZE_FC_MSG_GPS      18  /* [ID:1][DLAT:4][DLON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
 #define SIZE_FC_MSG_EVENT    11  /* [ID:1][TYPE:1][DATA:2][TIME:2][RSVD:1][CRC:4] = 11 */
 #define SIZE_CMD_ARM         12  /* [ID:1][MAG:2][NONCE:2][CH:1][ACT:1][~CH:1][CRC:4] = 12 */
 #define SIZE_CMD_FIRE        13  /* [ID:1][MAG:2][NONCE:2][CH:1][DUR:1][~CH:1][~DUR:1][CRC:4] = 13 */
@@ -101,7 +101,7 @@
 /* ── Encoding scales ─────────────────────────────────────────────── */
 #define BATT_OFFSET_V        6.0f
 #define BATT_STEP_V          0.012f
-#define ALT_SCALE_M          1.0f
+#define ALT_SCALE_M          0.01f   /* 1 cm per LSB, u24 max = 167,772 m */
 #define VEL_SCALE_DMS        0.1f
 #define TIME_SCALE_100MS     0.1f
 

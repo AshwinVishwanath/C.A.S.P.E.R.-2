@@ -23,6 +23,13 @@ static void put_le16(uint8_t *dst, uint16_t val)
     dst[1] = (uint8_t)((val >> 8) & 0xFF);
 }
 
+static void put_le24(uint8_t *dst, uint32_t val)
+{
+    dst[0] = (uint8_t)(val & 0xFF);
+    dst[1] = (uint8_t)((val >> 8) & 0xFF);
+    dst[2] = (uint8_t)((val >> 16) & 0xFF);
+}
+
 static void put_le32(uint8_t *dst, uint32_t val)
 {
     dst[0] = (uint8_t)(val & 0xFF);
@@ -64,7 +71,7 @@ int tlm_tick(const fc_telem_state_t *state, const pyro_state_t *pyro,
     }
     s_last_fast_ms = now;
 
-    /* Build FC_MSG_FAST (20 bytes) per PRD Section 3.1 */
+    /* Build FC_MSG_FAST (21 bytes) per INTERFACE_SPEC */
     uint8_t *p = s_raw_buf;
 
     /* Byte 0: message ID */
@@ -74,42 +81,42 @@ int tlm_tick(const fc_telem_state_t *state, const pyro_state_t *pyro,
     status_pack_build(p, pyro, fsm, false);
     p += 2;
 
-    /* Bytes 3–4: altitude in decametres, uint16 LE */
-    float alt_dam = state->alt_m / ALT_SCALE_M;
-    if (alt_dam < 0.0f) alt_dam = 0.0f;
-    if (alt_dam > 65535.0f) alt_dam = 65535.0f;
-    put_le16(p, (uint16_t)alt_dam);
-    p += 2;
+    /* Bytes 3–5: altitude in cm, uint24 LE (1 cm resolution, max 167.7 km) */
+    float alt_cm = state->alt_m / ALT_SCALE_M;
+    if (alt_cm < 0.0f) alt_cm = 0.0f;
+    if (alt_cm > 16777215.0f) alt_cm = 16777215.0f;
+    put_le24(p, (uint32_t)alt_cm);
+    p += 3;
 
-    /* Bytes 5–6: velocity in dm/s, int16 LE */
+    /* Bytes 6–7: velocity in dm/s, int16 LE */
     float vel_dms = state->vel_mps / VEL_SCALE_DMS;
     if (vel_dms > 32767.0f) vel_dms = 32767.0f;
     if (vel_dms < -32768.0f) vel_dms = -32768.0f;
     put_le16(p, (uint16_t)(int16_t)vel_dms);
     p += 2;
 
-    /* Bytes 7–11: quaternion packed (5 bytes) */
+    /* Bytes 8–12: quaternion packed (5 bytes) */
     quat_pack_smallest_three(p, state->quat);
     p += 5;
 
-    /* Bytes 12–13: flight time in 0.1s ticks, uint16 LE */
+    /* Bytes 13–14: flight time in 0.1s ticks, uint16 LE */
     float time_ds = state->flight_time_s / TIME_SCALE_100MS;
     if (time_ds < 0.0f) time_ds = 0.0f;
     if (time_ds > 65535.0f) time_ds = 65535.0f;
     put_le16(p, (uint16_t)time_ds);
     p += 2;
 
-    /* Byte 14: battery voltage, uint8 */
+    /* Byte 15: battery voltage, uint8 */
     float batt_encoded = (state->batt_v - BATT_OFFSET_V) / BATT_STEP_V;
     if (batt_encoded < 0.0f) batt_encoded = 0.0f;
     if (batt_encoded > 255.0f) batt_encoded = 255.0f;
     *p++ = (uint8_t)batt_encoded;
 
-    /* Byte 15: sequence counter */
+    /* Byte 16: sequence counter */
     *p++ = s_seq++;
 
-    /* Bytes 16–19: CRC-32 over bytes 0–15 */
-    uint32_t crc = crc32_hw_compute(s_raw_buf, 16);
+    /* Bytes 17–20: CRC-32 over bytes 0–16 */
+    uint32_t crc = crc32_hw_compute(s_raw_buf, 17);
     put_le32(p, crc);
 
     return cobs_encode_and_send(s_raw_buf, SIZE_FC_MSG_FAST);
@@ -117,9 +124,9 @@ int tlm_tick(const fc_telem_state_t *state, const pyro_state_t *pyro,
 
 int tlm_send_gps(const fc_gps_state_t *gps_state)
 {
-    /* FC_MSG_GPS: 17 bytes per INTERFACE_SPEC §5.2
+    /* FC_MSG_GPS: 18 bytes per INTERFACE_SPEC §5.2
      * [0]=0x02 [1-4]=dlat_mm(i32) [5-8]=dlon_mm(i32)
-     * [9-10]=alt_msl(u16) [11]=fix_type [12]=sat_count [13-16]=CRC */
+     * [9-11]=alt_msl(u24) [12]=fix_type [13]=sat_count [14-17]=CRC */
     uint8_t *p = s_raw_buf;
 
     /* Byte 0: message ID */
@@ -133,21 +140,21 @@ int tlm_send_gps(const fc_gps_state_t *gps_state)
     put_le32(p, (uint32_t)gps_state->dlon_mm);
     p += 4;
 
-    /* Bytes 9–10: alt_msl in decametres, uint16 LE */
-    float alt_dam = gps_state->alt_msl_m / ALT_SCALE_M;
-    if (alt_dam < 0.0f) alt_dam = 0.0f;
-    if (alt_dam > 65535.0f) alt_dam = 65535.0f;
-    put_le16(p, (uint16_t)alt_dam);
-    p += 2;
+    /* Bytes 9–11: alt_msl in cm, uint24 LE (1 cm resolution, max 167.7 km) */
+    float alt_cm = gps_state->alt_msl_m / ALT_SCALE_M;
+    if (alt_cm < 0.0f) alt_cm = 0.0f;
+    if (alt_cm > 16777215.0f) alt_cm = 16777215.0f;
+    put_le24(p, (uint32_t)alt_cm);
+    p += 3;
 
-    /* Byte 11: fix_type */
+    /* Byte 12: fix_type */
     *p++ = gps_state->fix_type;
 
-    /* Byte 12: sat_count */
+    /* Byte 13: sat_count */
     *p++ = gps_state->sat_count;
 
-    /* Bytes 13–16: CRC-32 over bytes 0–12 */
-    uint32_t crc = crc32_hw_compute(s_raw_buf, 13);
+    /* Bytes 14–17: CRC-32 over bytes 0–13 */
+    uint32_t crc = crc32_hw_compute(s_raw_buf, 14);
     put_le32(p, crc);
 
     return cobs_encode_and_send(s_raw_buf, SIZE_FC_MSG_GPS);
