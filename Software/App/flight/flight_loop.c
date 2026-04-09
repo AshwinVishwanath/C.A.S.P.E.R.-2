@@ -16,6 +16,9 @@
 #include "buzzer.h"
 #include "usbd_cdc_if.h"
 #include "fsm_util.h"
+#ifdef HIL_MODE
+#include "hil_raw_handler.h"
+#endif
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -40,7 +43,9 @@ static uint32_t last_mag_tick = 0;
 
 static const float EKF_DT   = 0.0012f;
 static const float G_CONST  = 9.80665f;
+#ifndef HIL_MODE
 static const float DEG2RAD  = 0.0174532925f;
+#endif
 
 static float   baro_ref       = 0.0f;
 static bool    init_done      = false;
@@ -58,6 +63,9 @@ static uint8_t  imu_subsample_count = 0;
 
 /* Last computed accel magnitude for FSM launch detection */
 static float    last_accel_mag_g = 0.0f;
+
+/* Last body-frame accel (m/s^2) — used by FSM section in both HIL and normal */
+static float    last_body_accel_ms2[3] = {0};
 
 /* Last baro altitude for FSM landing detection */
 static float    last_baro_alt_agl = 0.0f;
@@ -121,10 +129,6 @@ static void bench_dispatch(const char *cmd)
             bench_send("[BENCH] cal already done\r\n");
         } else {
             cal_done = true;
-            if (init_done) {
-                att.launched = true;
-                att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
-            }
             if (baro_cal_count > 0)
                 baro_ref = (float)(baro_cal_sum / (double)baro_cal_count);
             else
@@ -229,7 +233,7 @@ void flight_loop_init(void)
  *        PC → FW:  ACK 0x06 (1 byte)
  *    FW → PC:  "DONE" (4B)
  * ═══════════════════════════════════════════════════════════════════════ */
-#if TEST_MODE == 1
+#if TEST_MODE == 1 && !defined(HIL_MODE)
 
 #define DUMP_CHUNK  4096
 #define DUMP_ACK    0x06
@@ -310,7 +314,7 @@ static void flash_dump_over_cdc(w25q512jv_t *fl)
     cdc_send_blocking(end, sizeof(end));
 }
 
-#endif /* TEST_MODE == 1 */
+#endif /* TEST_MODE == 1 && !HIL_MODE */
 
 void flight_loop_tick(void)
 {
@@ -318,6 +322,144 @@ void flight_loop_tick(void)
     buzzer_tick();
 
 #if TEST_MODE != 2
+
+#ifdef HIL_MODE
+    /* ═══════════════════════════════════════════════════════════════
+     *  HIL RAW: event-driven — one full pipeline iteration per packet
+     * ═══════════════════════════════════════════════════════════════ */
+    cmd_router_process();
+
+    if (!g_hil_raw.pending) return;
+    g_hil_raw.pending = false;
+
+    /* Advance virtual clock */
+    static uint32_t hil_prev_tick = 0;
+    fsm_set_tick(g_hil_raw.tick_ms);
+    uint32_t now = g_hil_raw.tick_ms;
+
+    /* Compute dt from consecutive packets */
+    float hil_dt = (hil_prev_tick == 0) ? EKF_DT
+                 : (float)(now - hil_prev_tick) / 1000.0f;
+    if (hil_dt <= 0.0f || hil_dt > 0.1f) hil_dt = EKF_DT;
+    hil_prev_tick = now;
+
+    /* Copy injected sensor data */
+    float accel_ms2[3], gyro_rads[3];
+    memcpy(accel_ms2, g_hil_raw.accel_ms2, sizeof(accel_ms2));
+    memcpy(gyro_rads, g_hil_raw.gyro_rads, sizeof(gyro_rads));
+
+    if (g_hil_raw.mag_valid) {
+      memcpy(mag_cal_ut, g_hil_raw.mag_ut, sizeof(mag_cal_ut));
+      mag_new = true;
+    }
+
+    /* Skip calibration if flag set */
+    if (g_hil_raw.skip_cal && !cal_done) {
+      if (!init_done) {
+        const float *mp = g_hil_raw.mag_valid ? mag_cal_ut : NULL;
+        if (casper_att_static_init(&att, accel_ms2, mp))
+          init_done = true;
+      }
+      if (init_done) {
+        cal_done = true;
+        /* Use first baro reading as ground reference */
+        if (g_hil_raw.baro_valid && g_hil_raw.baro_pa > 0.0f) {
+          float p_hPa = g_hil_raw.baro_pa * 0.01f;
+          baro_ref = 44307.694f * (1.0f - powf(p_hPa / 1013.25f, 0.190284f));
+        }
+      }
+    }
+
+    const float *mag_ptr = mag_new ? mag_cal_ut : NULL;
+
+    /* Normal cal / init path (when not skip_cal) */
+    if (!cal_done) {
+      if (!init_done) {
+        if (casper_att_static_init(&att, accel_ms2, mag_ptr))
+          init_done = true;
+      } else {
+        casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, hil_dt);
+      }
+      if (init_done && (now - loop_start_tick) >= 30000) {
+        cal_done = true;
+        if (g_hil_raw.baro_valid && g_hil_raw.baro_pa > 0.0f) {
+          float p_hPa = g_hil_raw.baro_pa * 0.01f;
+          baro_ref = 44307.694f * (1.0f - powf(p_hPa / 1013.25f, 0.190284f));
+        }
+      }
+      mag_new = false;
+      return;  /* Still calibrating — no EKF/FSM yet */
+    }
+
+    /* ── Attitude update ── */
+    casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, hil_dt);
+    mag_new = false;
+
+    last_accel_mag_g = sqrtf(accel_ms2[0]*accel_ms2[0]
+                           + accel_ms2[1]*accel_ms2[1]
+                           + accel_ms2[2]*accel_ms2[2]) / G_CONST;
+
+    /* ── Rotate accel to NED, trapezoidal EKF predict ── */
+    {
+      float R_mat[9];
+      casper_quat_to_rotmat(att.q, R_mat);
+      float ned_accel[3];
+      ned_accel[0] = R_mat[0]*accel_ms2[0] + R_mat[1]*accel_ms2[1] + R_mat[2]*accel_ms2[2];
+      ned_accel[1] = R_mat[3]*accel_ms2[0] + R_mat[4]*accel_ms2[1] + R_mat[5]*accel_ms2[2];
+      ned_accel[2] = R_mat[6]*accel_ms2[0] + R_mat[7]*accel_ms2[1] + R_mat[8]*accel_ms2[2];
+      diag_ned_z = ned_accel[2];
+
+      if (imu_subsample_count == 0) {
+        ned_accel_accum[0] = ned_accel[0];
+        ned_accel_accum[1] = ned_accel[1];
+        ned_accel_accum[2] = ned_accel[2];
+        imu_subsample_count = 1;
+      } else {
+        float ned_avg[3];
+        ned_avg[0] = 0.5f * (ned_accel_accum[0] + ned_accel[0]);
+        ned_avg[1] = 0.5f * (ned_accel_accum[1] + ned_accel[1]);
+        ned_avg[2] = 0.5f * (ned_accel_accum[2] + ned_accel[2]);
+
+        float dt_predict = 2.0f * hil_dt;
+        casper_ekf_predict(&ekf, ned_avg, dt_predict);
+
+        diag_zupt_fired = false;
+        {
+          fsm_state_t fsm_now = flight_fsm_get_state();
+          if (fsm_now == FSM_STATE_PAD || fsm_now == FSM_STATE_LANDED) {
+            float amag = last_accel_mag_g * G_CONST;
+            if (fabsf(amag - G_CONST) < EKF_ZUPT_THRESHOLD) {
+              casper_ekf_update_zupt(&ekf);
+              diag_zupt_fired = true;
+            }
+          }
+        }
+        imu_subsample_count = 0;
+      }
+    }
+
+    /* ── Baro update from injected data ── */
+    static bool s_baro_fed_ekf = false;
+    if (g_hil_raw.baro_valid && g_hil_raw.baro_pa > 0.0f) {
+      float p_hPa = g_hil_raw.baro_pa * 0.01f;
+      float altitude = 44307.694f * (1.0f - powf(p_hPa / 1013.25f, 0.190284f)) - baro_ref;
+      last_baro_alt_agl = altitude;
+      casper_ekf_update_baro(&ekf, altitude);
+      s_baro_fed_ekf = true;
+    }
+
+    (void)s_baro_fed_ekf; /* used by LED code in non-HIL builds */
+
+    /* Store body accel for FSM section */
+    last_body_accel_ms2[0] = accel_ms2[0];
+    last_body_accel_ms2[1] = accel_ms2[1];
+    last_body_accel_ms2[2] = accel_ms2[2];
+
+    /* Pyro manager still needs ticking in HIL */
+    pyro_mgr_tick();
+
+#else /* !HIL_MODE — normal sensor-driven path */
+
     uint32_t now = HAL_GetTick();
     /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
     if (now - last_mag_tick >= 10) {
@@ -391,8 +533,8 @@ void flight_loop_tick(void)
         }
 
         if (init_done && (now - loop_start_tick) >= 30000) {
-          att.launched = true;
-          att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
+          /* att.launched stays false — Mahony gravity correction remains
+           * active until FSM transitions to BOOST (PAD→BOOST). */
           cal_done = true;
           if (baro_cal_count > 0)
             baro_ref = (float)(baro_cal_sum / (double)baro_cal_count);
@@ -411,6 +553,11 @@ void flight_loop_tick(void)
         last_accel_mag_g = sqrtf(accel_ms2[0]*accel_ms2[0]
                                + accel_ms2[1]*accel_ms2[1]
                                + accel_ms2[2]*accel_ms2[2]) / G_CONST;
+
+        /* Store body accel for FSM section */
+        last_body_accel_ms2[0] = accel_ms2[0];
+        last_body_accel_ms2[1] = accel_ms2[1];
+        last_body_accel_ms2[2] = accel_ms2[2];
 
         /* 833 Hz: rotate accel to NED using current quaternion */
         float R_mat[9];
@@ -516,9 +663,12 @@ void flight_loop_tick(void)
     /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
     pyro_mgr_tick();
 
+#endif /* HIL_MODE */
+
 #endif /* TEST_MODE != 2 — end of nav stack gate */
 
 #if TEST_MODE != 2
+#ifndef HIL_MODE
     /* ── EKF diagnostic LEDs (override pyro LEDs after init) ── */
     if (cal_done) {
       static uint32_t ekf_led_tick = 0;
@@ -530,6 +680,7 @@ void flight_loop_tick(void)
         HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
       }
     }
+#endif
 
     /* ── Build telemetry state + FSM tick (all modes) ── */
     {
@@ -544,23 +695,30 @@ void flight_loop_tick(void)
       tstate.flight_time_s = flight_fsm_get_time_s();
       tstate.accel_mag_g   = last_accel_mag_g;
       tstate.baro_alt_m    = last_baro_alt_agl;
+#ifdef HIL_MODE
+      tstate.adxl_activity = false;
+      tstate.adxl_available = false;
+      (void)tstate; /* used by radio_manager in non-HIL builds */
+#else
       tstate.adxl_activity = adxl372_activity_detected(&high_g);
       tstate.adxl_available = (high_g.device_id == ADXL372_DEVID_VAL);
+#endif
 
+#ifndef HIL_MODE
       if (flight_fsm_sim_active()) {
         flight_fsm_sim_get_state(&tstate);
         tstate.batt_v = 7.4f;
       }
+#endif
 
       /* Build fsm_input_t for sensor-driven transitions */
       fsm_input_t fsm_in = {0};
       fsm_in.alt_m               = ekf.x[0];
       fsm_in.vel_mps             = ekf.x[1];
-      fsm_in.vert_accel_g        = compute_vert_accel(att.q, (float[]){
-                                     imu.accel_g[0] * G_CONST,
-                                     imu.accel_g[1] * G_CONST,
-                                     imu.accel_g[2] * G_CONST });
-      fsm_in.antenna_up          = check_antenna_up(att.q);
+      fsm_in.vert_accel_g        = compute_vert_accel(att.q, last_body_accel_ms2);
+      static float diag_pitch_deg = 0.0f, diag_yaw_deg = 0.0f, diag_tilt_deg = 0.0f;
+      fsm_in.antenna_up          = check_antenna_up_tilt(att.q, &diag_pitch_deg,
+                                     &diag_yaw_deg, &diag_tilt_deg);
       fsm_in.flight_time_s       = flight_fsm_get_time_s();
       fsm_in.main_deploy_alt_m   = g_flight_cfg.main_deploy_alt;
       fsm_in.drogue_fail_vel_mps = g_flight_cfg.drogue_fail_vel;
@@ -583,7 +741,13 @@ void flight_loop_tick(void)
         }
 
         if (prev_fsm == FSM_STATE_PAD && fsm == FSM_STATE_BOOST) {
+          /* Switch attitude to flight mode: freeze gyro bias,
+           * drop gravity correction, keep 10Hz mag only. */
+          att.launched = true;
+          att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
+#ifndef HIL_MODE
           adxl372_enter_measurement(&high_g);
+#endif
 #if TEST_MODE == 1
           flight_logger_launch(&logger);
           buzzer_beep_n(30, 2, 100, 200);  /* 2 short beeps = launch */
@@ -621,20 +785,68 @@ void flight_loop_tick(void)
       }
 
 #if TEST_MODE == 1
-      /* ── ASCII telemetry (10 Hz, suppressed during flash dump) ── */
+      /* ── Serial plotter telemetry ── */
+#ifdef HIL_MODE
+      /* HIL: output every packet (PC controls rate), all FSM states */
+      {
+        char buf[200];
+        int len = snprintf(buf, sizeof(buf),
+            ">alt:%.2f,vel:%.2f,pitch:%.2f,yaw:%.2f,tilt:%.2f,"
+            "ant_up:%d,vaccel:%.2f,fsm:%u,amag:%.2f,"
+            "baro:%.2f,ab:%.4f,bb:%.4f\r\n",
+            (double)ekf.x[0],
+            (double)ekf.x[1],
+            (double)diag_pitch_deg,
+            (double)diag_yaw_deg,
+            (double)diag_tilt_deg,
+            (int)fsm_in.antenna_up,
+            (double)fsm_in.vert_accel_g,
+            (unsigned)fsm,
+            (double)last_accel_mag_g,
+            (double)last_baro_alt_agl,
+            (double)ekf.x[2],
+            (double)ekf.x[3]);
+        if (len > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)len);
+      }
+#else
+      /* Normal: 10 Hz output, suppressed during flash dump */
       if (!cmd_router_dump_requested()) {
         static uint32_t ascii_last = 0;
         if (now - ascii_last >= 100) {
           ascii_last = now;
-          char buf[128];
-          int len = snprintf(buf, sizeof(buf),
-              "FSM:%u alt:%.1f vel:%.1f ag:%.1f t:%.1f\r\n",
-              (unsigned)fsm, (double)tstate.alt_m, (double)tstate.vel_mps,
-              (double)tstate.accel_mag_g, (double)tstate.flight_time_s);
+          char buf[200];
+          int len;
+          if (fsm == FSM_STATE_PAD) {
+            /* Serial plotter: >name:value pairs */
+            float euler[3];
+            casper_quat_to_euler(att.q, euler);
+            float heading_deg = euler[2] * 57.2957795f;
+            float mag_norm = sqrtf(mag_cal_ut[0]*mag_cal_ut[0]
+                                 + mag_cal_ut[1]*mag_cal_ut[1]
+                                 + mag_cal_ut[2]*mag_cal_ut[2]);
+            len = snprintf(buf, sizeof(buf),
+                ">pitch:%.2f,yaw:%.2f,tilt:%.2f,ant_up:%d,vaccel:%.2f,fsm:%u,heading:%.1f,mag:%.1f\r\n",
+                (double)diag_pitch_deg,
+                (double)diag_yaw_deg,
+                (double)diag_tilt_deg,
+                (int)fsm_in.antenna_up,
+                (double)fsm_in.vert_accel_g,
+                (unsigned)fsm,
+                (double)heading_deg,
+                (double)mag_norm);
+          } else {
+            len = snprintf(buf, sizeof(buf),
+                ">alt:%.1f,vel:%.1f,vaccel:%.2f,fsm:%u,t:%.1f\r\n",
+                (double)tstate.alt_m, (double)tstate.vel_mps,
+                (double)fsm_in.vert_accel_g, (unsigned)fsm,
+                (double)tstate.flight_time_s);
+          }
           if (len > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)len);
         }
       }
+#endif /* HIL_MODE */
 
+#ifndef HIL_MODE
         /* ── Radio TX + RX window ── */
         {
           pyro_state_t pstate = {0};
@@ -664,11 +876,13 @@ void flight_loop_tick(void)
           flight_logger_push_lr(&logger, pyro_st, pyro_cont,
                                 rssi, snr, tx_cnt, rx_cnt, fail_cnt, &gps);
         }
+#endif /* !HIL_MODE */
 #endif /* TEST_MODE == 1 */
     }
 #endif /* TEST_MODE != 2 */
 
 #if TEST_MODE == 1
+#ifndef HIL_MODE
     /* ── Process incoming CDC commands ── */
     if (cdc_ring_available() > 0) {
       cmd_router_process();
@@ -702,6 +916,7 @@ void flight_loop_tick(void)
       HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin,
           logger.qspi_state != QSPI_IDLE ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
+#endif /* !HIL_MODE */
 #elif TEST_MODE == 2
     /* ── Bench test: process text commands from CDC ── */
     bench_process_cdc();

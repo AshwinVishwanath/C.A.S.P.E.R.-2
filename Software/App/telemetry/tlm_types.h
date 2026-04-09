@@ -191,8 +191,10 @@ typedef struct {
 /* ── Flash dump ─────────────────────────────────────────────── */
 #define MSG_ID_DUMP_FLASH    0xD2
 
-/* ── HIL message ────────────────────────────────────────────── */
-#define MSG_ID_HIL_INJECT    0xD1
-#define SIZE_HIL_INJECT      44  /* [ID:1][TICK:4][ALT:4][VEL:4][VA:4][ANT:1][FT:4][MDA:4][DFV:4][DFT:4][ACH:1][MCH:1][AFD:2][MFD:2][CRC:4] = 44 */
+/* ── HIL messages ───────────────────────────────────────────── */
+#define MSG_ID_HIL_INJECT        0xD1
+#define SIZE_HIL_INJECT          44  /* [ID:1][TICK:4][ALT:4][VEL:4][VA:4][ANT:1][FT:4][MDA:4][DFV:4][DFT:4][ACH:1][MCH:1][AFD:2][MFD:2][CRC:4] = 44 */
+#define MSG_ID_HIL_RAW_INJECT    0xD3
+#define SIZE_HIL_RAW_INJECT      50  /* [ID:1][TICK:4][ACCEL:12][GYRO:12][BARO:4][MAG:12][FLAGS:1][CRC:4] = 50 */
 
 #endif /* APP_TELEMETRY_TLM_TYPES_H */

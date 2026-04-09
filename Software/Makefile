@@ -149,6 +149,7 @@ App/fsm/flight_fsm.c \
 App/fsm/fsm_util.c \
 App/command/cmd_router.c \
 App/command/hil_handler.c \
+App/command/hil_raw_handler.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
@@ -226,6 +227,10 @@ else
 C_DEFS += -DBUILD_TARGET_FLIGHT
 endif
 
+# Extra defines from command line: make -j8 EXTRA_DEFS="-DHIL_MODE"
+ifdef EXTRA_DEFS
+C_DEFS += $(EXTRA_DEFS)
+endif
 
 # AS includes
 AS_INCLUDES = 

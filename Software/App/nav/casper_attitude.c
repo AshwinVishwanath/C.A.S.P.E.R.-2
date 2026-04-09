@@ -19,6 +19,11 @@
 #define STATIC_INIT_TIMEOUT_S     10.0f
 #define HEADING_SIGMA_FLOOR       0.01f   /* ~0.6° floor with mag correction */
 
+/* Gyro bias EMA: only update when gyro rate < threshold (stationary).
+ * τ = 5 s → adapts to thermal drift, rejects angular motion. */
+#define BIAS_GYRO_THRESH   0.035f   /* rad/s ≈ 2 deg/s */
+#define BIAS_EMA_INV_TAU   0.2f     /* 1/τ = 1/5 s */
+
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
 /* qdot = 0.5 * q (x) [0; omega] */
@@ -199,13 +204,21 @@ void casper_att_update(casper_attitude_t *att,
                               + (1.0f - alpha) * att->gyro_filtered[i];
     }
 
-    /* ── 2. Gyro bias estimation (running average, frozen at launch) ── */
+    /* ── 2. Gyro bias estimation (EMA, stationary-gated, frozen at launch) ──
+     *
+     * Only update when the board is nearly stationary (gyro rate below
+     * threshold) so that real angular motion doesn't corrupt the bias.
+     * EMA with a long time constant (~5 s) tracks thermal drift without
+     * freezing like a running average does after many samples. */
     if (!att->launched) {
-        for (i = 0; i < 3; i++)
-            att->bias_sum[i] += (double)gyro_raw[i];
-        att->bias_count++;
-        for (i = 0; i < 3; i++)
-            att->gyro_bias[i] = (float)(att->bias_sum[i] / (double)att->bias_count);
+        float gyro_mag = vec3_norm(gyro_raw);
+        if (gyro_mag < BIAS_GYRO_THRESH) {
+            /* EMA: bias ← (1-α)*bias + α*gyro_raw, α = dt/τ */
+            float bias_alpha = dt * BIAS_EMA_INV_TAU;
+            if (bias_alpha > 1.0f) bias_alpha = 1.0f;
+            for (i = 0; i < 3; i++)
+                att->gyro_bias[i] += bias_alpha * (gyro_raw[i] - att->gyro_bias[i]);
+        }
     }
 
     /* ── 3. Subtract bias from filtered gyro ── */
@@ -222,46 +235,37 @@ void casper_att_update(casper_attitude_t *att,
 
     if (!att->launched) {
         /* ── PAD PHASE ── */
+        /* Launch detection is handled externally by FSM (PAD→BOOST).
+         * att->launched is set by flight_loop.c, not here. */
 
-        /* Launch detection */
-        float accel_mag = vec3_norm(accel_raw);
-        if (accel_mag > att->config.launch_accel_g * G_ACCEL) {
-            att->launched = true;
-            /* Reset integral to prevent windup from gain change */
-            att->e_int[0] = att->e_int[1] = att->e_int[2] = 0.0f;
-            att->mag_update_timer = 0.0f;
+        /* Gravity correction: e_grav = cross(a_hat, R' * [0,0,1]) */
+        float a_hat[3];
+        vec3_normalize(accel_raw, a_hat);
+        float g_ned[3] = {0.0f, 0.0f, 1.0f};
+        float g_pred[3];
+        rotmat_transpose_mul(R, g_ned, g_pred);
+        vec3_cross(a_hat, g_pred, e_grav);
+
+        /* Mag correction (if available) */
+        if (mag_cal && att->mag_available) {
+            float m_hat[3];
+            vec3_normalize(mag_cal, m_hat);
+            float m_pred[3];
+            rotmat_transpose_mul(R, att->m_ref_ned, m_pred);
+            float m_pred_hat[3];
+            vec3_normalize(m_pred, m_pred_hat);
+            vec3_cross(m_hat, m_pred_hat, e_mag);
         }
 
-        if (!att->launched) {
-            /* Gravity correction: e_grav = cross(a_hat, R' * [0,0,1]) */
-            float a_hat[3];
-            vec3_normalize(accel_raw, a_hat);
-            float g_ned[3] = {0.0f, 0.0f, 1.0f};
-            float g_pred[3];
-            rotmat_transpose_mul(R, g_ned, g_pred);
-            vec3_cross(a_hat, g_pred, e_grav);
+        /* Integral accumulates raw error */
+        for (i = 0; i < 3; i++)
+            att->e_int[i] += (e_grav[i] + e_mag[i]) * dt;
 
-            /* Mag correction (if available) */
-            if (mag_cal && att->mag_available) {
-                float m_hat[3];
-                vec3_normalize(mag_cal, m_hat);
-                float m_pred[3];
-                rotmat_transpose_mul(R, att->m_ref_ned, m_pred);
-                float m_pred_hat[3];
-                vec3_normalize(m_pred, m_pred_hat);
-                vec3_cross(m_hat, m_pred_hat, e_mag);
-            }
-
-            /* Integral accumulates raw error */
-            for (i = 0; i < 3; i++)
-                att->e_int[i] += (e_grav[i] + e_mag[i]) * dt;
-
-            /* Apply corrections */
-            for (i = 0; i < 3; i++)
-                omega[i] += att->config.Kp_grav * e_grav[i]
-                          + att->config.Kp_mag_pad * e_mag[i]
-                          + att->config.Ki * att->e_int[i];
-        }
+        /* Apply corrections */
+        for (i = 0; i < 3; i++)
+            omega[i] += att->config.Kp_grav * e_grav[i]
+                      + att->config.Kp_mag_pad * e_mag[i]
+                      + att->config.Ki * att->e_int[i];
     } else {
         /* ── FLIGHT PHASE ── */
 
