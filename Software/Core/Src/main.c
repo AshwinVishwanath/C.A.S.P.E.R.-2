@@ -367,10 +367,10 @@ int main(void)
     DBG_PRINT("[INIT] EKF+attitude...\r\n");
   {
     casper_att_config_t att_cfg = {
-      .Kp_grav           = 1.0f,
+      .Kp_grav           = 10.0f,
       .Kp_mag_pad        = 0.0f,
       .Kp_mag_flight     = 0.0f,
-      .Ki                = 0.05f,
+      .Ki                = 0.1f,
       .gyro_lpf_cutoff_hz = 50.0f,
       .mag_update_hz     = 10.0f,
       .launch_accel_g    = 3.0f,
