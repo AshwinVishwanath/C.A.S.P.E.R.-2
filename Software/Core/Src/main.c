@@ -59,6 +59,9 @@
 #include "flight_loop.h"
 #include "radio_manager.h"
 #include "flight_logger.h"
+#ifdef LOGGER_SANITY
+#include "logger_sanity.h"
+#endif
 #endif /* !BUILD_TARGET_GROUND */
 #include "crc32_hw.h"
 #include "radio_irq.h"
@@ -643,6 +646,9 @@ int main(void)
 #else
   flight_loop_init();
   flight_logger_start(&logger);  /* Begin PAD-state ring filling + erase-ahead */
+#ifdef LOGGER_SANITY
+  logger_sanity_init(&logger);
+#endif
 #endif
 
 #endif /* BUILD_TARGET_GROUND */

@@ -22,7 +22,10 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#ifdef LOGGER_SANITY
+#include <stdbool.h>
+#include "stm32h7xx_hal.h"
+#endif
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,6 +44,13 @@ static volatile uint16_t cdc_ring_tail;   /* main loop reads  */
 /* Legacy flags kept for backward compat with existing pyro serial code */
 volatile uint8_t  cdc_rx_ready = 0;
 volatile uint32_t cdc_rx_len   = 0;
+
+#ifdef LOGGER_SANITY
+/* One-shot "go" line sniffer (bench-test only — passive tap) */
+static volatile bool s_sanity_go_flag = false;
+static char     s_sanity_line[16];
+static uint8_t  s_sanity_line_len = 0;
+#endif
 
 /* USER CODE END PV */
 
@@ -279,6 +289,25 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
           cdc_ring_buf[cdc_ring_head] = Buf[i];
           cdc_ring_head = next;
       }
+#ifdef LOGGER_SANITY
+      uint8_t b = Buf[i];
+      if (b == '\r' || b == '\n') {
+          if (s_sanity_line_len == 2 &&
+              (s_sanity_line[0] == 'g' || s_sanity_line[0] == 'G') &&
+              (s_sanity_line[1] == 'o' || s_sanity_line[1] == 'O')) {
+              s_sanity_go_flag = true;
+          }
+          s_sanity_line_len = 0;
+      } else if (b >= 0x20 && b <= 0x7E) {
+          if (s_sanity_line_len < sizeof(s_sanity_line)) {
+              s_sanity_line[s_sanity_line_len++] = (char)b;
+          } else {
+              s_sanity_line_len = 0;  /* overflow — discard */
+          }
+      } else {
+          s_sanity_line_len = 0;  /* control byte — reset */
+      }
+#endif
   }
 
   /* Legacy flag — kept for existing pyro serial code in main.c */
@@ -357,6 +386,17 @@ uint8_t cdc_ring_read_byte(void)
     cdc_ring_tail = (cdc_ring_tail + 1) % CDC_RING_SIZE;
     return byte;
 }
+
+#ifdef LOGGER_SANITY
+bool cdc_sanity_take_go(void)
+{
+    __disable_irq();
+    bool got = s_sanity_go_flag;
+    s_sanity_go_flag = false;
+    __enable_irq();
+    return got;
+}
+#endif
 
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 

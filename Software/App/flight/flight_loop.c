@@ -16,6 +16,9 @@
 #include "buzzer.h"
 #include "usbd_cdc_if.h"
 #include "fsm_util.h"
+#ifdef LOGGER_SANITY
+#include "logger_sanity.h"
+#endif
 #ifdef HIL_MODE
 #include "hil_raw_handler.h"
 #endif
@@ -749,8 +752,10 @@ void flight_loop_tick(void)
           adxl372_enter_measurement(&high_g);
 #endif
 #if TEST_MODE == 1
+#ifndef LOGGER_SANITY
           flight_logger_launch(&logger);
           buzzer_beep_n(30, 2, 100, 200);  /* 2 short beeps = launch */
+#endif
 #endif
         }
 
@@ -775,8 +780,10 @@ void flight_loop_tick(void)
         }
         if (fsm == FSM_STATE_LANDED && landed_at != 0
             && (now - landed_at >= 5000) && !logger.finalized) {
+#ifndef LOGGER_SANITY
           flight_logger_finalize(&logger);
           buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
+#endif
           landed_at = 0;
         }
 #endif
@@ -899,7 +906,11 @@ void flight_loop_tick(void)
 
     /* ── Flight logger QSPI dispatch (erase-ahead on PAD, page writes in flight) ── */
     flight_logger_tick(&logger);
+#ifdef LOGGER_SANITY
+    logger_sanity_tick(HAL_GetTick());
+#endif
 
+#ifndef LOGGER_SANITY
     /* ── Logger status LEDs ── */
     {
       /* LED2 (PB14): SOLID = launched (DRAIN), FAST BLINK = finalized */
@@ -916,6 +927,7 @@ void flight_loop_tick(void)
       HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin,
           logger.qspi_state != QSPI_IDLE ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
+#endif
 #endif /* !HIL_MODE */
 #elif TEST_MODE == 2
     /* ── Bench test: process text commands from CDC ── */

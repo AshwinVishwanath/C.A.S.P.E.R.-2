@@ -153,6 +153,7 @@ App/command/hil_raw_handler.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
+App/diag/logger_sanity.c \
 App/flight/flight_loop.c \
 App/radio/radio_manager.c \
 App/logging/flight_logger.c \
@@ -219,6 +220,9 @@ C_DEFS =  \
 -DUSB_MODE=1 \
 -DTEST_MODE=1 \
 -DMSC_MEDIA_PACKET=4096
+
+# Uncomment to enable bench logger sanity test (CDC 'go' + 5s + finalize):
+# C_DEFS += -DLOGGER_SANITY=1
 
 ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND
