@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   CRC32 Hardware
+ *  SUMMARY:  Wrapper for STM32 CRC peripheral; telemetry/log integrity.
+ * ============================================================ */
 #ifndef APP_TELEMETRY_CRC32_HW_H
 #define APP_TELEMETRY_CRC32_HW_H
 

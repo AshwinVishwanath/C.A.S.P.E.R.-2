@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   COBS Codec
+ *  SUMMARY:  Consistent Overhead Byte Stuffing for binary telemetry framing.
+ * ============================================================ */
 #include "cobs.h"
 
 int cobs_encode(const uint8_t *input, int in_len,

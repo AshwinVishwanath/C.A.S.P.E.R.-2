@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Log Stream
+ *  SUMMARY:  Per-stream ring buffer + flash-write state machine.
+ * ============================================================ */
 #pragma once
 
 #include <stdint.h>

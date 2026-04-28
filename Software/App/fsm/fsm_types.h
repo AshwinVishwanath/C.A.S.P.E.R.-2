@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   FSM Types
+ *  SUMMARY:  Shared FSM input struct, state enum, transition spec.
+ * ============================================================ */
 #ifndef APP_FSM_FSM_TYPES_H
 #define APP_FSM_FSM_TYPES_H
 

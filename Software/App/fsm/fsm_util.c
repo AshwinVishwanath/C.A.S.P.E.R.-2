@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   FSM Utilities
+ *  SUMMARY:  FSM helpers, transition predicates, virtual-clock for HIL.
+ * ============================================================ */
 #include "fsm_util.h"
 #include "casper_quat.h"
 #include <math.h>

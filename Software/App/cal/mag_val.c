@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     TEST-HARNESS
+ *  MODULE:   Mag Calibration Validation
+ *  SUMMARY:  Logs raw + corrected mag values to validate calibration fit.
+ * ============================================================ */
 /**
  * @file    mag_val.c
  * @brief   Magnetometer calibration validation — 30s stationary collection

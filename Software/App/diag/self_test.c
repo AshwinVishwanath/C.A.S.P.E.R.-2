@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   Self Test
+ *  SUMMARY:  Power-on integrity checks; gates entry to ARMED.
+ * ============================================================ */
 #include "self_test.h"
 #include "crc32_hw.h"
 #include "tlm_manager.h"

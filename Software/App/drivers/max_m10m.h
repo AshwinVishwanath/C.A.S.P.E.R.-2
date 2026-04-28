@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   MAX-M10M GPS Driver
+ *  SUMMARY:  I2C u-blox M10 GPS, UBX-NAV-PVT @ 10 Hz.
+ * ============================================================ */
 /**
  * @file max_m10m.h
  * @brief U-blox MAX-M10M GPS driver over I2C (DDC protocol).

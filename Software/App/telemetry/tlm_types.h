@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Telemetry Types
+ *  SUMMARY:  Message ID enums, packed-struct layouts, size constants.
+ * ============================================================ */
 #ifndef APP_TELEMETRY_TLM_TYPES_H
 #define APP_TELEMETRY_TLM_TYPES_H
 

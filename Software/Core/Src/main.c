@@ -1,4 +1,9 @@
 /* USER CODE BEGIN Header */
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Main / USB-mode dispatch
+ *  SUMMARY:  Entry point; clock + peripheral init; USB_MODE branch select.
+ * ============================================================ */
 /**
   ******************************************************************************
   * @file           : main.c

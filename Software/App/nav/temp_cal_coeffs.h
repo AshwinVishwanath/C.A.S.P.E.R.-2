@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Gyro Temp-Cal Coeffs
+ *  SUMMARY:  Bias-vs-temperature coefficients applied at gyro sample.
+ * ============================================================ */
 /**
  * @file    temp_cal_coeffs.h
  * @brief   Gyro temperature compensation coefficients for C.A.S.P.E.R.-2.

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Attitude Estimator
+ *  SUMMARY:  Mahony (pad) + RK4 gyro (flight) attitude with mag correction.
+ * ============================================================ */
 /**
  * @file casper_attitude.h
  * @brief Magnetometer-assisted attitude estimator for C.A.S.P.E.R.-2.

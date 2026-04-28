@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Radio Config
+ *  SUMMARY:  LoRa modulation profiles shared by flight and ground.
+ * ============================================================ */
 /**
  * @file radio_config.h
  * @brief Radio profile definitions and configuration constants.

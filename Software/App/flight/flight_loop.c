@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Flight Loop
+ *  SUMMARY:  Top-level superloop: schedules sensor reads, EKF, FSM, telemetry.
+ * ============================================================ */
 #include "flight_loop.h"
 #include "app_globals.h"
 

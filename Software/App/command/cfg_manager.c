@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Config Manager
+ *  SUMMARY:  Persistent config blob (radio profile, deployments, etc.).
+ * ============================================================ */
 #include "cfg_manager.h"
 #include "crc32_hw.h"
 #include "tlm_manager.h"

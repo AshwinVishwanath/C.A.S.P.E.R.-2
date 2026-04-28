@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   COBS Codec
+ *  SUMMARY:  Consistent Overhead Byte Stuffing for binary telemetry framing.
+ * ============================================================ */
 #ifndef APP_TELEMETRY_COBS_H
 #define APP_TELEMETRY_COBS_H
 

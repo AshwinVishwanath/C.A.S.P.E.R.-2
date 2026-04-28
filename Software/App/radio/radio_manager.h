@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Radio Manager
+ *  SUMMARY:  Non-blocking SX1276 TX/RX scheduler; profile switching.
+ * ============================================================ */
 /**
  * @file radio_manager.h
  * @brief Radio state machine: TX scheduler, RX window, profile switching.

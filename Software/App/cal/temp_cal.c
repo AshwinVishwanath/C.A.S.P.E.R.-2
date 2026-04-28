@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     TEST-HARNESS
+ *  MODULE:   Temp Calibration
+ *  SUMMARY:  Collects sensor-vs-temperature data for offline regression.
+ * ============================================================ */
 /**
  * @file    temp_cal.c
  * @brief   Multi-sensor temperature calibration data collection for C.A.S.P.E.R.-2

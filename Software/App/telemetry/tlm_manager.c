@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Telemetry Manager
+ *  SUMMARY:  msgset v5 packing, COBS framing, USB CDC + radio TX.
+ * ============================================================ */
 #include "tlm_manager.h"
 #include "cobs.h"
 #include "crc32_hw.h"

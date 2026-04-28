@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     GROUND-STATION
+ *  MODULE:   Ground Radio
+ *  SUMMARY:  RX-continuous parser, ASCII output, command relay.
+ * ============================================================ */
 /**
  * @file ground_radio.c
  * @brief Ground station radio: RX-continuous, packet parsing,

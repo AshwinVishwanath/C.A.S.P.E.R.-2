@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Buzzer Driver
+ *  SUMMARY:  TIM4-driven piezo for arm/disarm/state audible cues.
+ * ============================================================ */
 #ifndef APP_BUZZER_BUZZER_H
 #define APP_BUZZER_BUZZER_H
 

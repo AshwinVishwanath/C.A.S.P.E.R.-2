@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Status Packer
+ *  SUMMARY:  Pyro/FSM/system bitmap packed into 2-byte status word.
+ * ============================================================ */
 #include "status_pack.h"
 
 void status_pack_build(uint8_t out[2], const pyro_state_t *pyro,

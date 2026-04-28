@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     TEST-HARNESS
+ *  MODULE:   HIL Handler (cooked)
+ *  SUMMARY:  Hardware-in-the-loop sensor injection at the EKF input layer.
+ * ============================================================ */
 #ifndef APP_COMMAND_HIL_HANDLER_H
 #define APP_COMMAND_HIL_HANDLER_H
 
