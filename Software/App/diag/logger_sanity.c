@@ -183,10 +183,12 @@ void logger_sanity_tick(uint32_t now_ms)
         bool on = ((now_ms / 125U) & 1U) != 0U;
         leds_set(on, false, false, false);
         if (cdc_sanity_take_go()) {
+            emit("[SANITY] GO detected - calling flight_logger_launch...\r\n");
+            HAL_Delay(50);
             flight_logger_launch(S.log);
-            S.t_launch_ms = now_ms;
-            S.t_last_emit_ms = now_ms;
-            emit("[SANITY] GO received - logger launched\r\n");
+            S.t_launch_ms = HAL_GetTick();
+            S.t_last_emit_ms = S.t_launch_ms;
+            emit("[SANITY] launch returned - logging for 5s\r\n");
             buzzer_beep_n(30, 1, 300, 500);
             leds_set(true, true, true, false);
             S.state = SANITY_LOGGING;

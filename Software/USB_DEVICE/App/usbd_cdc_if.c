@@ -292,17 +292,23 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 #ifdef LOGGER_SANITY
       uint8_t b = Buf[i];
       if (b == '\r' || b == '\n') {
-          if (s_sanity_line_len == 2 &&
-              (s_sanity_line[0] == 'g' || s_sanity_line[0] == 'G') &&
-              (s_sanity_line[1] == 'o' || s_sanity_line[1] == 'O')) {
-              s_sanity_go_flag = true;
-          }
+          /* Line-end resets the accumulator without firing — fire-on-pattern
+           * happens below so we don't depend on the terminal's line-ending. */
           s_sanity_line_len = 0;
       } else if (b >= 0x20 && b <= 0x7E) {
           if (s_sanity_line_len < sizeof(s_sanity_line)) {
               s_sanity_line[s_sanity_line_len++] = (char)b;
           } else {
               s_sanity_line_len = 0;  /* overflow — discard */
+          }
+          /* Fire as soon as the buffer ends in "go" / "GO" (any case mix). */
+          if (s_sanity_line_len >= 2) {
+              char a = s_sanity_line[s_sanity_line_len - 2];
+              char c = s_sanity_line[s_sanity_line_len - 1];
+              if ((a == 'g' || a == 'G') && (c == 'o' || c == 'O')) {
+                  s_sanity_go_flag = true;
+                  s_sanity_line_len = 0;
+              }
           }
       } else {
           s_sanity_line_len = 0;  /* control byte — reset */
