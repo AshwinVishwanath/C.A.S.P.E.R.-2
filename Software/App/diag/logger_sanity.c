@@ -15,6 +15,7 @@
 #include "buzzer.h"
 #include "flight_logger.h"
 #include "flight_loop.h"
+#include "log_index.h"
 #include "w25q512jv.h"
 
 #define BOOT_HOLD_MS    3000U
@@ -154,9 +155,33 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
     HAL_Delay(200);
 
     if (memcmp(post, pattern, 16) == 0) {
-        emit("[PROBE] verdict: PASS — sector 0 write works\r\n");
-        emit("[PROBE]          bug is in log_index_start_flight() or its caller\r\n");
-        HAL_Delay(500);
+        emit("[PROBE] verdict: PASS - sector 0 write works\r\n");
+        HAL_Delay(200);
+
+        /* Cleanup: erase sector 0 again so we leave no trace. Otherwise the
+         * probe pattern gets miscounted as a "flight" on next boot's
+         * flight_logger_init() index scan, and log_index_start_flight() then
+         * writes the real entry to a wrong offset. */
+        emit("[PROBE] cleanup: erasing sector 0 again\r\n");
+        HAL_Delay(100);
+        int crc = w25q512jv_erase_sector(log->index.flash, 0x00000000U);
+        n = snprintf(line, sizeof(line),
+            "[PROBE] cleanup erase returned: %d\r\n", crc);
+        if (n > 0) CDC_Transmit_FS((uint8_t *)line, (uint16_t)n);
+        HAL_Delay(200);
+
+        /* Re-scan the now-erased index. flight_logger_init() ran at boot
+         * before the probe and may have miscounted previous-run probe
+         * pattern as flights. log_index_init() resets flight_count,
+         * current_flight, and (importantly) hr_next_addr / lr_next_addr /
+         * adxl_next_addr to clean BASE addresses. */
+        if (log_index_init(&log->index, log->index.flash)) {
+            emit("[PROBE] index re-scanned after erase\r\n");
+        } else {
+            emit("[PROBE] WARN: log_index_init returned false after erase\r\n");
+        }
+        HAL_Delay(300);
+
         return SANITY_BOOT_HOLD;
     }
     if (memcmp(post, pre, 16) == 0) {
