@@ -14,6 +14,7 @@
 #include "usbd_cdc_if.h"
 #include "buzzer.h"
 #include "flight_logger.h"
+#include "flight_loop.h"
 #include "w25q512jv.h"
 
 #define BOOT_HOLD_MS    3000U
@@ -38,6 +39,7 @@ static struct {
     uint32_t         t_launch_ms;
     uint32_t         t_last_emit_ms;
     bool             waitgo_banner_sent;
+    bool             cal_announced;
 } S;
 
 static void leds_set(bool l1, bool l2, bool l3, bool l4)
@@ -90,6 +92,22 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
     emit("\r\n[PROBE] sector-0 write probe starting\r\n");
     HAL_Delay(200);
 
+    /* Erase sector 0 first so the test is conclusive: writing the pattern
+     * onto a guaranteed-0xFF baseline genuinely exercises the write path.
+     * Also clears any partial / stale index data left by previous runs. */
+    emit("[PROBE] erasing sector 0 (4 KB)...\r\n");
+    HAL_Delay(100);
+    int erc = w25q512jv_erase_sector(log->index.flash, 0x00000000U);
+    n = snprintf(line, sizeof(line),
+        "[PROBE] erase_sector returned: %d (W25Q_OK=%d)\r\n", erc, W25Q_OK);
+    if (n > 0) CDC_Transmit_FS((uint8_t *)line, (uint16_t)n);
+    HAL_Delay(200);
+    if (erc != W25Q_OK) {
+        emit("[PROBE] verdict: FAIL — erase driver error\r\n");
+        HAL_Delay(300);
+        return SANITY_FAIL_DRIVER;
+    }
+
     int rc = w25q512jv_read(log->index.flash, 0x00000000U, pre, 16);
     if (rc != W25Q_OK) {
         n = snprintf(line, sizeof(line),
@@ -105,8 +123,9 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
         if (pre[i] != 0xFF) { pre_all_ff = false; break; }
     }
     if (!pre_all_ff) {
-        emit("[PROBE] WARNING: sector 0 not erased; verdict will be inconclusive\r\n");
-        HAL_Delay(200);
+        emit("[PROBE] FAIL: sector 0 not erased after erase command\r\n");
+        HAL_Delay(300);
+        return SANITY_FAIL_DRIVER;
     }
 
     emit("[PROBE] writing pattern A5 5A x8 at 0x00000000\r\n");
@@ -156,6 +175,7 @@ void logger_sanity_init(flight_logger_t *log)
     S.t_launch_ms = 0;
     S.t_last_emit_ms = 0;
     S.waitgo_banner_sent = false;
+    S.cal_announced = false;
 
     S.state = do_sector0_probe(log);
     S.t_init_ms = HAL_GetTick();   /* anchor BOOT_HOLD after probe completes */
@@ -177,11 +197,23 @@ void logger_sanity_tick(uint32_t now_ms)
 
     case SANITY_WAIT_GO: {
         if (!S.waitgo_banner_sent) {
-            emit("[SANITY] init complete - type 'go<Enter>' to start logging\r\n");
+            emit("[SANITY] waiting for calibration to complete (~30s after boot)\r\n");
+            emit("[SANITY] then type 'go' to start logging (no Enter required)\r\n");
             S.waitgo_banner_sent = true;
         }
         bool on = ((now_ms / 125U) & 1U) != 0U;
         leds_set(on, false, false, false);
+        bool cal = flight_loop_is_cal_done();
+        if (!cal) {
+            /* Drain any "go" the user typed early so it doesn't fire the
+             * instant cal_done flips true. */
+            (void)cdc_sanity_take_go();
+            break;
+        }
+        if (!S.cal_announced) {
+            emit("[SANITY] calibration done - ready, type 'go' now\r\n");
+            S.cal_announced = true;
+        }
         if (cdc_sanity_take_go()) {
             emit("[SANITY] GO detected - calling flight_logger_launch...\r\n");
             HAL_Delay(50);

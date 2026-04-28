@@ -204,6 +204,11 @@ static void bench_process_cdc(void)
 
 /* ─────────────────────────────────────────────────────────────── */
 
+bool flight_loop_is_cal_done(void)
+{
+    return cal_done;
+}
+
 void flight_loop_init(void)
 {
 #if TEST_MODE != 2
