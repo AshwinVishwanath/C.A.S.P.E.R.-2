@@ -222,7 +222,7 @@ C_DEFS =  \
 -DMSC_MEDIA_PACKET=4096
 
 # Uncomment to enable bench logger sanity test (CDC 'go' + 5s + finalize):
-# C_DEFS += -DLOGGER_SANITY=1
+ C_DEFS += -DLOGGER_SANITY=1
 
 ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND

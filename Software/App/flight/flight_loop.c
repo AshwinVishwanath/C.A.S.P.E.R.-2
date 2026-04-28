@@ -645,6 +645,9 @@ void flight_loop_tick(void)
         casper_ekf_update_baro(&ekf, altitude);
 
         s_baro_fed_ekf = true;
+#ifdef LOGGER_SANITY
+        (void)s_baro_fed_ekf;  /* LED reader gated out under LOGGER_SANITY */
+#endif
       } else if (init_done) {
         /* Accumulate baro altitude for ground-level reference */
         baro_cal_sum += (double)ms5611_get_altitude(&baro, 1013.25f);
@@ -672,6 +675,7 @@ void flight_loop_tick(void)
 
 #if TEST_MODE != 2
 #ifndef HIL_MODE
+#ifndef LOGGER_SANITY
     /* ── EKF diagnostic LEDs (override pyro LEDs after init) ── */
     if (cal_done) {
       static uint32_t ekf_led_tick = 0;
@@ -683,6 +687,7 @@ void flight_loop_tick(void)
         HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
       }
     }
+#endif
 #endif
 
     /* ── Build telemetry state + FSM tick (all modes) ── */
@@ -792,6 +797,7 @@ void flight_loop_tick(void)
       }
 
 #if TEST_MODE == 1
+#ifndef LOGGER_SANITY
       /* ── Serial plotter telemetry ── */
 #ifdef HIL_MODE
       /* HIL: output every packet (PC controls rate), all FSM states */
@@ -852,6 +858,7 @@ void flight_loop_tick(void)
         }
       }
 #endif /* HIL_MODE */
+#endif /* !LOGGER_SANITY */
 
 #ifndef HIL_MODE
         /* ── Radio TX + RX window ── */
