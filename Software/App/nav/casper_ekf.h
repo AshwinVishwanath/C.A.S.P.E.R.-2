@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Vertical EKF
+ *  SUMMARY:  4-state alt/vel EKF; baro update + ZUPT + Mach gate.
+ * ============================================================ */
 /**
  * @file casper_ekf.h
  * @brief 4-state vertical EKF for C.A.S.P.E.R.-2.

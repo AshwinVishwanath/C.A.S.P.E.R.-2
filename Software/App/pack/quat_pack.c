@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Quaternion Packer
+ *  SUMMARY:  Smallest-three quaternion compression for telemetry (5B).
+ * ============================================================ */
 #include "quat_pack.h"
 #include <math.h>
 

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     TEST-HARNESS
+ *  MODULE:   Mag Calibration
+ *  SUMMARY:  Collects raw magnetometer data for offline ellipsoid fit.
+ * ============================================================ */
 /**
  * @file    mag_cal.c
  * @brief   Magnetometer calibration data collection for C.A.S.P.E.R.-2

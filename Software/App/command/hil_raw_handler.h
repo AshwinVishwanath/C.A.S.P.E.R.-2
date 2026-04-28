@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     TEST-HARNESS
+ *  MODULE:   HIL Handler (raw)
+ *  SUMMARY:  HIL injection of raw IMU/baro/mag bytes pre-driver scaling.
+ * ============================================================ */
 #ifndef APP_COMMAND_HIL_RAW_HANDLER_H
 #define APP_COMMAND_HIL_RAW_HANDLER_H
 

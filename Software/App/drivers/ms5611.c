@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   MS5611 Barometer Driver
+ *  SUMMARY:  SPI baro driver, non-blocking tick state machine, OSR_2048.
+ * ============================================================ */
 /**
  * MS5611 SPI barometer driver — bare-metal C for STM32 HAL.
  * Converted from RobTillaart/MS5611_SPI (Arduino C++ library).

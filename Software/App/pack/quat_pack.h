@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Quaternion Packer
+ *  SUMMARY:  Smallest-three quaternion compression for telemetry (5B).
+ * ============================================================ */
 #ifndef APP_PACK_QUAT_PACK_H
 #define APP_PACK_QUAT_PACK_H
 

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   W25Q512JV QSPI Flash Driver
+ *  SUMMARY:  64 MB NOR flash driver, FATFS-backed mass storage.
+ * ============================================================ */
 /**
  * W25Q512JV QSPI NOR flash driver — bare-metal C for STM32 HAL.
  * Reference: Winbond W25Q512JV datasheet Rev G

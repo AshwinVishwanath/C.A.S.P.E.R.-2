@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Quaternion Math
+ *  SUMMARY:  Hamilton-product quaternion ops; body-to-NED rotations.
+ * ============================================================ */
 /**
  * @file casper_quat.c
  * @brief Quaternion operations for C.A.S.P.E.R.-2 flight computer.

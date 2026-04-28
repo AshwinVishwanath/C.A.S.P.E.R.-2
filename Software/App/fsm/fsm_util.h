@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   FSM Utilities
+ *  SUMMARY:  FSM helpers, transition predicates, virtual-clock for HIL.
+ * ============================================================ */
 #ifndef APP_FSM_FSM_UTIL_H
 #define APP_FSM_FSM_UTIL_H
 

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   ADXL372 High-G Driver
+ *  SUMMARY:  SPI driver for +-200g shock accelerometer, FIFO streaming.
+ * ============================================================ */
 /**
  * ADXL372 SPI high-G accelerometer driver — bare-metal C for STM32 HAL.
  * Reference: Analog Devices ADXL372 datasheet Rev B

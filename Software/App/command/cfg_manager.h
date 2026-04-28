@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Config Manager
+ *  SUMMARY:  Persistent config blob (radio profile, deployments, etc.).
+ * ============================================================ */
 #ifndef APP_COMMAND_CFG_MANAGER_H
 #define APP_COMMAND_CFG_MANAGER_H
 

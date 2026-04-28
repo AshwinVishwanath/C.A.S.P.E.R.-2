@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     GROUND-STATION
+ *  MODULE:   Ground Main
+ *  SUMMARY:  Ground board entry point: radio RX, local sensors, USB CDC.
+ * ============================================================ */
 /**
  * @file ground_main.c
  * @brief Ground station main application: radio RX, sensor polling,

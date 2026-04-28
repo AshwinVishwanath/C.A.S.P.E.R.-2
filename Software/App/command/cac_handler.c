@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   CAC Handler
+ *  SUMMARY:  Command-Acknowledge-Confirm gate for arm/disarm/fire commands.
+ * ============================================================ */
 #include "cac_handler.h"
 #include "crc32_hw.h"
 #include "tlm_types.h"

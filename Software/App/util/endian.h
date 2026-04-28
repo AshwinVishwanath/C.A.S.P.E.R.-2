@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Endian Helpers
+ *  SUMMARY:  Little-endian pack/unpack inline helpers for protocol code.
+ * ============================================================ */
 #ifndef APP_UTIL_ENDIAN_H
 #define APP_UTIL_ENDIAN_H
 

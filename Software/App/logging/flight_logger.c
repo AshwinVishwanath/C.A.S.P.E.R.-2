@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Flight Logger
+ *  SUMMARY:  Multi-stream record logger to QSPI flash; Hamming-protected.
+ * ============================================================ */
 #include "flight_logger.h"
 #include "hamming.h"
 #include "quat_pack.h"

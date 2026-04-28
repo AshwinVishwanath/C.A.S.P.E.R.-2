@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   Pyro HAL
+ *  SUMMARY:  Low-level pyro pin/ADC access. Driven only by Pyro Manager.
+ * ============================================================ */
 #include "casper_pyro.h"
 #include "main.h"
 #include <string.h>

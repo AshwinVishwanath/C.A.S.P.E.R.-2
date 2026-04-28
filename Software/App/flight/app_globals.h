@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   App Globals
+ *  SUMMARY:  Shared sensor handles and peripheral state used by flight loop.
+ * ============================================================ */
 #ifndef APP_FLIGHT_APP_GLOBALS_H
 #define APP_FLIGHT_APP_GLOBALS_H
 
