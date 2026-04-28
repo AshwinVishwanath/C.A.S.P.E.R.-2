@@ -1,3 +1,9 @@
+/* >>>  EXPERIMENTAL — DEV BRANCH ONLY — NOT FLIGHT-CERTIFIED  <<< */
+/* ============================================================
+ *  TIER:     EXPERIMENTAL
+ *  MODULE:   HSE Crystal Test
+ *  SUMMARY:  Diagnostic-only HSE oscillator test phases. Not flight code.
+ * ============================================================ */
 /**
  * hse_test.c — HSE Crystal Test Campaign for C.A.S.P.E.R.-2
  *

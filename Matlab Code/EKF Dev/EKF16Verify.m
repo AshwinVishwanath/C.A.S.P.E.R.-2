@@ -1,3 +1,9 @@
+% >>>  EXPERIMENTAL — DEV BRANCH ONLY — NOT FLIGHT-CERTIFIED  <<<
+% ============================================================
+%  TIER:     HOST-SIDE
+%  MODULE:   EKF16 Closed-Loop Verifier
+%  SUMMARY:  MATLAB simulation that exercises the candidate 16-state EKF.
+% ============================================================
 %% CASPER-2 EKF16 — Closed-Loop Verification Simulation
 %
 % Generates a synthetic 1-stage HPR flight using the AeroTech O5500X

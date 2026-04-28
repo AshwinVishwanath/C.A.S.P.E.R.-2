@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# >>>  EXPERIMENTAL — DEV BRANCH ONLY — NOT FLIGHT-CERTIFIED  <<<
+# ============================================================
+#  TIER:     HOST-SIDE
+#  MODULE:   HIL Sender
+#  SUMMARY:  Host-side script that injects synthetic sensor packets over CDC.
+# ============================================================
 """
 Raw-sensor HIL sender for C.A.S.P.E.R.-2
 

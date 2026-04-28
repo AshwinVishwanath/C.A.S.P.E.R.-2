@@ -1,3 +1,9 @@
+% >>>  EXPERIMENTAL — DEV BRANCH ONLY — NOT FLIGHT-CERTIFIED  <<<
+% ============================================================
+%  TIER:     HOST-SIDE
+%  MODULE:   EKF16 Symbolic Derivation
+%  SUMMARY:  MATLAB-only symbolic derivation of the candidate 16-state EKF.
+% ============================================================
 %% CASPER-2 16-State Error-State EKF — Symbolic Derivation & Verification
 %
 % Derives F, G, Q, and all measurement H matrices symbolically,
