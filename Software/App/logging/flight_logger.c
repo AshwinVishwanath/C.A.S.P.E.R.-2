@@ -137,70 +137,19 @@ void flight_logger_start(flight_logger_t *log)
 /* ═══════════════════════════════════════════════════════════════════════
  *  flight_logger_launch  — transition to drain mode
  * ═══════════════════════════════════════════════════════════════════════ */
-#ifdef LOGGER_SANITY
-#include "usbd_cdc_if.h"
-static void fl_dbg(const char *s) {
-    uint16_t n = 0;
-    while (s[n] != '\0') n++;
-    CDC_Transmit_FS((uint8_t *)s, n);
-    HAL_Delay(80);
-}
-static void fl_dbg_hex(const char *prefix, uint32_t v) {
-    char buf[64];
-    int n = snprintf(buf, sizeof(buf), "%s%lu (0x%08lx)\r\n",
-                     prefix, (unsigned long)v, (unsigned long)v);
-    if (n > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)n);
-    HAL_Delay(80);
-}
-#endif
-
 void flight_logger_launch(flight_logger_t *log)
 {
-#ifdef LOGGER_SANITY
-    fl_dbg("[FL] launch entry\r\n");
-#endif
     log_stream_launch(&log->hr);
     log_stream_launch(&log->lr);
     log_stream_launch(&log->adxl);
-#ifdef LOGGER_SANITY
-    fl_dbg("[FL] log_stream_launch x3 done\r\n");
-    fl_dbg_hex("[FL] qspi it_state pre-spin: ", (uint32_t)log->index.flash->it_state);
-#endif
 
     /* Wait for any in-progress IT erase to complete before blocking ops.
      * The ring buffers absorb records during this spin (~400 ms worst case). */
-#ifdef LOGGER_SANITY
-    {
-        uint32_t spin_start = HAL_GetTick();
-        uint32_t last_print = spin_start;
-        while (!w25q512jv_is_idle(log->index.flash)) {
-            uint32_t now = HAL_GetTick();
-            if (now - last_print >= 500) {
-                fl_dbg_hex("[FL] still spinning, it_state=",
-                           (uint32_t)log->index.flash->it_state);
-                last_print = now;
-            }
-            if (now - spin_start >= 3000) {
-                fl_dbg("[FL] WARN: spin-wait timed out at 3000ms; forcing IDLE\r\n");
-                log->index.flash->it_state = 0; /* force W25Q_IT_IDLE */
-                break;
-            }
-        }
-        fl_dbg("[FL] spin-wait done\r\n");
-    }
-#else
     while (!w25q512jv_is_idle(log->index.flash)) { /* spin */ }
-#endif
     log->qspi_state    = QSPI_IDLE;
     log->active_stream = NULL;
 
-#ifdef LOGGER_SANITY
-    fl_dbg("[FL] calling log_index_start_flight\r\n");
-#endif
     log_index_start_flight(&log->index, HAL_GetTick());
-#ifdef LOGGER_SANITY
-    fl_dbg("[FL] log_index_start_flight returned\r\n");
-#endif
 
     /* Pre-erase summary sector if this flight starts a new 4 KB sector.
      * Each flight uses 2 pages (512B), so 8 flights per sector.
@@ -208,18 +157,12 @@ void flight_logger_launch(flight_logger_t *log)
     {
         uint32_t summary_addr = FLASH_SUMMARY_BASE
                               + (uint32_t)(log->index.current_flight - 1) * 2 * LOG_PAGE_SIZE;
-#ifdef LOGGER_SANITY
-        fl_dbg_hex("[FL] summary_addr: ", summary_addr);
-#endif
         if ((summary_addr & (W25Q512JV_SECTOR_SIZE - 1)) == 0)
             w25q512jv_erase_sector(log->index.flash, summary_addr);
     }
 
     log->summary.launch_tick = HAL_GetTick();
     log->launched = true;
-#ifdef LOGGER_SANITY
-    fl_dbg("[FL] launch exit\r\n");
-#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════════

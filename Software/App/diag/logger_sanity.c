@@ -175,11 +175,13 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
          * pattern as flights. log_index_init() resets flight_count,
          * current_flight, and (importantly) hr_next_addr / lr_next_addr /
          * adxl_next_addr to clean BASE addresses. */
-        if (log_index_init(&log->index, log->index.flash)) {
-            emit("[PROBE] index re-scanned after erase\r\n");
-        } else {
-            emit("[PROBE] WARN: log_index_init returned false after erase\r\n");
-        }
+        bool ii_ok = log_index_init(&log->index, log->index.flash);
+        n = snprintf(line, sizeof(line),
+            "[PROBE] log_index_init: %s, flight_count=%u, hr_next=0x%08lx\r\n",
+            ii_ok ? "ok" : "FAIL",
+            (unsigned)log->index.flight_count,
+            (unsigned long)log->index.hr_next_addr);
+        if (n > 0) CDC_Transmit_FS((uint8_t *)line, (uint16_t)n);
         HAL_Delay(300);
 
         return SANITY_BOOT_HOLD;
