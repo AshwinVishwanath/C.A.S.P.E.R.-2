@@ -292,7 +292,9 @@ def decode(flash, flight_num=None, export_csv=False, verbose=False, plot=False):
     print(f"  {len(flights)} flight(s) found:\n")
     for f in flights:
         dirty = f["end_tick_ms"] == INDEX_DIRTY
-        clean = (f["flags"] & 0x0001) != 0
+        # log_index_end_flight() clears bit 0 of flags (NOR 1->0 trick) to mark
+        # a clean shutdown, so 0 = clean, 1 (default 0xFFFF) = dirty.
+        clean = (f["flags"] & 0x0001) == 0
         print(f"  Flight {f['flight_id']:3d}: "
               f"t={f['start_tick_ms']}-{'DIRTY' if dirty else f['end_tick_ms']}ms  "
               f"HR=0x{f['hr_start_addr']:07X}-0x{f['hr_end_addr']:07X}  "

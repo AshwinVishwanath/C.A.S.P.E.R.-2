@@ -48,9 +48,11 @@ static int cobs_encode_and_send(const uint8_t *raw, int raw_len)
     s_cobs_buf[enc_len] = 0x00;
     enc_len++;
 
+#ifndef LOGGER_SANITY
     if (CDC_Transmit_FS(s_cobs_buf, (uint16_t)enc_len) != USBD_OK) {
         return 0;
     }
+#endif
     return 1;
 }
 
