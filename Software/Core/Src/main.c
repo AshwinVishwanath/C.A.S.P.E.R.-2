@@ -197,10 +197,18 @@ int main(void)
   PeriphCommonClock_Config();
 
   /* USER CODE BEGIN SysInit */
-#ifdef LOGGER_SANITY
-  /* Enable DWT cycle counter for performance probes. */
-  diag_probe_init_dwt();
-#endif
+  /* Enable the Cortex-M7 DWT free-running cycle counter (DWT->CYCCNT).
+   * Used by:
+   *   - flight_loop.c adaptive-dt: actual elapsed time per IMU sample,
+   *     fed to attitude estimator and EKF predict instead of a fixed
+   *     EKF_DT constant. Critical for estimator correctness.
+   *   - LOGGER_SANITY cycle probes (when enabled) — performance
+   *     measurement of the hot paths.
+   * Cost: zero — DWT runs from SYSCLK with no software intervention. */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->LAR    = 0xC5ACCE55u;            /* H7 lock register magic */
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */

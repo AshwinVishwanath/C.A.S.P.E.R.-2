@@ -76,6 +76,7 @@ static uint32_t baro_cal_count = 0;
 /* NED accumulation for 416 Hz EKF predict (Item 11) */
 static float    ned_accel_accum[3];
 static uint8_t  imu_subsample_count = 0;
+static float    dt_predict_accum = 0.0f;  /* sum of dt over the 2 subsamples between predicts */
 
 /* Last computed accel magnitude for FSM launch detection */
 static float    last_accel_mag_g = 0.0f;
@@ -527,6 +528,39 @@ void flight_loop_tick(void)
       lsm6dso32_read(&imu);
       DIAG_PROBE_END(probe_imu_read);
 
+      /* ── Adaptive dt: measure actual elapsed time since the previous
+       * IMU service via the DWT cycle counter. The estimators must be
+       * fed real elapsed time, not a constant 1/833 = EKF_DT, otherwise
+       * gyro integration and EKF state propagation are systematically
+       * scaled by the rate-mismatch factor. With our ~736 Hz observed
+       * service rate vs. the 833 Hz the constant assumes, that was a
+       * 13% under-integration — visible as cumulative attitude drift
+       * and EKF position bias.
+       *
+       * SYSCLK = 432 MHz so each cycle = 1/432e6 s. DWT->CYCCNT is a
+       * 32-bit free-running counter (rolls over every ~10 s), so
+       * unsigned subtraction handles wrap correctly. On the very first
+       * call we have no history, so fall back to EKF_DT.
+       *
+       * Also clamp the upper bound: if a long-running call (e.g. radio
+       * TX, USB stall) blocks us for >5 ms, don't feed that gigantic
+       * dt to the filter — it would destabilise. Better to drop a
+       * step's accuracy than blow up the estimator. */
+      float dt_actual;
+      {
+          static uint32_t s_prev_imu_cyc = 0;
+          uint32_t cyc = DWT->CYCCNT;
+          if (s_prev_imu_cyc == 0u) {
+              dt_actual = EKF_DT;
+          } else {
+              uint32_t delta = cyc - s_prev_imu_cyc;  /* unsigned wrap-safe */
+              dt_actual = (float)delta * (1.0f / 432000000.0f);
+              if (dt_actual > 0.005f) dt_actual = 0.005f;
+              if (dt_actual < 0.0001f) dt_actual = 0.0001f;
+          }
+          s_prev_imu_cyc = cyc;
+      }
+
       float gyro_sensor[3] = {
         imu.gyro_dps[0] * DEG2RAD,
         imu.gyro_dps[1] * DEG2RAD,
@@ -574,7 +608,7 @@ void flight_loop_tick(void)
               HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
           }
         } else {
-          casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
+          casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, dt_actual);
         }
 
         if (init_done && (now - loop_start_tick) >= 30000) {
@@ -591,9 +625,9 @@ void flight_loop_tick(void)
           HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
         }
       } else {
-        /* 833 Hz: attitude update (unchanged rate) */
+        /* Attitude update at actual sample rate (see adaptive-dt block above) */
         DIAG_PROBE_BEGIN(probe_att_upd);
-        casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
+        casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, dt_actual);
         DIAG_PROBE_END(probe_att_upd);
 
         /* Compute accel magnitude for launch detection */
@@ -615,11 +649,14 @@ void flight_loop_tick(void)
         ned_accel[2] = R_mat[6]*accel_ms2[0] + R_mat[7]*accel_ms2[1] + R_mat[8]*accel_ms2[2];
         diag_ned_z = ned_accel[2];
 
-        /* 416 Hz: trapezoidal accumulation -> EKF predict every 2nd sample */
+        /* Trapezoidal NED-accel accumulation -> EKF predict every 2nd sample.
+         * dt_predict accumulates the two adaptive sample intervals so the
+         * predict step gets the true elapsed time, not 2*EKF_DT. */
         if (imu_subsample_count == 0) {
           ned_accel_accum[0] = ned_accel[0];
           ned_accel_accum[1] = ned_accel[1];
           ned_accel_accum[2] = ned_accel[2];
+          dt_predict_accum   = dt_actual;
           imu_subsample_count = 1;
         } else {
           /* Trapezoidal average of 2 NED-frame samples */
@@ -628,7 +665,7 @@ void flight_loop_tick(void)
           ned_avg[1] = 0.5f * (ned_accel_accum[1] + ned_accel[1]);
           ned_avg[2] = 0.5f * (ned_accel_accum[2] + ned_accel[2]);
 
-          float dt_predict = 2.0f * EKF_DT;
+          float dt_predict = dt_predict_accum + dt_actual;
           DIAG_PROBE_BEGIN(probe_ekf_pred);
           casper_ekf_predict(&ekf, ned_avg, dt_predict);
           DIAG_PROBE_END(probe_ekf_pred);
