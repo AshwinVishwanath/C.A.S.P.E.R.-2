@@ -93,3 +93,7 @@ __pycache__/
 
 # Archives
 *.zip
+
+# Raw flash dumps (generated locally from USB MSC; can be 64+ MB)
+flight_dump*.bin
+*flash_dump*.bin
