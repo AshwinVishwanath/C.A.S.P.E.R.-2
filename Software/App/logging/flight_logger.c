@@ -272,6 +272,23 @@ void flight_logger_set_rate(flight_logger_t *log, uint8_t fsm_state)
 /* ═══════════════════════════════════════════════════════════════════════
  *  flight_logger_push_hr
  * ═══════════════════════════════════════════════════════════════════════ */
+#ifdef LOGGER_SANITY
+/* Call-rate diagnostics: count every entry and every divider-passed push. */
+static volatile uint32_t s_hr_calls = 0;
+static volatile uint32_t s_hr_pushes = 0;
+static volatile uint32_t s_lr_calls = 0;
+static volatile uint32_t s_lr_pushes = 0;
+/* IMU IRQ / watchdog diagnostic counters — defined here, accessed via
+ * extern declarations from main.c (EXTI ISR) and flight_loop.c (watchdog). */
+volatile uint32_t g_imu_exti_fires = 0;
+volatile uint32_t g_imu_wd_polls   = 0;
+volatile uint32_t g_imu_wd_hits    = 0;
+uint32_t flight_logger_diag_hr_calls(void)  { return s_hr_calls; }
+uint32_t flight_logger_diag_hr_pushes(void) { return s_hr_pushes; }
+uint32_t flight_logger_diag_lr_calls(void)  { return s_lr_calls; }
+uint32_t flight_logger_diag_lr_pushes(void) { return s_lr_pushes; }
+#endif
+
 void flight_logger_push_hr(flight_logger_t *log,
                            const lsm6dso32_t *imu, const ms5611_t *baro,
                            const adxl372_t *adxl, const mmc5983ma_t *mag_sensor,
@@ -279,11 +296,17 @@ void flight_logger_push_hr(flight_logger_t *log,
                            uint8_t fsm_state, uint8_t flags,
                            uint16_t sustain_ms)
 {
+#ifdef LOGGER_SANITY
+    s_hr_calls++;
+#endif
     /* Rate divider */
     log->hr_tick_count++;
     if (log->hr_tick_count < log->hr_tick_div)
         return;
     log->hr_tick_count = 0;
+#ifdef LOGGER_SANITY
+    s_hr_pushes++;
+#endif
 
     hr_record_t rec;
     memset(&rec, 0, sizeof(rec));
@@ -350,11 +373,17 @@ void flight_logger_push_lr(flight_logger_t *log,
                            uint16_t tx_count, uint16_t rx_count, uint16_t fail_count,
                            const max_m10m_t *gps)
 {
+#ifdef LOGGER_SANITY
+    s_lr_calls++;
+#endif
     /* Rate divider */
     log->lr_tick_count++;
     if (log->lr_tick_count < log->lr_tick_div)
         return;
     log->lr_tick_count = 0;
+#ifdef LOGGER_SANITY
+    s_lr_pushes++;
+#endif
 
     lr_record_t rec;
     memset(&rec, 0, sizeof(rec));

@@ -61,6 +61,7 @@
 #include "flight_logger.h"
 #ifdef LOGGER_SANITY
 #include "logger_sanity.h"
+#include "cycle_probe.h"
 #endif
 #endif /* !BUILD_TARGET_GROUND */
 #include "crc32_hw.h"
@@ -196,7 +197,10 @@ int main(void)
   PeriphCommonClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+#ifdef LOGGER_SANITY
+  /* Enable DWT cycle counter for performance probes. */
+  diag_probe_init_dwt();
+#endif
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -475,9 +479,16 @@ int main(void)
 
   } /* end DBG_PRINT scope */
 
-  /* EXTI disabled — using GPIO polling instead (see flight_loop_tick).
-   * The shared EXTI15_10/EXTI9_5 handlers had stale-pending issues
-   * from SX1276 DIO4/DIO5 pins configured as IT_RISING by CubeMX. */
+  /* EXTI15_10 (PC15 = LSM6DSO32 INT2):
+   *   Originally disabled because SX1276 DIO4 (PB12) / DIO5 (PB13) were
+   *   configured as IT_RISING by CubeMX and toggled constantly,
+   *   producing stale-pending interrupts that flooded EXTI15_10.
+   *   Fix applied in MX_GPIO_Init_2 USER block: PB12/PB13 are now plain
+   *   inputs, so EXTI15_10 only ever fires for PC15.  Enable the NVIC
+   *   line and clear any pending bit before enabling. */
+  __HAL_GPIO_EXTI_CLEAR_IT(SPI2_INT_Pin);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 2);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
@@ -1717,6 +1728,32 @@ static void MX_GPIO_Init(void)
       HAL_GPIO_Init(RADIO_NRST_GPIO_Port, &nrst_fix);
   }
   HAL_GPIO_WritePin(RADIO_NRST_GPIO_Port, RADIO_NRST_Pin, GPIO_PIN_SET);
+
+  // SX1276 DIO4 (PB12) and DIO5 (PB13) were configured as GPIO_MODE_IT_RISING
+  // by CubeMX. They share EXTI15_10 with PC15 (LSM6DSO32 INT2), and the radio
+  // toggles them constantly during normal operation, causing stale-pending
+  // interrupts that previously forced us to disable EXTI15_10 entirely and
+  // fall back to a 5 ms STATUS polling watchdog (which capped the IMU service
+  // rate at ~166 Hz instead of 833).
+  //
+  // Note: HAL_GPIO_Init() with GPIO_MODE_INPUT does NOT clear the EXTI line
+  // registration in EXTI_IMR / EXTI_RTSR / SYSCFG_EXTICR — those have to be
+  // cleared explicitly. Use HAL_GPIO_DeInit() to fully tear down the EXTI
+  // configuration, then re-init as plain input. Without the DeInit, the
+  // EXTI line keeps firing for radio activity and the main loop is locked
+  // up servicing the IRQ.
+  HAL_GPIO_DeInit(GPIOB, RADIO_DIO4_Pin | RADIO_DIO5_Pin);
+  {
+      GPIO_InitTypeDef dio_fix = {0};
+      dio_fix.Pin   = RADIO_DIO4_Pin | RADIO_DIO5_Pin;
+      dio_fix.Mode  = GPIO_MODE_INPUT;
+      dio_fix.Pull  = GPIO_NOPULL;
+      dio_fix.Speed = GPIO_SPEED_FREQ_LOW;
+      HAL_GPIO_Init(GPIOB, &dio_fix);
+  }
+  /* Belt-and-braces: clear any EXTI pending bit left over for these pins. */
+  __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO4_Pin);
+  __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO5_Pin);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -1742,6 +1779,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 #ifndef BUILD_TARGET_GROUND
   /* ---- Flight-only sensor interrupts ---- */
   if (GPIO_Pin == SPI2_INT_Pin) {   /* PC15 = LSM6DSO32 INT2 */
+#ifdef LOGGER_SANITY
+    extern volatile uint32_t g_imu_exti_fires;
+    g_imu_exti_fires++;
+#endif
     lsm6dso32_irq_handler(&imu);
   }
   if (GPIO_Pin == I2C_3_INT_Pin) {  /* PC8  = MMC5983MA DRDY */

@@ -47,26 +47,41 @@ static int pos_is_parity(uint16_t pos)
 }
 
 /*
- * For a given data bit index (0-based), compute the Hamming position
- * (1-based) that it occupies. Data bits fill non-power-of-2 positions.
+ * Lookup table: data_idx (0-based) -> Hamming position (1-based).
+ *
+ * The previous implementation was an O(n) linear scan run inside an
+ * O(n) bit loop, giving O(n^2) encode/decode cost. For 480 data bits
+ * (60-byte HR record), that was ~115k inner iterations = ~4 ms per
+ * encode at 432 MHz, dominating the IMU servicing path. This table
+ * makes the lookup O(1).
+ *
+ * Sized at 512 to cover up to 64-byte payloads (the largest record
+ * the firmware currently encodes is 60 bytes / 480 bits).
  */
-static uint16_t data_bit_to_pos(size_t data_idx)
+#define HAMMING_MAX_DATA_BITS  512
+static uint16_t s_pos_table[HAMMING_MAX_DATA_BITS];
+static int s_pos_table_initialized = 0;
+
+static void hamming_init_table(void)
 {
     uint16_t pos = 1;
     size_t count = 0;
-
-    while (1) {
-        if (!pos_is_parity(pos)) {
-            if (count == data_idx)
-                return pos;
-            count++;
-        }
+    while (count < HAMMING_MAX_DATA_BITS) {
+        if (!pos_is_parity(pos))
+            s_pos_table[count++] = pos;
         pos++;
     }
+    s_pos_table_initialized = 1;
+}
+
+static inline uint16_t data_bit_to_pos(size_t data_idx)
+{
+    return s_pos_table[data_idx];
 }
 
 uint16_t hamming_encode(const uint8_t *data, size_t data_len)
 {
+    if (!s_pos_table_initialized) hamming_init_table();
     size_t total_data_bits = data_len * 8;
     uint16_t syndrome = 0;
     uint16_t overall = 0;
@@ -93,6 +108,7 @@ uint16_t hamming_encode(const uint8_t *data, size_t data_len)
 
 int hamming_decode(uint8_t *data, size_t data_len, uint16_t parity)
 {
+    if (!s_pos_table_initialized) hamming_init_table();
     /* Recompute syndrome from current data */
     size_t total_data_bits = data_len * 8;
     uint16_t recomputed_syn = 0;

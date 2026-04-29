@@ -17,6 +17,19 @@
 #include "flight_loop.h"
 #include "log_index.h"
 #include "w25q512jv.h"
+#include "cycle_probe.h"
+
+/* Probe externs from flight_loop.c (one definition per probe lives there) */
+extern diag_probe_t probe_superloop;
+extern diag_probe_t probe_imu_svc;
+extern diag_probe_t probe_imu_read;
+extern diag_probe_t probe_att_upd;
+extern diag_probe_t probe_ekf_pred;
+extern diag_probe_t probe_hr_push;
+extern diag_probe_t probe_radio;
+extern diag_probe_t probe_mag_rd;
+extern diag_probe_t probe_pyro_rd;
+extern diag_probe_t probe_log_tick;
 
 #define BOOT_HOLD_MS    3000U
 #define LOG_DURATION_MS 5000U
@@ -39,9 +52,30 @@ static struct {
     uint32_t         t_init_ms;
     uint32_t         t_launch_ms;
     uint32_t         t_last_emit_ms;
+    uint32_t         t_last_probe_ms;
     bool             waitgo_banner_sent;
     bool             cal_announced;
 } S;
+
+static void emit(const char *s);  /* forward decl */
+
+static void emit_probes(uint32_t now_ms)
+{
+    uint32_t elapsed = now_ms - S.t_last_probe_ms;
+    if (elapsed == 0) elapsed = 1;
+    emit("[CYC] ----- 1-second window -----\r\n");
+    diag_probe_emit("superloop", &probe_superloop, elapsed);
+    diag_probe_emit("imu_svc",   &probe_imu_svc,   elapsed);
+    diag_probe_emit("imu_read",  &probe_imu_read,  elapsed);
+    diag_probe_emit("att_upd",   &probe_att_upd,   elapsed);
+    diag_probe_emit("ekf_pred",  &probe_ekf_pred,  elapsed);
+    diag_probe_emit("hr_push",   &probe_hr_push,   elapsed);
+    diag_probe_emit("radio",     &probe_radio,     elapsed);
+    diag_probe_emit("mag_rd",    &probe_mag_rd,    elapsed);
+    diag_probe_emit("pyro_rd",   &probe_pyro_rd,   elapsed);
+    diag_probe_emit("log_tick",  &probe_log_tick,  elapsed);
+    S.t_last_probe_ms = now_ms;
+}
 
 static void leds_set(bool l1, bool l2, bool l3, bool l4)
 {
@@ -201,6 +235,7 @@ void logger_sanity_init(flight_logger_t *log)
     S.log = log;
     S.t_launch_ms = 0;
     S.t_last_emit_ms = 0;
+    S.t_last_probe_ms = 0;
     S.waitgo_banner_sent = false;
     S.cal_announced = false;
 
@@ -247,6 +282,7 @@ void logger_sanity_tick(uint32_t now_ms)
             flight_logger_launch(S.log);
             S.t_launch_ms = HAL_GetTick();
             S.t_last_emit_ms = S.t_launch_ms;
+            S.t_last_probe_ms = S.t_launch_ms;
             emit("[SANITY] launch returned - logging for 5s\r\n");
             buzzer_beep_n(30, 1, 300, 500);
             leds_set(true, true, true, false);
@@ -262,11 +298,24 @@ void logger_sanity_tick(uint32_t now_ms)
             float t = (float)(now_ms - S.t_launch_ms) / 1000.0f;
             unsigned long hr = (unsigned long)flight_logger_hr_records(S.log);
             unsigned long lr = (unsigned long)flight_logger_lr_records(S.log);
-            char buf[80];
+            unsigned long hrc = (unsigned long)flight_logger_diag_hr_calls();
+            unsigned long lrc = (unsigned long)flight_logger_diag_lr_calls();
+            extern volatile uint32_t g_imu_exti_fires;
+            extern volatile uint32_t g_imu_wd_polls;
+            extern volatile uint32_t g_imu_wd_hits;
+            unsigned long ext = (unsigned long)g_imu_exti_fires;
+            unsigned long wdp = (unsigned long)g_imu_wd_polls;
+            unsigned long wdh = (unsigned long)g_imu_wd_hits;
+            char buf[180];
             int len = snprintf(buf, sizeof(buf),
-                               ">t:%.1f,hr:%lu,lr:%lu\r\n",
-                               (double)t, hr, lr);
+                               ">t:%.1f,hr:%lu,lr:%lu,hrc:%lu,lrc:%lu,"
+                               "ext:%lu,wdp:%lu,wdh:%lu\r\n",
+                               (double)t, hr, lr, hrc, lrc, ext, wdp, wdh);
             if (len > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)len);
+        }
+        /* Cycle-probe dump every ~1 s. */
+        if ((now_ms - S.t_last_probe_ms) >= 1000U) {
+            emit_probes(now_ms);
         }
         if ((now_ms - S.t_launch_ms) >= LOG_DURATION_MS) {
             S.state = SANITY_FINALIZE;
