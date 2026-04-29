@@ -150,6 +150,8 @@ App/fsm/fsm_util.c \
 App/command/cmd_router.c \
 App/command/hil_handler.c \
 App/command/hil_raw_handler.c \
+App/command/hil_aux_handler.c \
+App/command/hil_adxl_handler.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
@@ -223,8 +225,21 @@ C_DEFS =  \
 -DGPS_TEST \
 -DMSC_MEDIA_PACKET=4096
 
-# Uncomment to enable bench logger sanity test (CDC 'go' + 5s + finalize):
- C_DEFS += -DLOGGER_SANITY=1
+# HIL build: hardware-in-the-loop firmware that consumes simulated
+# sensor packets over USB CDC. Sets -DHIL_MODE and suppresses the
+# bench logger sanity harness (which is incompatible — the bench
+# waits for a typed 'go', the HIL host drives the FSM via packets).
+HIL ?= 0
+ifeq ($(HIL),1)
+C_DEFS += -DHIL_MODE
+SUPPRESS_LOGGER_SANITY := 1
+endif
+
+# Bench logger sanity test (CDC 'go' + 5s + finalize). Suppressed
+# automatically when HIL=1.
+ifndef SUPPRESS_LOGGER_SANITY
+C_DEFS += -DLOGGER_SANITY=1
+endif
 
 ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND
@@ -232,7 +247,7 @@ else
 C_DEFS += -DBUILD_TARGET_FLIGHT
 endif
 
-# Extra defines from command line: make -j8 EXTRA_DEFS="-DHIL_MODE"
+# Extra defines from command line: make -j8 EXTRA_DEFS="-DSOMETHING"
 ifdef EXTRA_DEFS
 C_DEFS += $(EXTRA_DEFS)
 endif
@@ -342,6 +357,14 @@ flight:
 
 ground:
 	$(MAKE) BUILD_TARGET=GROUND
+
+# Hardware-in-the-loop build (firmware consumes injected sensor packets
+# over USB CDC). Use the host runner under tools/hil to drive a scenario.
+hil:
+	$(MAKE) BUILD_TARGET=FLIGHT HIL=1
+	@echo ""
+	@echo "HIL build complete. Flash $(BUILD_DIR)/$(TARGET).hex via DFU,"
+	@echo "then run a scenario from tools/hil/."
 
 #######################################
 # clean up

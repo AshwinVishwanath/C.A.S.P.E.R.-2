@@ -16,9 +16,9 @@
 #include "buzzer.h"
 #include "usbd_cdc_if.h"
 #include "fsm_util.h"
+#include "cycle_probe.h"   /* macros no-op when LOGGER_SANITY is undefined */
 #ifdef LOGGER_SANITY
 #include "logger_sanity.h"
-#include "cycle_probe.h"
 
 /* Probes — names match what gets printed in [CYC] lines. */
 diag_probe_t probe_superloop;
@@ -34,6 +34,8 @@ diag_probe_t probe_log_tick;
 #endif
 #ifdef HIL_MODE
 #include "hil_raw_handler.h"
+#include "hil_aux_handler.h"
+#include "hil_adxl_handler.h"
 #endif
 
 #include <stdbool.h>
@@ -76,7 +78,9 @@ static uint32_t baro_cal_count = 0;
 /* NED accumulation for 416 Hz EKF predict (Item 11) */
 static float    ned_accel_accum[3];
 static uint8_t  imu_subsample_count = 0;
+#ifndef HIL_MODE
 static float    dt_predict_accum = 0.0f;  /* sum of dt over the 2 subsamples between predicts */
+#endif
 
 /* Last computed accel magnitude for FSM launch detection */
 static float    last_accel_mag_g = 0.0f;
@@ -481,6 +485,38 @@ void flight_loop_tick(void)
     /* Pyro manager still needs ticking in HIL */
     pyro_mgr_tick();
 
+    /* HIL: override per-channel continuity from the host's aux signal,
+     * so auto-arm and fire preconditions see the simulated world rather
+     * than whatever garbage the unwired ADC produced. */
+    pyro_mgr_hil_set_continuity(g_hil_aux.cont_bitmap);
+
+    /* HIL: inject GPS into the shared gps struct when the host sends
+     * a 0xD4 with valid GPS, then feed EKF + logger summary the same
+     * way max_m10m_tick() does in the real-sensor path. */
+    if (g_hil_aux.pending) {
+      g_hil_aux.pending = false;
+      if (hil_aux_gps_valid()) {
+        gps.alt_msl_m = g_hil_aux.gps_alt_msl_m;
+        gps.vel_d_m_s = g_hil_aux.gps_vel_d_mps;
+        gps.fix_type  = g_hil_aux.gps_fix;
+        gps.num_sv    = g_hil_aux.gps_sat;
+        gps.has_fix   = (g_hil_aux.gps_fix >= GPS_FIX_2D);
+        if (cal_done && max_m10m_has_3d_fix(&gps)) {
+          casper_ekf_update_gps_alt(&ekf, gps.alt_msl_m);
+          casper_ekf_update_gps_vel(&ekf, gps.vel_d_m_s);
+        }
+#if TEST_MODE == 1
+        flight_logger_summary_gps(&logger, &gps);
+#endif
+      }
+    }
+
+#if TEST_MODE == 1
+    /* Logger QSPI dispatch: erase-ahead while on PAD, page writes in
+     * flight. Without this call the logger never advances any state. */
+    flight_logger_tick(&logger);
+#endif
+
 #else /* !HIL_MODE — normal sensor-driven path */
 
     uint32_t now = HAL_GetTick();
@@ -785,7 +821,11 @@ void flight_loop_tick(void)
       tstate.quat[1]      = att.q[1];
       tstate.quat[2]      = att.q[2];
       tstate.quat[3]      = att.q[3];
+#ifdef HIL_MODE
+      tstate.batt_v       = hil_aux_get_batt_v();
+#else
       tstate.batt_v       = 7.4f;
+#endif
       tstate.flight_time_s = flight_fsm_get_time_s();
       tstate.accel_mag_g   = last_accel_mag_g;
       tstate.baro_alt_m    = last_baro_alt_agl;
@@ -946,41 +986,54 @@ void flight_loop_tick(void)
 #endif /* HIL_MODE */
 #endif /* !LOGGER_SANITY */
 
-#ifndef HIL_MODE
-        /* ── Radio TX + RX window ── */
-        {
-          pyro_state_t pstate = {0};
-          uint8_t arm_bm  = pyro_mgr_get_arm_bitmap();
-          uint8_t cont_bm = pyro_mgr_get_cont_bitmap();
-          pstate.armed[0] = (arm_bm & 0x01) != 0;
-          pstate.armed[1] = (arm_bm & 0x02) != 0;
-          pstate.armed[2] = (arm_bm & 0x04) != 0;
-          pstate.armed[3] = (arm_bm & 0x08) != 0;
-          pstate.continuity[0] = (cont_bm & 0x01) != 0;
-          pstate.continuity[1] = (cont_bm & 0x02) != 0;
-          pstate.continuity[2] = (cont_bm & 0x04) != 0;
-          pstate.continuity[3] = (cont_bm & 0x08) != 0;
-          pstate.fired = pyro_mgr_is_firing();
-          DIAG_PROBE_BEGIN(probe_radio);
-          radio_manager_tick(&ekf, &tstate, &pstate, fsm);
-          DIAG_PROBE_END(probe_radio);
-        }
+      /* Build pyro state snapshot once — used by tlm_tick (CDC FAST,
+       * both modes), radio_manager_tick (LoRa, non-HIL), and the
+       * LR record push (both modes). */
+      pyro_state_t pstate = {0};
+      {
+        uint8_t arm_bm  = pyro_mgr_get_arm_bitmap();
+        uint8_t cont_bm = pyro_mgr_get_cont_bitmap();
+        pstate.armed[0] = (arm_bm & 0x01) != 0;
+        pstate.armed[1] = (arm_bm & 0x02) != 0;
+        pstate.armed[2] = (arm_bm & 0x04) != 0;
+        pstate.armed[3] = (arm_bm & 0x08) != 0;
+        pstate.continuity[0] = (cont_bm & 0x01) != 0;
+        pstate.continuity[1] = (cont_bm & 0x02) != 0;
+        pstate.continuity[2] = (cont_bm & 0x04) != 0;
+        pstate.continuity[3] = (cont_bm & 0x08) != 0;
+        pstate.fired = pyro_mgr_is_firing();
+      }
 
-        /* ── Logger: LR record (pyro + radio + GPS) ── */
-        {
-          uint16_t pyro_cont[4];
-          DIAG_PROBE_BEGIN(probe_pyro_rd);
-          pyro_mgr_get_cont_adc(pyro_cont);
-          uint8_t pyro_st = (uint8_t)((pyro_mgr_get_cont_bitmap() << 4)
-                                     | pyro_mgr_get_arm_bitmap());
-          DIAG_PROBE_END(probe_pyro_rd);
-          int8_t rssi, snr;
-          uint16_t tx_cnt, rx_cnt, fail_cnt;
-          radio_get_stats(&rssi, &snr, &tx_cnt, &rx_cnt, &fail_cnt);
-          flight_logger_push_lr(&logger, pyro_st, pyro_cont,
-                                rssi, snr, tx_cnt, rx_cnt, fail_cnt, &gps);
-        }
-#endif /* !HIL_MODE */
+#ifdef HIL_MODE
+      /* CDC binary telemetry (FAST 10 Hz heartbeat). Self-throttles, so
+       * cheap to call every iteration. HIL only — non-HIL CDC stays
+       * minimal (events + command responses); the radio carries FAST. */
+      tlm_tick(&tstate, &pstate, fsm);
+#endif
+
+#ifndef HIL_MODE
+      /* ── Radio TX + RX window (LoRa, non-HIL only) ── */
+      DIAG_PROBE_BEGIN(probe_radio);
+      radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+      DIAG_PROBE_END(probe_radio);
+#endif
+
+      /* ── Logger: LR record (pyro + radio + GPS) ── runs in HIL too */
+      {
+        uint16_t pyro_cont[4];
+        DIAG_PROBE_BEGIN(probe_pyro_rd);
+        pyro_mgr_get_cont_adc(pyro_cont);
+        uint8_t pyro_st = (uint8_t)((pyro_mgr_get_cont_bitmap() << 4)
+                                   | pyro_mgr_get_arm_bitmap());
+        DIAG_PROBE_END(probe_pyro_rd);
+        int8_t rssi = 0, snr = 0;
+        uint16_t tx_cnt = 0, rx_cnt = 0, fail_cnt = 0;
+#ifndef HIL_MODE
+        radio_get_stats(&rssi, &snr, &tx_cnt, &rx_cnt, &fail_cnt);
+#endif
+        flight_logger_push_lr(&logger, pyro_st, pyro_cont,
+                              rssi, snr, tx_cnt, rx_cnt, fail_cnt, &gps);
+      }
 #endif /* TEST_MODE == 1 */
     }
 #endif /* TEST_MODE != 2 */

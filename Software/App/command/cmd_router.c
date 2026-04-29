@@ -10,6 +10,8 @@
 #ifdef HIL_MODE
 #include "hil_handler.h"
 #include "hil_raw_handler.h"
+#include "hil_aux_handler.h"
+#include "hil_adxl_handler.h"
 #endif
 
 /* ── Forward declarations for handlers in other modules ────── */
@@ -107,6 +109,8 @@ static void dispatch_frame(const uint8_t *decoded, int len)
 #ifdef HIL_MODE
     case MSG_ID_HIL_INJECT:      hil_handle_inject(decoded, len);      break;
     case MSG_ID_HIL_RAW_INJECT:  hil_raw_handle_inject(decoded, len);  break;
+    case MSG_ID_HIL_AUX:         hil_aux_handle_inject(decoded, len);  break;
+    case MSG_ID_HIL_ADXL:        hil_adxl_handle_inject(decoded, len); break;
 #endif
 
     default:
