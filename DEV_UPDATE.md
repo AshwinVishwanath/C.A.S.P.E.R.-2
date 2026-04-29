@@ -721,6 +721,216 @@ TIM4 PWM driver for audible status feedback:
 
 ---
 
+## Rev 7 — Data Logger Debug + Estimator Timing Correction
+
+Triggered by a flight test that produced **zero recorded data** despite all
+sensors and logger code appearing healthy. Traced through five layered
+issues, each masked by the next.
+
+### Issue 1: Windows USB MSC was wiping the flight index sector
+
+**Symptom**: `casper_decode.py` reported `No flights recorded` after every
+test run, even when `flight_logger_finalize` had clearly written valid
+bytes (confirmed by an in-firmware sector-0 hex-dump probe immediately
+after finalize).
+
+**Root cause**: `STORAGE_IsWriteProtected()` in `usbd_msc_storage_if.c`
+returned 1 (read-only), but `STORAGE_Write()` happily executed any host
+write that came in anyway. Windows issues `WRITE_10` SCSI commands during
+mount/repair regardless of the read-only declaration. Each MSC mount was
+erasing sector 0 (the flight index) and writing whatever Windows
+considered a valid partition table.
+
+**Fix**: `STORAGE_Write` now returns -1 immediately. Host writes are
+rejected at the firmware level. **This is also a flight-safety fix** —
+prevents accidental flash-data loss for any user who plugs the board
+into a PC after a flight.
+
+### Issue 2: Use CDC dump command instead of MSC for read-back
+
+The codebase already had a working `MSG_ID_DUMP_FLASH` command and a
+matching `casper_decode.py --serial COM<N>` mode, but documentation
+pointed users at MSC. CDC dump bypasses Windows entirely (no drive
+mount, no partition probing), so:
+
+```
+python tools\casper_decode.py --serial COM<N> --save flight_dump.bin
+```
+
+is now the canonical post-flight read-back. Streams 5 fixed log regions
+via "CDMP" header + ACK-driven 4 KB chunks + "DONE" marker. About 1–2 min
+for a full 64 MB read.
+
+### Issue 3: IMU EXTI was disabled, capping service rate at ~166 Hz
+
+**Symptom**: Logger cycle probes showed `flight_logger_push_hr` was
+called only 156×/s — far below the 833 Hz IMU ODR. HR record rate was
+26/s vs. the spec'd 139/s.
+
+**Root cause**: A previous workaround had disabled `EXTI15_10` entirely
+because PB12/PB13 (SX1276 DIO4/DIO5, configured `IT_RISING` by CubeMX)
+were toggling constantly and producing stale-pending interrupts. A
+5 ms STATUS-poll watchdog in `flight_loop.c` was the only path latching
+`imu.data_ready`, capping IMU service at ~200 Hz max.
+
+**Fix** (in three steps in `main.c`):
+1. `HAL_GPIO_DeInit(GPIOB, RADIO_DIO4_Pin | RADIO_DIO5_Pin)` — clears the
+   EXTI line registration. **Important**: a plain `HAL_GPIO_Init` with
+   `GPIO_MODE_INPUT` does NOT clear EXTI registration, only the DeInit
+   does.
+2. Re-init PB12/PB13 as plain inputs (`GPIO_MODE_INPUT`).
+3. Clear pending bits + enable `EXTI15_10_IRQn` so PC15 (LSM6DSO32 INT2)
+   actually gets serviced.
+
+Watchdog tightened from 5 ms to 1 ms as belt-and-braces fallback.
+
+### Issue 4: Hamming SECDED encoder was O(n²)
+
+**Symptom**: With EXTI fixed, IMU service rate climbed to 449 Hz but
+still hit a CPU ceiling. Cycle probes pinpointed `flight_logger_push_hr`
+taking **3.8 ms per real-work record build** — a single function on the
+hot path was eating 35% of the entire CPU budget.
+
+**Root cause**: `data_bit_to_pos()` in `hamming.c` was an O(n) linear
+scan executed inside the O(n) outer bit loop in `hamming_encode` /
+`hamming_decode`. For 60-byte HR records (480 data bits) that's
+~115 000 inner iterations per encode call.
+
+**Fix**: precompute a 512-entry lookup table on first call. Encoder
+drops from ~4 ms to ~5 µs (~800× faster). After this fix, IMU service
+hit 736 Hz and `imu_svc` total CPU dropped from 38.7% → 7.1%.
+
+### Issue 5: Estimators received hardcoded `EKF_DT` constant
+
+**Symptom**: Even at 736 Hz, the loop wasn't quite at 833 Hz spec. But
+the more serious issue was structural: `EKF_DT = 1/833 = 1.2 ms` was
+passed as `dt` to both `casper_att_update` and `casper_ekf_predict`,
+while actual elapsed time was 1.36 ms.
+
+**Why this matters**: a 13% under-true `dt` means gyro integration runs
+at 13% slow scale. Over 60 s of flight at typical body rates, that's
+~6° accumulated attitude drift purely from the timing mismatch. EKF
+position drifts proportionally — for a 3 km flight, that's ~390 m of
+spurious position error.
+
+**Fix**: enable the Cortex-M7 DWT cycle counter unconditionally (zero
+runtime cost — single register poke). In the IMU service block, measure
+actual elapsed time per service via `DWT->CYCCNT` and pass that real
+`dt` to both estimators. Clamp to [0.1 ms, 5 ms] so a stalled superloop
+doesn't blow up the filter with a giant jump.
+
+```c
+uint32_t cyc = DWT->CYCCNT;
+float dt_actual = (cyc - s_prev_imu_cyc) * (1.0f / 432000000.0f);
+if (dt_actual > 0.005f) dt_actual = 0.005f;
+casper_att_update(&att, gyro, accel, mag, dt_actual);
+```
+
+This is robust to *any* rate change (future radio fix, mag I2C bump,
+flight-time interrupt-latency spikes). The estimators are now correct
+at whatever rate the loop achieves.
+
+### Diagnostic infrastructure (`LOGGER_SANITY` opt-in)
+
+A new bench harness was added during the debug, gated by
+`-DLOGGER_SANITY=1` in `Software/Makefile` (commented out by default,
+zero behaviour change in flight builds):
+
+- **Sector-0 write probe** (`App/diag/logger_sanity.c`): erase + write
+  + read-back of sector 0 at boot to confirm raw QSPI write path
+  before any logger logic. Verdict (PASS / silent / driver-error /
+  corruption) reported via CDC + LED pattern.
+- **CDC `go` keyword sniffer** (`usbd_cdc_if.c`): non-destructive tap
+  on the ring buffer that fires on typed `go` (with or without
+  Enter — encoding-tolerant). Triggers a 5-second logger run with
+  live sensor data, bypassing the FSM.
+- **DWT cycle probes** (`App/diag/cycle_probe.{c,h}`): per-region
+  count/sum/max counters around the 10 hottest paths. Per-second CDC
+  print of:
+  ```
+  [CYC] superloop n=9750 max=13213us avg=101us total=996ms = 99.6%
+  [CYC] hr_push   n=755 max=80us avg=13us total=10ms = 1.0%
+  [CYC] mag_rd    n=98 avg=943us total=92ms = 9.2%
+  ...
+  ```
+- **`flight_loop_is_cal_done()` getter**: lets the bench harness gate
+  the `go` keyword on the 30-second pad-mode calibration completing.
+
+### Real flight rates (after Rev 7)
+
+| Rate | Before | After |
+| --- | --- | --- |
+| IMU service | 156 Hz | ~708 Hz |
+| HR records | 26 / s | ~119 / s |
+| LR records | ~110 / s | ~111 / s |
+| `imu_svc` CPU | 38.7 % | 7.1 % |
+| `hr_push` per call | 628 µs | 13 µs |
+
+The remaining gap (708 vs 833 Hz spec) is from occasional ~13 ms
+blocking inside `radio_manager_tick` during SX1276 TX — radio toggles
+INT2 coalesce, IMU drops samples. Acceptable: the estimators are now
+correct regardless of the rate (adaptive `dt`).
+
+### Bench-test workflow (canonical)
+
+1. Wipe flash if needed (USB MSC mode build, mount as drive, format).
+2. Edit `Software/Makefile`: uncomment `C_DEFS += -DLOGGER_SANITY=1`.
+3. `cd Software && make clean && make -j8`. Flash via DFU.
+4. Open serial terminal at the CDC port. Power on.
+5. Watch for: probe verdict → 30 s cal → `[SANITY] calibration done`.
+6. Type `go`. Bench logs for 5 s with live sensor data + finalize.
+7. Without re-flashing:
+   ```
+   python tools\casper_decode.py --serial COM<N> --save flight_dump.bin
+   ```
+8. Decoder reports flight 1 with HR/LR/ADXL records, CRC + Hamming
+   integrity, summary block.
+
+To return to flight build: re-comment `LOGGER_SANITY=1`, rebuild,
+reflash. All probe code drops out (~zero overhead).
+
+### Files added
+
+- `Software/App/diag/logger_sanity.{c,h}` — bench-test state machine.
+- `Software/App/diag/cycle_probe.{c,h}` — DWT-based cycle probes.
+
+### Files changed (Rev 7)
+
+- `Software/USB_DEVICE/App/usbd_msc_storage_if.c` — `STORAGE_Write`
+  refuses host writes (flight-safety fix).
+- `Software/USB_DEVICE/App/usbd_cdc_if.{c,h}` — passive `go` sniffer
+  in `CDC_Receive_FS`, exported `cdc_sanity_take_go()`.
+- `Software/App/logging/hamming.c` — O(1) lookup table for the
+  data-bit-to-position map.
+- `Software/App/logging/flight_logger.{c,h}` — diagnostic record/call
+  counters and accessors.
+- `Software/App/flight/flight_loop.{c,h}` — IMU watchdog 5 ms → 1 ms,
+  cycle probes around hot paths, adaptive-`dt` block, `cal_done`
+  getter, several `LOGGER_SANITY` gates so the bench harness owns CDC
+  + LEDs cleanly.
+- `Software/App/telemetry/tlm_manager.c` — gated CDC binary TX off
+  under `LOGGER_SANITY` so the bench output isn't binary-noise.
+- `Software/Core/Src/main.c` — DWT cycle counter enabled
+  unconditionally, EXTI15_10 NVIC enabled, PB12/PB13 EXTI deinit'd.
+- `tools/casper_decode.py` — DIRTY/CLEAN inversion fix in the index
+  decoder (firmware uses NOR `1→0` trick: bit 0 cleared = clean
+  shutdown; decoder had it backwards).
+
+### Deferred to Phase D
+
+- **Mag I2C 100 → 400 kHz**: would save ~7% CPU on `mag_rd` (943 µs →
+  ~250 µs per read). Single-line change of the `Timing` constant in
+  `MX_I2C3_Init`, but needs to be verified via CubeMX or by deriving
+  from the I2C kernel clock to avoid breaking the bus.
+- **Radio TX non-blocking**: `radio_manager_tick` shows `max=13 ms`
+  occasional spikes during SX1276 TX. Costs ~10 IMU samples per spike,
+  ~10 spikes/s. Real refactor (state machine for TX, IT-mode SPI), not
+  a single-line fix. The 5 ms `dt` clamp in adaptive-`dt` absorbs the
+  estimator impact — accuracy slightly degraded during stalls but
+  filter doesn't diverge.
+
+---
+
 ## Next Steps
 
 - [x] Fix power supply and clock configuration
@@ -756,6 +966,8 @@ TIM4 PWM driver for audible status feedback:
 - [ ] Implement real sensor-based FSM transitions (launch detect, apogee, etc.)
 - [ ] Implement EKF GPS update math (stubs ready)
 - [ ] Config persistence to QSPI flash
-- [ ] Flight log recording + readback
+- [x] Flight log recording + readback (Rev 7: Hamming-O(1) + adaptive dt + CDC dump path canonical)
 - [ ] Servo PWM output (TIM2 CH1-4)
 - [ ] Power sensor bring-up
+- [ ] Mag I2C 400 kHz bump (Phase D)
+- [ ] Radio TX non-blocking refactor (Phase D)

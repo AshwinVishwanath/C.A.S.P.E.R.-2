@@ -91,16 +91,11 @@ static int8_t STORAGE_Read(uint8_t lun, uint8_t *buf, uint32_t blk_addr,
 static int8_t STORAGE_Write(uint8_t lun, uint8_t *buf, uint32_t blk_addr,
                             uint16_t blk_len)
 {
-  (void)lun;
-  for (uint16_t i = 0; i < blk_len; i++) {
-    uint32_t addr = ((uint32_t)blk_addr + i) * STORAGE_BLK_SIZ;
-    if (w25q512jv_erase_sector(&flash, addr) != W25Q_OK)
-      return -1;
-    if (w25q512jv_write(&flash, addr, buf + (uint32_t)i * STORAGE_BLK_SIZ,
-                        STORAGE_BLK_SIZ) != W25Q_OK)
-      return -1;
-  }
-  return 0;
+  /* Drive is advertised as read-only via STORAGE_IsWriteProtected().
+   * Windows still issues WRITE_10 commands during mount / fix-disk anyway.
+   * Refuse them here so they don't erase flight data. */
+  (void)lun; (void)buf; (void)blk_addr; (void)blk_len;
+  return -1;
 }
 
 static int8_t STORAGE_GetMaxLun(void)
