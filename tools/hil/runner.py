@@ -152,15 +152,25 @@ class TelemetryLog:
 
 def stream(scenario_packets: Iterator[Tuple[float, bytes, str]],
            ser, *, speed: float, log: TelemetryLog,
-           tx_kinds: Counter | None = None) -> None:
+           tx_kinds: Counter | None = None,
+           silence_warn_s: float = 5.0) -> None:
     """Drain `scenario_packets` (sorted by virtual_time) and write
     each one at virtual_time / speed wall seconds from start.
 
-    Reads incoming serial data between writes."""
+    Reads incoming serial data between writes. If no recognised frame
+    arrives within `silence_warn_s` wall seconds, prints a one-shot
+    diagnostic so the operator doesn't sit through a 10-minute run
+    that's silently dropping packets."""
     accum = CobsRxAccumulator(max_frame=64)
     start_perf = time.perf_counter()
     first_t: float | None = None
     n = 0
+    silence_warned = False
+
+    last_rx_count = 0
+    def _rx_count():
+        return log.fast_count + log.gps_count + len(log.events)
+
     for when_s, frame, kind in scenario_packets:
         if first_t is None:
             first_t = when_s
@@ -179,6 +189,26 @@ def stream(scenario_packets: Iterator[Tuple[float, bytes, str]],
         # Drain RX every ~32 packets so the parser doesn't lag.
         if (n & 31) == 0:
             _drain_serial(ser, accum, log.on_frame)
+            cur_rx = _rx_count()
+            if cur_rx != last_rx_count:
+                last_rx_count = cur_rx
+            elif (not silence_warned
+                  and cur_rx == 0
+                  and (time.perf_counter() - start_perf) >= silence_warn_s):
+                silence_warned = True
+                print(
+                    "\n  ⚠  No telemetry from firmware after "
+                    f"{silence_warn_s:.0f}s. Likely causes:\n"
+                    "     • Wrong firmware loaded (need -DHIL_MODE,\n"
+                    "       check `make hil` build at "
+                    "build/FlightComputer/Casper2_Flight.hex)\n"
+                    "     • Pre-fix firmware (CDC ring was 256 bytes\n"
+                    "       and overflowed at this rate — rebuild from\n"
+                    "       a tree containing the 4 KB ring fix)\n"
+                    "     • COM port pointing at the wrong device\n"
+                    "     • Try --speed 1.0 to rule out throughput issues\n",
+                    file=sys.stderr,
+                )
 
     # Final drain — give the firmware ~250 ms to flush its TX queue.
     if ser is not None:
