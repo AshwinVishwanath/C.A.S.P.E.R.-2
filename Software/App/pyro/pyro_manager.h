@@ -106,4 +106,9 @@ int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms);
  */
 void pyro_mgr_get_cont_adc(uint16_t adc_out[4]);
 
+/**
+ * Read battery voltage via CONT4 ADC divider (100k/62k, 3.3V ref, 16-bit).
+ */
+float pyro_mgr_get_batt_voltage(void);
+
 #endif /* APP_PYRO_PYRO_MANAGER_H */

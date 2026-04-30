@@ -352,6 +352,8 @@ void flight_loop_tick(void)
 
 #if TEST_MODE != 2
 
+    bool s_imu_fault = false;  /* set in non-HIL path; false in HIL (simulated data always present) */
+
 #ifdef HIL_MODE
     /* ═══════════════════════════════════════════════════════════════
      *  HIL RAW: event-driven — one full pipeline iteration per packet
@@ -493,12 +495,14 @@ void flight_loop_tick(void)
     /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
     if (now - last_mag_tick >= 10) {
       DIAG_PROBE_BEGIN(probe_mag_rd);
-      mmc5983ma_read(&mag);
+      int mag_ret = mmc5983ma_read(&mag);
       DIAG_PROBE_END(probe_mag_rd);
-      last_mag_tick = now;
-      float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
-      mag_cal_apply(mag_raw, mag_cal_ut);
-      mag_new = true;
+      last_mag_tick = now;  /* always advance — failed reads still consume the slot */
+      if (mag_ret == MMC5983MA_OK) {
+        float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
+        mag_cal_apply(mag_raw, mag_cal_ut);
+        mag_new = true;
+      }
     }
 
 #ifdef LOGGER_SANITY
@@ -525,6 +529,10 @@ void flight_loop_tick(void)
 #endif
       }
     }
+
+    /* Dead-man: flag if IMU data has not been refreshed in >5 ms.
+     * Routes into telemetry via fsm_in; FSM behaviour is unchanged. */
+    s_imu_fault = ((now - last_imu_tick) > 5);
 
     /* ── 833 Hz: IMU read + attitude estimator (interrupt-driven) ── */
     if (imu.data_ready) {
@@ -791,7 +799,7 @@ void flight_loop_tick(void)
       tstate.quat[1]      = att.q[1];
       tstate.quat[2]      = att.q[2];
       tstate.quat[3]      = att.q[3];
-      tstate.batt_v       = 7.4f;
+      tstate.batt_v       = pyro_mgr_get_batt_voltage();
       tstate.flight_time_s = flight_fsm_get_time_s();
       tstate.accel_mag_g   = last_accel_mag_g;
       tstate.baro_alt_m    = last_baro_alt_agl;
@@ -807,7 +815,7 @@ void flight_loop_tick(void)
 #ifndef HIL_MODE
       if (flight_fsm_sim_active()) {
         flight_fsm_sim_get_state(&tstate);
-        tstate.batt_v = 7.4f;
+        tstate.batt_v = pyro_mgr_get_batt_voltage();
       }
 #endif
 
@@ -827,6 +835,7 @@ void flight_loop_tick(void)
       fsm_in.main_pyro_ch        = g_flight_cfg.main_pyro_ch;
       fsm_in.apogee_fire_dur_ms  = g_flight_cfg.apogee_fire_dur;
       fsm_in.main_fire_dur_ms    = g_flight_cfg.main_fire_dur;
+      fsm_in.sensor_fault_imu    = s_imu_fault;
 
       fsm_state_t fsm = flight_fsm_tick(&fsm_in);
 

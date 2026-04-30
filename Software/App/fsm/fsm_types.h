@@ -39,6 +39,9 @@ typedef struct {
     uint8_t main_pyro_ch;        /* Pyro channel for main chute (0-indexed)    */
     uint16_t apogee_fire_dur_ms; /* Apogee pyro fire duration (ms)             */
     uint16_t main_fire_dur_ms;   /* Main pyro fire duration (ms)               */
+
+    /* Sensor health (informational — FSM does not change behaviour on these) */
+    bool sensor_fault_imu;       /* True if IMU data not refreshed in >5 ms    */
 } fsm_input_t;
 
 /* ── Dwell Timer (FSM_TRANSITION_SPEC.md §3) ─────────────────────── */

@@ -181,9 +181,13 @@ void flight_logger_tick(flight_logger_t *log)
     if (log->finalized)
         return;
 
-    if (!log->launched) {
-        /* PAD mode: non-blocking erase-ahead via IT mode.
-         * Demand-based: erase the pool with the least runway first. */
+    /* Erase-ahead: keep running in both PAD and DRAIN.  The tick is
+     * mutex-safe because qspi_state != QSPI_IDLE causes an early-return
+     * above, so an erase and a write can never overlap.  During DRAIN the
+     * frontier check (addr >= erased_up_to) in the write path relies on
+     * this to stay ahead of the write pointer. */
+    {
+        /* Demand-based: erase the pool with the least runway first. */
         log_stream_t *streams[3] = { &log->hr, &log->lr, &log->adxl };
 
         int best = -1;
@@ -205,10 +209,13 @@ void flight_logger_tick(flight_logger_t *log)
                                            s->erased_up_to) == W25Q_OK) {
                 log->qspi_state    = QSPI_ERASING;
                 log->active_stream = s;
+                return;  /* one operation per tick */
             }
         }
-        return;
     }
+
+    if (!log->launched)
+        return;  /* PAD: no writes until launch */
 
     /* DRAIN mode: non-blocking page writes. Priority: HR > ADXL > LR */
     log_stream_t *priority[3] = { &log->hr, &log->adxl, &log->lr };

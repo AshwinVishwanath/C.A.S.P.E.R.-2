@@ -49,6 +49,7 @@ int pyro_mgr_set_arm(uint8_t channel, bool armed)
     if (channel < 1 || channel > PYRO_MGR_NUM_CHANNELS) {
         return -1;
     }
+    if (channel == 4) return -1;  /* CH4 hardware-shorted to Vbatt sense; never armable */
     uint8_t idx = channel - 1;
 
     if (armed) {
@@ -186,6 +187,11 @@ void pyro_mgr_get_cont_adc(uint16_t adc_out[4])
 {
     for (int i = 0; i < PYRO_MGR_NUM_CHANNELS; i++)
         adc_out[i] = pyro.adc_raw[i];
+}
+
+float pyro_mgr_get_batt_voltage(void)
+{
+    return casper_pyro_get_batt_voltage(&pyro);
 }
 
 int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms)

@@ -48,7 +48,7 @@
 #define SUMMARY_VERSION      1
 #define SUMMARY_PARTIAL      0x01
 #define SUMMARY_FINAL        0x02
-#define MAX_FLIGHTS          128
+#define MAX_FLIGHTS          113   /* floor(4096 / 36) — index entry grew to 36 B */
 #define INDEX_DIRTY          0xFFFFFFFFu
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -223,6 +223,10 @@ _Static_assert(sizeof(flight_summary_t) == 256, "flight_summary_t must be 256 by
  *  Flight index entry (32 bytes, packed)
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/* [ID:2][start_tick:4][end_tick:4][hr_start:4][hr_end:4][lr_start:4][lr_end:4]
+ * [adxl_start:4][adxl_end:4][flags:2] = 38 bytes
+ * adxl_end_addr added at end; index sector is rewritten each flight cycle so
+ * no backward compatibility concern with existing flash contents. */
 typedef struct __attribute__((packed)) {
     uint16_t flight_id;             /*  0: monotonic flight number       */
     uint32_t start_tick_ms;         /*  2: launch tick                   */
@@ -232,7 +236,8 @@ typedef struct __attribute__((packed)) {
     uint32_t lr_start_addr;         /* 18: first LR flash address        */
     uint32_t lr_end_addr;           /* 22: last LR flash addr (DIRTY)    */
     uint32_t adxl_start_addr;       /* 26: first ADXL flash address      */
-    uint16_t flags;                 /* 30: bit0: clean_shutdown          */
-} flight_index_entry_t;            /* 32 bytes total                    */
+    uint32_t adxl_end_addr;         /* 30: last ADXL flash addr (DIRTY)  */
+    uint16_t flags;                 /* 34: bit0: clean_shutdown          */
+} flight_index_entry_t;            /* 36 bytes total                    */
 
-_Static_assert(sizeof(flight_index_entry_t) == 32, "flight_index_entry_t must be 32 bytes");
+_Static_assert(sizeof(flight_index_entry_t) == 36, "flight_index_entry_t must be 36 bytes");
