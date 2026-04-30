@@ -117,6 +117,7 @@ TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN PV */
+IWDG_HandleTypeDef hiwdg1;
 ms5611_t baro;
 #ifndef BUILD_TARGET_GROUND
 lsm6dso32_t imu;
@@ -152,12 +153,19 @@ static void MX_TIM4_Init(void);
 static void MX_I2C3_Init(void);
 static void MX_SPI3_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void MX_IWDG1_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static void MX_IWDG1_Init(void)
+{
+    /* LSI ~32 kHz, /4 -> 8 kHz, reload 3999 -> 500ms timeout */
+    hiwdg1.Instance  = IWDG1;
+    hiwdg1.Prescaler = 0;     /* PR=0 -> /4 */
+    hiwdg1.Reload    = 3999;
+    HAL_IWDG_Init(&hiwdg1);
+}
 /* USER CODE END 0 */
 
 /**
@@ -707,6 +715,10 @@ int main(void)
     }
   }
 #else
+  /* IWDG: 500ms timeout (LSI ~32kHz, /4 -> 8kHz, reload 3999 -> 500ms).
+   * Started here — after all blocking init — so USB enumeration + sensor
+   * init cannot trip it.  flight_loop_tick() kicks it every iteration. */
+  MX_IWDG1_Init();
   flight_loop_init();
   flight_logger_start(&logger);  /* Begin PAD-state ring filling + erase-ahead */
 #ifdef LOGGER_SANITY

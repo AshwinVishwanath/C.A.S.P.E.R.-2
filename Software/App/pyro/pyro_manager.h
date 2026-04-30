@@ -42,11 +42,12 @@ int pyro_mgr_set_arm(uint8_t channel, bool armed);
 bool pyro_mgr_has_continuity(uint8_t channel);
 
 /**
- * Fire a channel.
- * Requires: channel armed AND continuity AND (test_mode OR FSM past PAD).
+ * Fire a channel (CAC/ground entrypoint).
+ * Requires: test_mode AND channel armed AND continuity.
+ * Duration capped at 50ms in test mode.
  *
  * @param channel     Channel number (1–4)
- * @param duration_ms Fire duration in milliseconds (capped at PYRO_MAX_FIRE_MS)
+ * @param duration_ms Fire duration in milliseconds (capped at 50ms in test mode)
  * @return            0 on success, -1 on precondition failure
  */
 int pyro_mgr_fire(uint8_t channel, uint16_t duration_ms);

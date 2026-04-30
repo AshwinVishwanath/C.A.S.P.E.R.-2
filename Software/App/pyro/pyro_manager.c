@@ -93,8 +93,8 @@ int pyro_mgr_fire(uint8_t channel, uint16_t duration_ms)
         return -1;
     }
 
-    /* Must be in test mode or past PAD */
-    if (!s_test_mode && flight_fsm_get_state() == FSM_STATE_PAD) {
+    /* CAC path: test mode required */
+    if (!s_test_mode) {
         return -1;
     }
 

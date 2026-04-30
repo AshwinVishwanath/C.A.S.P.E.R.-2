@@ -85,13 +85,15 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  volatile uint32_t cfsr  = SCB->CFSR;
+  volatile uint32_t mmfar = SCB->MMFAR;
+  volatile uint32_t bfar  = SCB->BFAR;
+  volatile uint32_t hfsr  = SCB->HFSR;
+  (void)cfsr; (void)mmfar; (void)bfar; (void)hfsr;
+  /* Spin without IWDG kick — IWDG resets within 500ms.
+   * Reset-cause register records IWDG, distinguishing fault from clean boot. */
+  while (1) { __NOP(); }
   /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
 }
 
 /**
@@ -100,13 +102,13 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  volatile uint32_t cfsr  = SCB->CFSR;
+  volatile uint32_t mmfar = SCB->MMFAR;
+  volatile uint32_t bfar  = SCB->BFAR;
+  volatile uint32_t hfsr  = SCB->HFSR;
+  (void)cfsr; (void)mmfar; (void)bfar; (void)hfsr;
+  while (1) { __NOP(); }
   /* USER CODE END MemoryManagement_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
-    /* USER CODE END W1_MemoryManagement_IRQn 0 */
-  }
 }
 
 /**
@@ -115,13 +117,13 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  volatile uint32_t cfsr  = SCB->CFSR;
+  volatile uint32_t mmfar = SCB->MMFAR;
+  volatile uint32_t bfar  = SCB->BFAR;
+  volatile uint32_t hfsr  = SCB->HFSR;
+  (void)cfsr; (void)mmfar; (void)bfar; (void)hfsr;
+  while (1) { __NOP(); }
   /* USER CODE END BusFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_BusFault_IRQn 0 */
-    /* USER CODE END W1_BusFault_IRQn 0 */
-  }
 }
 
 /**
@@ -130,13 +132,13 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  volatile uint32_t cfsr  = SCB->CFSR;
+  volatile uint32_t mmfar = SCB->MMFAR;
+  volatile uint32_t bfar  = SCB->BFAR;
+  volatile uint32_t hfsr  = SCB->HFSR;
+  (void)cfsr; (void)mmfar; (void)bfar; (void)hfsr;
+  while (1) { __NOP(); }
   /* USER CODE END UsageFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
-    /* USER CODE END W1_UsageFault_IRQn 0 */
-  }
 }
 
 /**

@@ -73,7 +73,7 @@ static void transition_to(fsm_state_t new_state)
     s_state_entry_ms = fsm_get_tick();
     tlm_queue_event(FC_EVT_STATE, (uint16_t)new_state);
 
-    if (new_state == FSM_STATE_BOOST) {
+    if (new_state == FSM_STATE_BOOST && !s_bench_mode) {
         pyro_mgr_auto_arm_flight();
     }
 }

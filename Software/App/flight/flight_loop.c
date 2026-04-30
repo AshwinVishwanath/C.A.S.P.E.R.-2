@@ -347,6 +347,8 @@ static void flash_dump_over_cdc(w25q512jv_t *fl)
 void flight_loop_tick(void)
 {
     DIAG_PROBE_BEGIN(probe_superloop);
+    /* Kick IWDG each iteration — loop runs ~833 Hz, timeout is 500ms */
+    HAL_IWDG_Refresh(&hiwdg1);
     /* ── Buzzer state machine ── */
     buzzer_tick();
 
