@@ -40,21 +40,35 @@ def _busy_wait_until(deadline_perf: float) -> None:
 
 # ── RX side ────────────────────────────────────────────────────────
 
-def _drain_serial(ser, accum: CobsRxAccumulator, on_frame) -> None:
+def _drain_serial(ser, accum: CobsRxAccumulator, on_frame, *, rx_state=None) -> None:
     """Pull whatever's available from the serial port and feed the
     decoder. Non-blocking — we call this opportunistically between
-    TX writes."""
+    TX writes. If `rx_state` is given (a dict), updates byte/frame
+    counters in it for diagnostic reporting."""
     if ser is None:
         return
     try:
         in_waiting = ser.in_waiting
     except OSError:
         return
-    if in_waiting:
-        chunk = ser.read(in_waiting)
-        accum.feed(chunk)
-        for f in accum.frames():
-            on_frame(f)
+    if not in_waiting:
+        return
+    chunk = ser.read(in_waiting)
+    if rx_state is not None:
+        rx_state["bytes"] += len(chunk)
+        if rx_state["dump_first"] is not None and rx_state["dump_first"]:
+            need = rx_state["dump_first"]
+            take = chunk[:need]
+            rx_state["first_chunk"] += take
+            rx_state["dump_first"] -= len(take)
+        if rx_state["dump_fp"] is not None:
+            rx_state["dump_fp"].write(chunk)
+    accum.feed(chunk)
+    new_frames = accum.frames()
+    if rx_state is not None:
+        rx_state["frames"] += len(new_frames)
+    for f in new_frames:
+        on_frame(f)
 
 
 # ── Telemetry log ─────────────────────────────────────────────────
@@ -153,7 +167,8 @@ class TelemetryLog:
 def stream(scenario_packets: Iterator[Tuple[float, bytes, str]],
            ser, *, speed: float, log: TelemetryLog,
            tx_kinds: Counter | None = None,
-           silence_warn_s: float = 5.0) -> None:
+           silence_warn_s: float = 5.0,
+           rx_state: dict | None = None) -> None:
     """Drain `scenario_packets` (sorted by virtual_time) and write
     each one at virtual_time / speed wall seconds from start.
 
@@ -188,7 +203,7 @@ def stream(scenario_packets: Iterator[Tuple[float, bytes, str]],
             tx_kinds[kind] += 1
         # Drain RX every ~32 packets so the parser doesn't lag.
         if (n & 31) == 0:
-            _drain_serial(ser, accum, log.on_frame)
+            _drain_serial(ser, accum, log.on_frame, rx_state=rx_state)
             cur_rx = _rx_count()
             if cur_rx != last_rx_count:
                 last_rx_count = cur_rx
@@ -196,17 +211,27 @@ def stream(scenario_packets: Iterator[Tuple[float, bytes, str]],
                   and cur_rx == 0
                   and (time.perf_counter() - start_perf) >= silence_warn_s):
                 silence_warned = True
+                raw_b = rx_state["bytes"] if rx_state else 0
+                raw_f = rx_state["frames"] if rx_state else 0
+                hint = ""
+                if raw_b == 0:
+                    hint = ("0 raw bytes received → bytes aren't reaching pyserial.\n"
+                            "       Wrong COM port? Driver issue? Try a different\n"
+                            "       USB cable / port. Run `--rx-only` to confirm.\n")
+                elif raw_f == 0:
+                    hint = (f"{raw_b} raw bytes received but 0 COBS frames decoded.\n"
+                            "       The firmware is talking but the byte stream has\n"
+                            "       no 0x00 delimiters. Likely ASCII-only output\n"
+                            "       (logger sanity / boot prints) or wrong firmware.\n")
+                else:
+                    hint = (f"{raw_b} raw bytes / {raw_f} COBS frames received but\n"
+                            "       0 parsed as valid telemetry. CRC mismatch or\n"
+                            "       unknown message ID. Likely firmware/host\n"
+                            "       protocol skew.\n")
                 print(
-                    "\n  ⚠  No telemetry from firmware after "
-                    f"{silence_warn_s:.0f}s. Likely causes:\n"
-                    "     • Wrong firmware loaded (need -DHIL_MODE,\n"
-                    "       check `make hil` build at "
-                    "build/FlightComputer/Casper2_Flight.hex)\n"
-                    "     • Pre-fix firmware (CDC ring was 256 bytes\n"
-                    "       and overflowed at this rate — rebuild from\n"
-                    "       a tree containing the 4 KB ring fix)\n"
-                    "     • COM port pointing at the wrong device\n"
-                    "     • Try --speed 1.0 to rule out throughput issues\n",
+                    "\n  ⚠  No recognised telemetry after "
+                    f"{silence_warn_s:.0f}s.\n"
+                    f"     {hint}",
                     file=sys.stderr,
                 )
 
@@ -214,7 +239,7 @@ def stream(scenario_packets: Iterator[Tuple[float, bytes, str]],
     if ser is not None:
         deadline = time.perf_counter() + 0.25
         while time.perf_counter() < deadline:
-            _drain_serial(ser, accum, log.on_frame)
+            _drain_serial(ser, accum, log.on_frame, rx_state=rx_state)
             time.sleep(0.005)
 
 
@@ -237,6 +262,15 @@ def cli(argv: list[str] | None = None) -> int:
                    help="Don't open the port; just enumerate the packet schedule.")
     p.add_argument("--show-schedule", type=int, default=0, metavar="N",
                    help="In dry-run, print the first N packets in detail.")
+    p.add_argument("--rx-only", action="store_true",
+                   help="Don't TX anything — just open the port and dump\n"
+                        "incoming bytes (hex + ASCII). Use to verify the\n"
+                        "firmware is talking before debugging the runner.")
+    p.add_argument("--rx-only-secs", type=float, default=10.0,
+                   help="How long --rx-only runs (default 10 s).")
+    p.add_argument("--rx-dump", type=Path, default=None,
+                   help="Save every byte received from the firmware to\n"
+                        "this file for post-mortem inspection.")
     args = p.parse_args(argv)
 
     # Build the scenario.
@@ -287,26 +321,109 @@ def cli(argv: list[str] | None = None) -> int:
             print("\nNo --port specified — exiting after dry enumeration.")
         return 0
 
-    # Real run — open the serial port and stream.
+    # Real run — open the serial port.
     try:
         import serial as pyserial   # late import so dry-run works without pyserial installed
     except ImportError:
         print("pyserial is required for live runs (pip install pyserial)", file=sys.stderr)
         return 3
 
+    if args.port is None:
+        print("--port required for live or rx-only mode", file=sys.stderr)
+        return 2
+
     ser = pyserial.Serial(args.port, args.baud, timeout=0)
+
+    # ── --rx-only: passive byte dump, no TX. ──
+    if args.rx_only:
+        print(f"Opened {args.port} @ {args.baud}. Listening for "
+              f"{args.rx_only_secs:.0f}s (no TX)…")
+        deadline = time.perf_counter() + args.rx_only_secs
+        rx_buf = bytearray()
+        try:
+            while time.perf_counter() < deadline:
+                try:
+                    n = ser.in_waiting
+                except OSError:
+                    n = 0
+                if n:
+                    rx_buf.extend(ser.read(n))
+                else:
+                    time.sleep(0.005)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            ser.close()
+        print(f"\nReceived {len(rx_buf)} bytes in {args.rx_only_secs:.0f}s")
+        if not rx_buf:
+            print("  (zero bytes — confirms it's a port-plumbing issue, not parsing)")
+            return 0
+        # Hex + ASCII dump of first 256 bytes
+        head = rx_buf[:256]
+        print("First 256 bytes:")
+        for off in range(0, len(head), 16):
+            line = head[off:off+16]
+            hex_part = " ".join(f"{b:02x}" for b in line)
+            asc_part = "".join(chr(b) if 32 <= b < 127 else "." for b in line)
+            print(f"  {off:04x}  {hex_part:<48}  |{asc_part}|")
+        # Counts of message-id-like bytes
+        from collections import Counter as _C
+        msg_id_after_zero = _C()
+        prev_zero = True
+        for b in rx_buf:
+            if prev_zero and b != 0:
+                msg_id_after_zero[b] += 1
+            prev_zero = (b == 0)
+        if msg_id_after_zero:
+            print("Bytes following a 0x00 delimiter (likely COBS frame starts):")
+            for byte_val, n in sorted(msg_id_after_zero.most_common()):
+                guess = {0x01: "FAST?", 0x02: "GPS?",  0x03: "EVENT?",
+                         0xC0: "HANDSHAKE?", 0xA0: "ACK_ARM?", 0xE0: "NACK?"}.get(byte_val, "")
+                print(f"  0x{byte_val:02x} ×{n}  {guess}")
+        zero_count = rx_buf.count(0x00)
+        print(f"Total 0x00 bytes (COBS delimiters): {zero_count}")
+        if zero_count == 0:
+            print("  ⚠  No 0x00 delimiters — firmware is emitting ASCII text, not\n"
+                  "     COBS frames. Likely LOGGER_SANITY build (not HIL) or boot\n"
+                  "     init prints only. Re-flash with `make hil`.")
+        return 0
+
+    # ── Normal live run ──
     log = TelemetryLog()
     tx_kinds = Counter()
+    rx_state: dict = {
+        "bytes":  0,
+        "frames": 0,
+        "first_chunk": bytearray(),
+        "dump_first": 64,    # capture first 64 raw bytes for the summary
+        "dump_fp": None,
+    }
+    if args.rx_dump is not None:
+        rx_state["dump_fp"] = open(args.rx_dump, "wb")
+        print(f"Saving raw RX bytes to {args.rx_dump}")
+
     print(f"Opened {args.port} @ {args.baud} baud, speed×{args.speed}. Streaming…")
     try:
-        stream(packets, ser, speed=args.speed, log=log, tx_kinds=tx_kinds)
+        stream(packets, ser, speed=args.speed, log=log, tx_kinds=tx_kinds,
+               rx_state=rx_state)
     except KeyboardInterrupt:
         print("\n(interrupted)")
     finally:
         ser.close()
+        if rx_state["dump_fp"] is not None:
+            rx_state["dump_fp"].close()
 
     print()
     print(f"TX summary: {dict(tx_kinds)}")
+    print(f"RX raw:     {rx_state['bytes']:>7d} bytes, "
+          f"{rx_state['frames']:>4d} COBS frames decoded")
+    if rx_state["first_chunk"]:
+        head = bytes(rx_state["first_chunk"])
+        ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in head)
+        hex_part = " ".join(f"{b:02x}" for b in head)
+        print(f"  first {len(head)} raw bytes:")
+        print(f"    hex   {hex_part}")
+        print(f"    ascii {ascii_part}")
     print(log.summary())
     return 0
 
