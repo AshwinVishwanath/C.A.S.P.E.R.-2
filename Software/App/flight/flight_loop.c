@@ -21,9 +21,10 @@
 #include "buzzer.h"
 #include "usbd_cdc_if.h"
 #include "fsm_util.h"
+/* cycle_probe.h provides no-op DIAG_PROBE_BEGIN/END when LOGGER_SANITY is off */
+#include "cycle_probe.h"
 #ifdef LOGGER_SANITY
 #include "logger_sanity.h"
-#include "cycle_probe.h"
 
 /* Probes — names match what gets printed in [CYC] lines. */
 diag_probe_t probe_superloop;
@@ -888,7 +889,7 @@ void flight_loop_tick(void)
       }
 
 #if TEST_MODE == 1
-#ifndef LOGGER_SANITY
+#ifdef FLIGHT_ASCII_PLOT
       /* ── Serial plotter telemetry ── */
 #ifdef HIL_MODE
       /* HIL: output every packet (PC controls rate), all FSM states */
@@ -949,7 +950,7 @@ void flight_loop_tick(void)
         }
       }
 #endif /* HIL_MODE */
-#endif /* !LOGGER_SANITY */
+#endif /* FLIGHT_ASCII_PLOT */
 
 #ifndef HIL_MODE
         /* ── Radio TX + RX window ── */

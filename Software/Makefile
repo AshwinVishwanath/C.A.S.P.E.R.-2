@@ -27,9 +27,9 @@ endif
 # building variables
 ######################################
 # debug build?
-DEBUG = 1
+DEBUG = 0
 # optimization
-OPT = -Og
+OPT = -O2
 
 
 #######################################
@@ -220,11 +220,10 @@ C_DEFS =  \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
 -DTEST_MODE=1 \
--DGPS_TEST \
 -DMSC_MEDIA_PACKET=4096
 
 # Uncomment to enable bench logger sanity test (CDC 'go' + 5s + finalize):
- C_DEFS += -DLOGGER_SANITY=1
+# C_DEFS += -DLOGGER_SANITY=1
 
 ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND
@@ -339,6 +338,12 @@ $(BUILD_DIR):
 # ── Convenience build targets ─────────────────────────────────
 flight:
 	$(MAKE) BUILD_TARGET=FLIGHT
+
+bench:
+	$(MAKE) BUILD_TARGET=BENCH \
+	    TARGET=Casper2_Bench \
+	    BUILD_DIR=build/Bench \
+	    EXTRA_DEFS="-DTEST_MODE=2 -DFLIGHT_ASCII_PLOT=1"
 
 ground:
 	$(MAKE) BUILD_TARGET=GROUND
