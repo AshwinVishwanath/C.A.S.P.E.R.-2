@@ -220,6 +220,7 @@ C_DEFS =  \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
 -DTEST_MODE=1 \
+-DGPS_TEST \
 -DMSC_MEDIA_PACKET=4096
 
 # Uncomment to enable bench logger sanity test (CDC 'go' + 5s + finalize):

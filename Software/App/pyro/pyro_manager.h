@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   Pyro Manager
+ *  SUMMARY:  Per-channel arm/continuity/FSM-gated firing.
+ * ============================================================ */
 #ifndef APP_PYRO_PYRO_MANAGER_H
 #define APP_PYRO_PYRO_MANAGER_H
 

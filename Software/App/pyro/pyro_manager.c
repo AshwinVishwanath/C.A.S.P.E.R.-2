@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   Pyro Manager
+ *  SUMMARY:  Per-channel arm/continuity/FSM-gated firing.
+ * ============================================================ */
 #include "pyro_manager.h"
 #include "casper_pyro.h"
 #include "flight_fsm.h"

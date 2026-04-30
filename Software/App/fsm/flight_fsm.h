@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   Flight FSM
+ *  SUMMARY:  12-state mission state machine; gates pyro and telemetry.
+ * ============================================================ */
 #ifndef APP_FSM_FLIGHT_FSM_H
 #define APP_FSM_FLIGHT_FSM_H
 

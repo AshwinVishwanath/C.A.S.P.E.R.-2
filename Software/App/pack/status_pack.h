@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Status Packer
+ *  SUMMARY:  Pyro/FSM/system bitmap packed into 2-byte status word.
+ * ============================================================ */
 #ifndef APP_PACK_STATUS_PACK_H
 #define APP_PACK_STATUS_PACK_H
 

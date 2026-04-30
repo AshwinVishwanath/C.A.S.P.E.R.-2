@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Hamming SECDED
+ *  SUMMARY:  Single-error-correct/double-error-detect for log records.
+ * ============================================================ */
 #include "hamming.h"
 
 /* ═══════════════════════════════════════════════════════════════════════

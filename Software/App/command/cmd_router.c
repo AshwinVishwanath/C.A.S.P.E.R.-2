@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Command Router
+ *  SUMMARY:  Demux incoming COBS frames to CAC / config / HIL handlers.
+ * ============================================================ */
 #include "cmd_router.h"
 #include "cobs.h"
 #include "crc32_hw.h"

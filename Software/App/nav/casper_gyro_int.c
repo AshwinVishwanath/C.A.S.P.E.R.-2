@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Gyro Integrator
+ *  SUMMARY:  RK4 gyro-only quaternion integration (legacy; superseded by attitude).
+ * ============================================================ */
 /**
  * @file casper_gyro_int.c
  * @brief RK4 gyro quaternion integrator for C.A.S.P.E.R.-2 flight computer.

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     GROUND-STATION
+ *  MODULE:   Ground Radio
+ *  SUMMARY:  RX-continuous parser, ASCII output, command relay.
+ * ============================================================ */
 /**
  * @file ground_radio.c
  * @brief Ground station radio: RX-continuous, packet parsing,
@@ -64,6 +69,11 @@ static uint16_t get_le16(const uint8_t *p)
 static int16_t get_le16_signed(const uint8_t *p)
 {
     return (int16_t)get_le16(p);
+}
+
+static uint32_t get_le24(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
 }
 
 static uint32_t get_le32(const uint8_t *p)
@@ -190,22 +200,22 @@ void ground_radio_on_rx(void)
         /* Unpack status bitmap */
         uint8_t status_b1 = s_rx_buf[2];
         uint8_t fsm_st    = (status_b1 >> 4) & 0x0F;
-        /* Unpack altitude (decametres) and velocity (dm/s) */
-        uint16_t alt_raw = get_le16(&s_rx_buf[3]);
-        int16_t  vel_raw = get_le16_signed(&s_rx_buf[5]);
+        /* Unpack altitude (u24 cm) and velocity (dm/s) */
+        uint32_t alt_raw = get_le24(&s_rx_buf[3]);
+        int16_t  vel_raw = get_le16_signed(&s_rx_buf[6]);
         float alt_m   = (float)alt_raw * ALT_SCALE_M;
         float vel_mps = (float)vel_raw * VEL_SCALE_DMS;
         /* Unpack flight time (0.1s ticks) */
-        uint16_t time_raw = get_le16(&s_rx_buf[12]);
+        uint16_t time_raw = get_le16(&s_rx_buf[13]);
         float time_s = (float)time_raw * TIME_SCALE_100MS;
         /* Battery */
-        uint8_t batt_raw = s_rx_buf[14];
+        uint8_t batt_raw = s_rx_buf[15];
         float batt_v = BATT_OFFSET_V + (float)batt_raw * BATT_STEP_V;
         /* Sequence */
-        uint8_t seq = s_rx_buf[15];
+        uint8_t seq = s_rx_buf[16];
 
         len = snprintf(s_cdc_buf, sizeof(s_cdc_buf),
-            ">FAST ALT:%.1f VEL:%.1f ST:%s T:%.1f BATT:%.2f SEQ:%u RSSI:%d SNR:%d\r\n",
+            ">FAST ALT:%.2f VEL:%.1f ST:%s T:%.1f BATT:%.2f SEQ:%u RSSI:%d SNR:%d\r\n",
             alt_m, vel_mps, fsm_state_name(fsm_st), time_s, batt_v,
             seq, (int)s_stats.last_rssi, (int)s_stats.last_snr);
         break;
@@ -214,15 +224,16 @@ void ground_radio_on_rx(void)
         if (nb < SIZE_FC_MSG_GPS) break;
         int32_t  dlat_mm = get_le32_signed(&s_rx_buf[1]);
         int32_t  dlon_mm = get_le32_signed(&s_rx_buf[5]);
-        uint16_t alt_raw = get_le16(&s_rx_buf[9]);
-        uint8_t  fix     = s_rx_buf[11];
-        uint8_t  sats    = s_rx_buf[12];
+        uint32_t alt_raw = get_le24(&s_rx_buf[9]);
+        float    alt_m   = (float)alt_raw * ALT_SCALE_M;
+        uint8_t  fix     = s_rx_buf[12];
+        uint8_t  sats    = s_rx_buf[13];
 
         const char *fix_str = (fix == 3) ? "3D" :
                               (fix == 2) ? "2D" : "NONE";
         len = snprintf(s_cdc_buf, sizeof(s_cdc_buf),
-            ">GPS DLAT:%ld DLON:%ld ALT:%u FIX:%s SAT:%u RSSI:%d\r\n",
-            (long)dlat_mm, (long)dlon_mm, alt_raw, fix_str, sats,
+            ">GPS DLAT:%ld DLON:%ld ALT:%.2f FIX:%s SAT:%u RSSI:%d\r\n",
+            (long)dlat_mm, (long)dlon_mm, alt_m, fix_str, sats,
             (int)s_stats.last_rssi);
         break;
     }

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   MAX-M10M GPS Driver
+ *  SUMMARY:  I2C u-blox M10 GPS, UBX-NAV-PVT @ 10 Hz.
+ * ============================================================ */
 /**
  * @file max_m10m.h
  * @brief U-blox MAX-M10M GPS driver over I2C (DDC protocol).
@@ -57,6 +62,9 @@ extern "C" {
 #define CFG_MSGOUT_NMEA_GSV_I2C     0x209100C4u
 #define CFG_MSGOUT_NMEA_RMC_I2C     0x209100ABu
 #define CFG_MSGOUT_NMEA_VTG_I2C     0x209100B0u
+#define CFG_MSGOUT_NMEA_TXT_I2C     0x20910274u
+#define CFG_I2COUTPROT_UBX          0x10720001u
+#define CFG_I2COUTPROT_NMEA         0x10720002u
 #define CFG_RATE_MEAS                0x30210001u
 
 /* GNSS signal enable/disable keys (for GPS-only 10 Hz) */
@@ -65,6 +73,11 @@ extern "C" {
 #define CFG_SIGNAL_BDS_ENA          0x10310022u
 #define CFG_SIGNAL_QZSS_ENA        0x10310024u
 #define CFG_SIGNAL_GLO_ENA         0x10310025u
+#define CFG_NAVSPG_DYNMODEL         0x20110021u
+#define CFG_HW_RF_LNA_MODE         0x20A30038u
+
+/* UBX-MON-RF message ID */
+#define UBX_MON_RF_ID              0x38u
 
 /* ── UBX parser state machine ───────────────────────────────────── */
 typedef enum {
@@ -143,6 +156,22 @@ typedef struct {
     uint8_t            parse_ck_b;
     uint8_t            parse_buf[100]; /* >= UBX_NAV_PVT_LEN (92) */
 
+    /* Raw byte snapshot for debug */
+    uint8_t            dbg_raw[32];     /* snapshot of last bytes read   */
+    uint8_t            dbg_raw_len;     /* bytes in snapshot             */
+
+    /* Init result tracking: bit = 1 means ACK, 0 means NAK/timeout */
+    uint16_t           init_ack_mask;   /* bitmask of ACKed commands     */
+    uint8_t            init_cmd_count;  /* total commands sent           */
+
+    /* Debug counters */
+    uint32_t           dbg_polls;       /* tick polls attempted          */
+    uint32_t           dbg_avail_zero;  /* bytes_available returned 0    */
+    uint32_t           dbg_avail_ffff;  /* bytes_available returned 0xFFFF */
+    uint32_t           dbg_i2c_err;     /* HAL_I2C_Mem_Read failures     */
+    uint32_t           dbg_bytes_read;  /* total bytes fed to parser     */
+    uint32_t           dbg_frames_ok;   /* complete UBX frames (any type)*/
+
     /* Non-blocking tick state */
     gps_tick_state_t   tick_state;
     uint32_t           tick_last_poll;
@@ -153,6 +182,19 @@ typedef struct {
     uint8_t            ack_id;
     bool               ack_received;
     bool               nak_received;
+
+    /* NMEA line buffer (GPS_TEST passthrough) */
+    char               nmea_line[128];
+    uint8_t            nmea_idx;
+    volatile bool      nmea_line_ready;
+
+    /* MON-RF antenna diagnostics */
+    uint8_t            ant_status;      /* 0=INIT,1=DONTKNOW,2=OK,3=SHORT,4=OPEN */
+    uint8_t            ant_power;       /* 0=OFF,1=ON,2=DONTKNOW */
+    uint16_t           rf_noise_per_ms; /* noise level */
+    uint16_t           rf_agc_cnt;      /* AGC count (0-8191) */
+    uint8_t            rf_jam_ind;      /* jamming indicator (0-255) */
+    bool               mon_rf_valid;    /* true if MON-RF response received */
 } max_m10m_t;
 
 /* ── Public API ─────────────────────────────────────────────────── */
@@ -177,9 +219,38 @@ int max_m10m_tick(max_m10m_t *dev);
 bool max_m10m_has_3d_fix(const max_m10m_t *dev);
 
 /**
+ * Minimal init — hard reset + I2C check only, no UBX config.
+ * Module outputs default NMEA. Use for GPS_TEST passthrough.
+ */
+bool max_m10m_init_minimal(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
+                            GPIO_TypeDef *nrst_port, uint16_t nrst_pin);
+
+/**
+ * NMEA passthrough tick — reads I2C data, buffers complete NMEA lines.
+ * When a complete line is ready, sets dev->nmea_line_ready = true
+ * and the line is in dev->nmea_line (null-terminated).
+ * Returns 1 if a new line is ready, 0 otherwise.
+ */
+int max_m10m_tick_nmea(max_m10m_t *dev);
+
+/**
  * Call from HAL_GPIO_EXTI_Callback when I2C1_INT (PE0) fires.
  */
 void max_m10m_irq_handler(max_m10m_t *dev);
+
+/**
+ * Reconfigure GPS for testing: Airborne <4g dynamic model,
+ * internal LNA bypass (FEM provides external gain).
+ * Call AFTER max_m10m_init() or max_m10m_init_minimal().
+ */
+bool max_m10m_configure_gps_test(max_m10m_t *dev);
+
+/**
+ * Poll UBX-MON-RF and store RF diagnostics (antenna status, AGC, noise, jamming).
+ * Blocking — waits up to 500ms for response. Results in dev->ant_status etc.
+ * Returns true if MON-RF response received.
+ */
+bool max_m10m_poll_mon_rf(max_m10m_t *dev);
 
 #ifdef __cplusplus
 }

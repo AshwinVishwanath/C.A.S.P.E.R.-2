@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Log Types
+ *  SUMMARY:  Stream IDs, record headers, on-flash log layout constants.
+ * ============================================================ */
 #pragma once
 
 #include <stdint.h>

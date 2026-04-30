@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Radio Manager
+ *  SUMMARY:  Non-blocking SX1276 TX/RX scheduler; profile switching.
+ * ============================================================ */
 /**
  * @file radio_manager.c
  * @brief Radio state machine: TX scheduler, RX window, profile switching.
@@ -93,6 +98,13 @@ static void put_le16(uint8_t *dst, uint16_t val)
     dst[1] = (uint8_t)((val >> 8) & 0xFF);
 }
 
+static void put_le24(uint8_t *dst, uint32_t val)
+{
+    dst[0] = (uint8_t)(val & 0xFF);
+    dst[1] = (uint8_t)((val >> 8) & 0xFF);
+    dst[2] = (uint8_t)((val >> 16) & 0xFF);
+}
+
 static void put_le32(uint8_t *dst, uint32_t val)
 {
     dst[0] = (uint8_t)(val & 0xFF);
@@ -142,42 +154,42 @@ static int build_fast_packet(uint8_t *buf,
     status_pack_build(p, pstate, fsm, false);
     p += 2;
 
-    /* [3-4] altitude in decametres, u16 LE */
-    float alt_dam = tstate->alt_m / ALT_SCALE_M;
-    if (alt_dam < 0.0f) alt_dam = 0.0f;
-    if (alt_dam > 65535.0f) alt_dam = 65535.0f;
-    put_le16(p, (uint16_t)alt_dam);
-    p += 2;
+    /* [3-5] altitude in cm, u24 LE (1 cm resolution, max 167.7 km) */
+    float alt_cm = tstate->alt_m / ALT_SCALE_M;
+    if (alt_cm < 0.0f) alt_cm = 0.0f;
+    if (alt_cm > 16777215.0f) alt_cm = 16777215.0f;
+    put_le24(p, (uint32_t)alt_cm);
+    p += 3;
 
-    /* [5-6] velocity in dm/s, i16 LE */
+    /* [6-7] velocity in dm/s, i16 LE */
     float vel_dms = tstate->vel_mps / VEL_SCALE_DMS;
     if (vel_dms > 32767.0f) vel_dms = 32767.0f;
     if (vel_dms < -32768.0f) vel_dms = -32768.0f;
     put_le16(p, (uint16_t)(int16_t)vel_dms);
     p += 2;
 
-    /* [7-11] quaternion packed (5 bytes) */
+    /* [8-12] quaternion packed (5 bytes) */
     quat_pack_smallest_three(p, tstate->quat);
     p += 5;
 
-    /* [12-13] flight time in 0.1s ticks, u16 LE */
+    /* [13-14] flight time in 0.1s ticks, u16 LE */
     float time_ds = tstate->flight_time_s / TIME_SCALE_100MS;
     if (time_ds < 0.0f) time_ds = 0.0f;
     if (time_ds > 65535.0f) time_ds = 65535.0f;
     put_le16(p, (uint16_t)time_ds);
     p += 2;
 
-    /* [14] battery voltage, u8 */
+    /* [15] battery voltage, u8 */
     float batt_encoded = (tstate->batt_v - BATT_OFFSET_V) / BATT_STEP_V;
     if (batt_encoded < 0.0f) batt_encoded = 0.0f;
     if (batt_encoded > 255.0f) batt_encoded = 255.0f;
     *p++ = (uint8_t)batt_encoded;
 
-    /* [15] sequence counter */
+    /* [16] sequence counter */
     *p++ = s_seq++;
 
-    /* [16-19] CRC-32 over [0-15] */
-    uint32_t crc = crc32_hw_compute(buf, 16);
+    /* [17-20] CRC-32 over [0-16] */
+    uint32_t crc = crc32_hw_compute(buf, 17);
     put_le32(p, crc);
 
     return SIZE_FC_MSG_FAST;
@@ -198,21 +210,21 @@ static int build_gps_packet(uint8_t *buf, const fc_gps_state_t *gps)
     put_le32(p, (uint32_t)gps->dlon_mm);
     p += 4;
 
-    /* [9-10] alt_msl in decametres, u16 LE */
-    float alt_dam = gps->alt_msl_m / ALT_SCALE_M;
-    if (alt_dam < 0.0f) alt_dam = 0.0f;
-    if (alt_dam > 65535.0f) alt_dam = 65535.0f;
-    put_le16(p, (uint16_t)alt_dam);
-    p += 2;
+    /* [9-11] alt_msl in cm, u24 LE (1 cm resolution, max 167.7 km) */
+    float alt_cm = gps->alt_msl_m / ALT_SCALE_M;
+    if (alt_cm < 0.0f) alt_cm = 0.0f;
+    if (alt_cm > 16777215.0f) alt_cm = 16777215.0f;
+    put_le24(p, (uint32_t)alt_cm);
+    p += 3;
 
-    /* [11] fix_type */
+    /* [12] fix_type */
     *p++ = gps->fix_type;
 
-    /* [12] sat_count */
+    /* [13] sat_count */
     *p++ = gps->sat_count;
 
-    /* [13-16] CRC-32 over [0-12] */
-    uint32_t crc = crc32_hw_compute(buf, 13);
+    /* [14-17] CRC-32 over [0-13] */
+    uint32_t crc = crc32_hw_compute(buf, 14);
     put_le32(p, crc);
 
     return SIZE_FC_MSG_GPS;

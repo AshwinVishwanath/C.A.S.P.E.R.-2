@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Buzzer Driver
+ *  SUMMARY:  TIM4-driven piezo for arm/disarm/state audible cues.
+ * ============================================================ */
 #include "buzzer.h"
 
 /* ── Timer constants ─────────────────────────────────────────────── */

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Radio IRQ Flags
+ *  SUMMARY:  ISR-set DIO EXTI flags polled by radio_manager.
+ * ============================================================ */
 /**
  * @file    radio_irq.c
  * @brief   SX1276 DIO EXTI flags — set in ISR, polled by radio_manager.

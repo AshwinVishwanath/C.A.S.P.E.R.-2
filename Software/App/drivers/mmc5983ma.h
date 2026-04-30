@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   MMC5983MA Magnetometer Driver
+ *  SUMMARY:  I2C 3-axis magnetometer driver, 100 Hz, 18-bit.
+ * ============================================================ */
 /**
  * @file    mmc5983ma.h
  * @brief   MMC5983MA 3-axis magnetometer driver (I2C) for C.A.S.P.E.R.-2

@@ -24,18 +24,18 @@ void tearDown(void) { }
 
 static void test_size_fc_msg_fast(void)
 {
-    /* [ID:1][STATUS:2][ALT:2][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 20 */
-    int expected = 1 + 2 + 2 + 2 + 5 + 2 + 1 + 1 + 4;
+    /* [ID:1][STATUS:2][ALT:3][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 21 */
+    int expected = 1 + 2 + 3 + 2 + 5 + 2 + 1 + 1 + 4;
     TEST_ASSERT_EQUAL_INT(expected, SIZE_FC_MSG_FAST);
-    TEST_ASSERT_EQUAL_INT(20, SIZE_FC_MSG_FAST);
+    TEST_ASSERT_EQUAL_INT(21, SIZE_FC_MSG_FAST);
 }
 
 static void test_size_fc_msg_gps(void)
 {
-    /* [ID:1][DLAT:4][DLON:4][ALT:2][FIX:1][SAT:1][CRC:4] = 17 */
-    int expected = 1 + 4 + 4 + 2 + 1 + 1 + 4;
+    /* [ID:1][DLAT:4][DLON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
+    int expected = 1 + 4 + 4 + 3 + 1 + 1 + 4;
     TEST_ASSERT_EQUAL_INT(expected, SIZE_FC_MSG_GPS);
-    TEST_ASSERT_EQUAL_INT(17, SIZE_FC_MSG_GPS);
+    TEST_ASSERT_EQUAL_INT(18, SIZE_FC_MSG_GPS);
 }
 
 static void test_size_fc_msg_event(void)
@@ -139,13 +139,13 @@ static void test_msg_id_confirm(void)
 
 static void test_crc_position_fast(void)
 {
-    /* CRC at bytes 16..19 (offset SIZE-4 to SIZE-1) */
-    TEST_ASSERT_EQUAL_INT(16, SIZE_FC_MSG_FAST - 4);
+    /* CRC at bytes 17..20 (offset SIZE-4 to SIZE-1) */
+    TEST_ASSERT_EQUAL_INT(17, SIZE_FC_MSG_FAST - 4);
 }
 
 static void test_crc_position_gps(void)
 {
-    TEST_ASSERT_EQUAL_INT(13, SIZE_FC_MSG_GPS - 4);
+    TEST_ASSERT_EQUAL_INT(14, SIZE_FC_MSG_GPS - 4);
 }
 
 static void test_crc_position_event(void)

@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   W25Q512JV QSPI Flash Driver
+ *  SUMMARY:  64 MB NOR flash driver, FATFS-backed mass storage.
+ * ============================================================ */
 #ifndef W25Q512JV_H
 #define W25Q512JV_H
 

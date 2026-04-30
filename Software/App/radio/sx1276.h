@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   SX1276 LoRa Driver
+ *  SUMMARY:  Register-level SPI driver for SX1276 (RA-01H), 868 MHz.
+ * ============================================================ */
 /**
  * @file sx1276.h
  * @brief SX1276 LoRa radio low-level SPI driver.

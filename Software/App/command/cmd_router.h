@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Command Router
+ *  SUMMARY:  Demux incoming COBS frames to CAC / config / HIL handlers.
+ * ============================================================ */
 #ifndef APP_COMMAND_CMD_ROUTER_H
 #define APP_COMMAND_CMD_ROUTER_H
 

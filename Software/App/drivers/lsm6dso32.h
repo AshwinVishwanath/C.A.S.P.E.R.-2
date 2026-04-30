@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   LSM6DSO32 IMU Driver
+ *  SUMMARY:  SPI driver for primary 6-DoF IMU (accel/gyro), 833 Hz.
+ * ============================================================ */
 #ifndef LSM6DSO32_H
 #define LSM6DSO32_H
 

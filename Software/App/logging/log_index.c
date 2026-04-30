@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     CORE-FLIGHT
+ *  MODULE:   Log Index
+ *  SUMMARY:  On-flash index of log records; supports flash dump protocol.
+ * ============================================================ */
 #include "log_index.h"
 #include <string.h>
 

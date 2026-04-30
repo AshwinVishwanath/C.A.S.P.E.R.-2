@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   Self Test
+ *  SUMMARY:  Power-on integrity checks; gates entry to ARMED.
+ * ============================================================ */
 #ifndef APP_DIAG_SELF_TEST_H
 #define APP_DIAG_SELF_TEST_H
 

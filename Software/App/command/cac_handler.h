@@ -1,3 +1,8 @@
+/* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   CAC Handler
+ *  SUMMARY:  Command-Acknowledge-Confirm gate for arm/disarm/fire commands.
+ * ============================================================ */
 #ifndef APP_COMMAND_CAC_HANDLER_H
 #define APP_COMMAND_CAC_HANDLER_H
 
