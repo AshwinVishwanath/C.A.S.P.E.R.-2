@@ -1,6 +1,9 @@
 #include "casper_pyro.h"
 #include "main.h"
 #include <string.h>
+#ifdef HIL_MODE
+#include "hil_aux_handler.h"
+#endif
 
 /* ── Hardware lookup table ── */
 static const struct {
@@ -17,6 +20,7 @@ static const struct {
 
 /* ── Helpers ── */
 
+#ifndef HIL_MODE
 static uint16_t read_adc(ADC_HandleTypeDef *hadc, uint32_t channel)
 {
     ADC_ChannelConfTypeDef cfg = {0};
@@ -44,6 +48,7 @@ static ADC_HandleTypeDef *get_adc(const casper_pyro_t *p, uint8_t idx)
         default: return p->hadc1;
     }
 }
+#endif
 
 /* ── Public API ── */
 
@@ -97,12 +102,23 @@ void casper_pyro_stop_all(casper_pyro_t *p)
 
 void casper_pyro_tick(casper_pyro_t *p)
 {
+#ifdef HIL_MODE
+    /* HIL: continuity comes from the host's aux bitmap, not the
+     * unwired ADC. adc_raw stays zero (no real reading). LEDs and
+     * the auto-stop timer still run so the simulated firing windows
+     * close on time. */
+    for (uint8_t i = 0; i < PYRO_NUM_CHANNELS; i++) {
+        p->adc_raw[i]    = 0;
+        p->continuity[i] = (g_hil_aux.cont_bitmap & (1u << i)) != 0u;
+    }
+#else
     /* ── 1. Read all continuity ADCs ── */
     for (uint8_t i = 0; i < PYRO_NUM_CHANNELS; i++) {
         ADC_HandleTypeDef *adc = get_adc(p, hw[i].adc_idx);
         p->adc_raw[i] = read_adc(adc, hw[i].adc_channel);
         p->continuity[i] = (p->adc_raw[i] > PYRO_CONTINUITY_THRESHOLD);
     }
+#endif
 
     /* ── 2. Update continuity LEDs ── */
     for (uint8_t i = 0; i < PYRO_NUM_CHANNELS; i++) {

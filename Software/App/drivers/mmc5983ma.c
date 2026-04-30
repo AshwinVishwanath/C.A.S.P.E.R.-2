@@ -3,6 +3,9 @@
  * @brief   MMC5983MA 3-axis magnetometer driver (I2C) for C.A.S.P.E.R.-2
  */
 #include "mmc5983ma.h"
+#ifdef HIL_MODE
+#include "hil_raw_handler.h"
+#endif
 
 #define I2C_TIMEOUT  50  /* ms */
 
@@ -22,6 +25,7 @@ static HAL_StatusTypeDef mmc5983ma_read_reg(mmc5983ma_t *dev,
                             I2C_MEMADD_SIZE_8BIT, val, 1, I2C_TIMEOUT);
 }
 
+#ifndef HIL_MODE
 static HAL_StatusTypeDef mmc5983ma_read_burst(mmc5983ma_t *dev,
                                                uint8_t reg,
                                                uint8_t *buf, uint16_t len)
@@ -29,6 +33,7 @@ static HAL_StatusTypeDef mmc5983ma_read_burst(mmc5983ma_t *dev,
     return HAL_I2C_Mem_Read(dev->hi2c, dev->addr, reg,
                             I2C_MEMADD_SIZE_8BIT, buf, len, I2C_TIMEOUT);
 }
+#endif
 
 /* ── Initialisation ──────────────────────────────────────────────────────── */
 
@@ -139,6 +144,23 @@ int mmc5983ma_trigger_oneshot(mmc5983ma_t *dev)
 
 int mmc5983ma_read(mmc5983ma_t *dev)
 {
+#ifdef HIL_MODE
+    /* Populate mag_ut from the host packet. If mag_valid is clear,
+     * leave the previous reading untouched — mimics the case where
+     * the magnetometer simply returned the same value (no new field
+     * data this cycle). The downstream Mahony correction then sees
+     * stale data and effectively no-ops. */
+    if (g_hil_raw.mag_valid) {
+        dev->mag_ut[0] = g_hil_raw.mag_ut[0];
+        dev->mag_ut[1] = g_hil_raw.mag_ut[1];
+        dev->mag_ut[2] = g_hil_raw.mag_ut[2];
+        dev->mag_gauss[0] = dev->mag_ut[0] * 0.01f;
+        dev->mag_gauss[1] = dev->mag_ut[1] * 0.01f;
+        dev->mag_gauss[2] = dev->mag_ut[2] * 0.01f;
+    }
+    dev->data_ready = false;
+    return MMC5983MA_OK;
+#else
     uint8_t buf[7];
 
     if (mmc5983ma_read_burst(dev, MMC5983MA_REG_X_OUT_0, buf, 7) != HAL_OK)
@@ -166,6 +188,7 @@ int mmc5983ma_read(mmc5983ma_t *dev)
 
     dev->data_ready = false;
     return MMC5983MA_OK;
+#endif
 }
 
 /* ── Temperature read ────────────────────────────────────────────────────── */
