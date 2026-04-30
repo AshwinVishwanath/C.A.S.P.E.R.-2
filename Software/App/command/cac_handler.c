@@ -34,6 +34,8 @@ static uint8_t      s_pending_channel;   /* 1-indexed */
 static uint8_t      s_pending_action;    /* ARM: 0x01=arm, 0x02=disarm */
 static uint16_t     s_pending_duration;  /* FIRE: duration_ms */
 static uint32_t     s_confirm_deadline;
+/* Monotonic nonce — wraps at 65535; acceptable for single power cycle */
+static uint16_t     s_last_seen_nonce;
 
 /* ── Test mode state ──────────────────────────────────────────── */
 static bool     s_test_mode;
@@ -155,6 +157,12 @@ void cac_handle_arm(const uint8_t *data, int len)
         return;
     }
 
+    if (nonce <= s_last_seen_nonce) {
+        send_nack(nonce, NACK_ERR_NONCE_REPLAY);
+        return;
+    }
+    s_last_seen_nonce = nonce;
+
     /* Channel range check */
     if (channel > 3) {
         send_nack(nonce, NACK_ERR_BAD_STATE);
@@ -215,6 +223,12 @@ void cac_handle_fire(const uint8_t *data, int len)
         return;
     }
 
+    if (nonce <= s_last_seen_nonce) {
+        send_nack(nonce, NACK_ERR_NONCE_REPLAY);
+        return;
+    }
+    s_last_seen_nonce = nonce;
+
     if (channel > 3) {
         send_nack(nonce, NACK_ERR_BAD_STATE);
         return;
@@ -249,29 +263,41 @@ void cac_handle_fire(const uint8_t *data, int len)
     send_fire_ack(nonce, channel, duration, flags);
 }
 
-/* ── TESTMODE handler ─────────────────────────────────────────── */
+/* ── TESTMODE handler ──── per INTERFACE_SPEC §7.3 ────────────── */
+/* CMD_TESTMODE (10 bytes): [0]=0x82 [1]=0xCA [2]=0x5A [3-4]=nonce */
+/* [5]=enable [6-9]=CRC-32(0..5)                                    */
 void cac_handle_testmode(const uint8_t *data, int len)
 {
-    (void)data;
-    (void)len;
+    if (len < SIZE_CMD_TESTMODE) return;
 
-    /* Must be on PAD — NACK if not */
+    if (data[1] != CAC_MAGIC_1 || data[2] != CAC_MAGIC_2) return;
+
+    uint32_t received_crc = get_le32(&data[6]);
+    if (crc32_hw_compute(data, 6) != received_crc) return;
+
+    uint16_t nonce  = get_le16(&data[3]);
+    uint8_t  enable = data[5];
+
+    if (nonce <= s_last_seen_nonce) {
+        send_nack(nonce, NACK_ERR_NONCE_REPLAY);
+        return;
+    }
+    s_last_seen_nonce = nonce;
+
     if (flight_fsm_get_state() != FSM_STATE_PAD) {
-        send_nack(0, NACK_ERR_BAD_STATE);
+        send_nack(nonce, NACK_ERR_BAD_STATE);
         return;
     }
 
-    if (s_test_mode) {
-        /* Already active — toggle off */
-        s_test_mode = false;
-        pyro_mgr_set_test_mode(false);
-    } else {
+    if (enable) {
         s_test_mode = true;
         s_test_mode_deadline = HAL_GetTick() + TEST_MODE_TIMEOUT_MS;
         pyro_mgr_set_test_mode(true);
+    } else {
+        s_test_mode = false;
+        pyro_mgr_set_test_mode(false);
     }
 
-    /* Send EVENT so MC sees the state change immediately */
     tlm_queue_event(FC_EVT_STATE, (uint16_t)flight_fsm_get_state());
 }
 
