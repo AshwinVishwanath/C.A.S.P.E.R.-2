@@ -10,6 +10,9 @@
 
 #include "max_m10m.h"
 #include <string.h>
+#ifdef HIL_MODE
+#include "hil_aux_handler.h"
+#endif
 
 /* ================================================================== */
 /* Internal helpers                                                    */
@@ -449,6 +452,31 @@ bool max_m10m_init(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
 
 int max_m10m_tick(max_m10m_t *dev)
 {
+#ifdef HIL_MODE
+    /* Skip the I2C/UBX state machine. Report a fresh fix only when
+     * the host posts a new 0xD4 packet — pending is cleared on
+     * consumption so subsequent flight-loop iterations within the
+     * same aux packet don't re-fire the EKF GPS update. Lat/lon
+     * raw-int fields stay zero (host carries Δlat/Δlon for telemetry,
+     * but the EKF only needs alt/vel). */
+    if (!g_hil_aux.pending) {
+        return 0;
+    }
+    g_hil_aux.pending = false;
+    dev->alive       = true;
+    dev->alt_msl_m   = g_hil_aux.gps_alt_msl_m;
+    dev->vel_d_m_s   = g_hil_aux.gps_vel_d_mps;
+    dev->fix_type    = g_hil_aux.gps_fix;
+    dev->num_sv      = g_hil_aux.gps_sat;
+    dev->has_fix     = (g_hil_aux.gps_fix >= GPS_FIX_2D);
+    dev->h_msl_mm    = (int32_t)(g_hil_aux.gps_alt_msl_m * 1000.0f);
+    dev->vel_d_mm_s  = (int32_t)(g_hil_aux.gps_vel_d_mps * 1000.0f);
+    dev->last_pvt_tick = g_hil_aux.tick_ms;
+    dev->pvt_count++;
+    /* Returning 1 only when the host says GPS is valid keeps the
+     * downstream EKF/logger updates from acting on stale aux data. */
+    return hil_aux_gps_valid() ? 1 : 0;
+#else
     if (!dev->alive) return 0;
 
     uint32_t now = HAL_GetTick();
@@ -519,6 +547,7 @@ int max_m10m_tick(max_m10m_t *dev)
     }
 
     return 0;
+#endif
 }
 
 bool max_m10m_init_minimal(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,

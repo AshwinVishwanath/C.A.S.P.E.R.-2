@@ -8,6 +8,9 @@
 
 #include "lsm6dso32.h"
 #include <string.h>
+#ifdef HIL_MODE
+#include "hil_raw_handler.h"
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  SPI helpers (using TransmitReceive for STM32H7 FIFO robustness)   */
@@ -105,6 +108,23 @@ bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
 
 int lsm6dso32_read(lsm6dso32_t *dev)
 {
+#ifdef HIL_MODE
+    /* Skip the SPI burst — populate engineering-units arrays directly
+     * from the host's most recent 0xD3 packet. Conversions match the
+     * non-HIL path (m/s² → g, rad/s → dps) so downstream code is
+     * indifferent to the data source. Temperature stays at the most
+     * recent value (host can override in a future packet field). */
+    static const float MS2_TO_G    = 1.0f / 9.80665f;
+    static const float RADS_TO_DPS = 57.2957795f;
+    dev->accel_g[0] = g_hil_raw.accel_ms2[0] * MS2_TO_G;
+    dev->accel_g[1] = g_hil_raw.accel_ms2[1] * MS2_TO_G;
+    dev->accel_g[2] = g_hil_raw.accel_ms2[2] * MS2_TO_G;
+    dev->gyro_dps[0] = g_hil_raw.gyro_rads[0] * RADS_TO_DPS;
+    dev->gyro_dps[1] = g_hil_raw.gyro_rads[1] * RADS_TO_DPS;
+    dev->gyro_dps[2] = g_hil_raw.gyro_rads[2] * RADS_TO_DPS;
+    dev->data_ready = false;
+    return LSM6DSO32_READ_OK;
+#else
     uint8_t buf[14];
 
     /* Burst-read 14 bytes: OUT_TEMP_L (0x20) through OUTZ_H_A (0x2D) */
@@ -137,6 +157,7 @@ int lsm6dso32_read(lsm6dso32_t *dev)
 
     dev->data_ready = false;
     return LSM6DSO32_READ_OK;
+#endif
 }
 
 int lsm6dso32_read_raw(lsm6dso32_t *dev)

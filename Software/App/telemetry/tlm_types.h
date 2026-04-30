@@ -197,4 +197,12 @@ typedef struct {
 #define MSG_ID_HIL_RAW_INJECT    0xD3
 #define SIZE_HIL_RAW_INJECT      50  /* [ID:1][TICK:4][ACCEL:12][GYRO:12][BARO:4][MAG:12][FLAGS:1][CRC:4] = 50 */
 
+/* HIL aux: low-rate signals that don't run at 833 Hz (GPS, continuity, battery, ADXL activity). */
+#define MSG_ID_HIL_AUX           0xD4
+#define SIZE_HIL_AUX             33  /* [ID:1][TICK:4][DLAT:4][DLON:4][ALT:4][VELD:4][FIX:1][SAT:1][CONT:1][BATT:2][ADXL_ACT:1][FLAGS:2][CRC:4] = 33 */
+
+/* HIL high-G accel: optional ADXL372 stream — one sample per packet, paced by scenario. */
+#define MSG_ID_HIL_ADXL          0xD5
+#define SIZE_HIL_ADXL            16  /* [ID:1][TICK:4][AX:2][AY:2][AZ:2][FLAGS:1][CRC:4] = 16 */
+
 #endif /* APP_TELEMETRY_TLM_TYPES_H */

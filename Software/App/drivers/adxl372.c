@@ -12,6 +12,10 @@
 
 #include "adxl372.h"
 #include <string.h>
+#ifdef HIL_MODE
+#include "hil_adxl_handler.h"
+#include "hil_aux_handler.h"
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  SPI helpers (using TransmitReceive for STM32H7 FIFO robustness)   */
@@ -48,6 +52,7 @@ static uint8_t adxl372_read_reg(adxl372_t *dev, uint8_t reg)
     return rx[1];
 }
 
+#ifndef HIL_MODE
 static void adxl372_read_burst(adxl372_t *dev, uint8_t reg,
                                 uint8_t *buf, uint16_t len)
 {
@@ -60,6 +65,7 @@ static void adxl372_read_burst(adxl372_t *dev, uint8_t reg,
     cs_high(dev);
     memcpy(buf, &rx[1], len);
 }
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
@@ -104,6 +110,22 @@ bool adxl372_init(adxl372_t *dev, SPI_HandleTypeDef *hspi,
 
 int adxl372_read(adxl372_t *dev)
 {
+#ifdef HIL_MODE
+    /* Skip the SPI burst — convert the most recent injected raw sample
+     * into the same engineering units the real driver produces (12-bit
+     * left-justified → signed 12-bit at 100 mg/LSB → g). */
+    int16_t rx = g_hil_adxl.raw_ax >> 4;
+    int16_t ry = g_hil_adxl.raw_ay >> 4;
+    int16_t rz = g_hil_adxl.raw_az >> 4;
+    dev->raw_accel[0] = rx;
+    dev->raw_accel[1] = ry;
+    dev->raw_accel[2] = rz;
+    dev->accel_g[0] = (float)rx * 0.1f;
+    dev->accel_g[1] = (float)ry * 0.1f;
+    dev->accel_g[2] = (float)rz * 0.1f;
+    dev->data_ready = false;
+    return ADXL372_READ_OK;
+#else
     uint8_t buf[6];
 
     /* Burst-read 6 bytes: X_DATA_H (0x08) through Z_DATA_L (0x0D) */
@@ -126,10 +148,15 @@ int adxl372_read(adxl372_t *dev)
 
     dev->data_ready = false;
     return ADXL372_READ_OK;
+#endif
 }
 
 void adxl372_fifo_init(adxl372_t *dev, uint8_t odr_bits)
 {
+#ifdef HIL_MODE
+    (void)dev; (void)odr_bits;
+    return;  /* No SPI hardware in HIL — host streams via 0xD5 packets. */
+#else
     /* Go to standby before reconfiguring */
     adxl372_write_reg(dev, ADXL372_POWER_CTL, ADXL372_OP_STANDBY);
     HAL_Delay(1);
@@ -155,17 +182,35 @@ void adxl372_fifo_init(adxl372_t *dev, uint8_t odr_bits)
     /* Full BW measurement, HPF off, LPF on */
     adxl372_write_reg(dev, ADXL372_POWER_CTL,
                       ADXL372_HPF_DISABLE | ADXL372_OP_FULL_BW_MEASUREMENT);
+#endif
 }
 
 uint16_t adxl372_fifo_entries(adxl372_t *dev)
 {
+#ifdef HIL_MODE
+    /* Report 3 entries (one XYZ triplet) when a fresh 0xD5 packet
+     * is queued; otherwise zero so adxl372_fifo_read() returns 0. */
+    (void)dev;
+    return g_hil_adxl.pending ? 3u : 0u;
+#else
     uint8_t hi = adxl372_read_reg(dev, ADXL372_FIFO_ENTRIES_2);
     uint8_t lo = adxl372_read_reg(dev, ADXL372_FIFO_ENTRIES_1);
     return ((uint16_t)(hi & 0x03) << 8) | lo;
+#endif
 }
 
 int adxl372_fifo_read(adxl372_t *dev)
 {
+#ifdef HIL_MODE
+    if (!g_hil_adxl.pending) return 0;
+    g_hil_adxl.pending = false;
+    /* Same shift convention as the real driver (12-bit left-justified
+     * → signed 12-bit). The host packs the raw int16 already. */
+    dev->raw_accel[0] = g_hil_adxl.raw_ax >> 4;
+    dev->raw_accel[1] = g_hil_adxl.raw_ay >> 4;
+    dev->raw_accel[2] = g_hil_adxl.raw_az >> 4;
+    return 1;
+#else
     uint16_t entries = adxl372_fifo_entries(dev);
     if (entries < 3) return 0;  /* Need at least 3 entries for one XYZ triplet */
 
@@ -180,6 +225,7 @@ int adxl372_fifo_read(adxl372_t *dev)
     dev->raw_accel[2] = (int16_t)((uint16_t)buf[4] << 8 | buf[5]) >> 4;
 
     return 1;
+#endif
 }
 
 uint8_t adxl372_read_reg_ext(adxl372_t *dev, uint8_t reg)
@@ -220,12 +266,21 @@ void adxl372_wakeup_init(adxl372_t *dev, float threshold_g, uint8_t time_act)
 
 bool adxl372_activity_detected(adxl372_t *dev)
 {
+#ifdef HIL_MODE
+    (void)dev;
+    return g_hil_aux.adxl_activity != 0u;
+#else
     uint8_t status = adxl372_read_reg(dev, ADXL372_STATUS_2);
     return (status & ADXL372_STATUS2_ACT) != 0;
+#endif
 }
 
 void adxl372_enter_measurement(adxl372_t *dev)
 {
+#ifdef HIL_MODE
+    (void)dev;
+    return;  /* No SPI in HIL — host streams 0xD5 once it picks up the BOOST event. */
+#else
     /* Transition back to full bandwidth measurement mode.
      * Same configuration as adxl372_init(): low noise, 200Hz BW, 400Hz ODR */
     adxl372_write_reg(dev, ADXL372_MEASURE,
@@ -233,4 +288,5 @@ void adxl372_enter_measurement(adxl372_t *dev)
     adxl372_write_reg(dev, ADXL372_TIMING, ADXL372_ODR_400HZ);
     adxl372_write_reg(dev, ADXL372_POWER_CTL,
                       ADXL372_HPF_DISABLE | ADXL372_OP_FULL_BW_MEASUREMENT);
+#endif
 }

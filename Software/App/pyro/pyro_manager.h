@@ -101,4 +101,14 @@ int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms);
  */
 void pyro_mgr_get_cont_adc(uint16_t adc_out[4]);
 
+#ifdef HIL_MODE
+/**
+ * Override per-channel continuity from a host-injected bitmap (HIL only).
+ * Bits 0..3 correspond to channels 1..4 (0-indexed). Replaces the values
+ * the ADC tick wrote, so auto-arm and fire preconditions see the simulated
+ * world. Call after pyro_mgr_tick() each iteration.
+ */
+void pyro_mgr_hil_set_continuity(uint8_t cont_bitmap);
+#endif
+
 #endif /* APP_PYRO_PYRO_MANAGER_H */

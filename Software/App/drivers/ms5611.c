@@ -6,6 +6,9 @@
 
 #include "ms5611.h"
 #include <math.h>
+#ifdef HIL_MODE
+#include "hil_raw_handler.h"
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                   */
@@ -224,6 +227,28 @@ void ms5611_set_oversampling(ms5611_t *dev, ms5611_osr_t osr)
 
 int ms5611_tick(ms5611_t *dev)
 {
+#ifdef HIL_MODE
+    /* Skip the SPI conversion state machine. Report a fresh sample
+     * whenever the host marked the current 0xD3 packet as carrying a
+     * new baro reading. Pressure comes from the host as float Pa;
+     * temperature defaults to 25 °C unless previously set, since the
+     * EKF baro path doesn't read it. The flight loop runs once per
+     * 0xD3 packet in HIL, so each baro_valid=true packet drives
+     * exactly one EKF baro update — same shape as real hardware. */
+    if (!g_hil_raw.baro_valid || g_hil_raw.baro_pa <= 0.0f) {
+        return 0;
+    }
+    dev->raw_pressure    = 0;  /* not modelled */
+    dev->raw_temperature = 0;
+    dev->pressure        = (int32_t)g_hil_raw.baro_pa;
+    if (dev->temperature == 0) {
+        dev->temperature = 2500;  /* 25.00 °C in 0.01 °C units */
+    }
+    dev->last_read   = g_hil_raw.tick_ms;
+    dev->last_result = MS5611_READ_OK;
+    dev->nb_state    = MS5611_NB_IDLE;
+    return 1;
+#else
     uint32_t now = HAL_GetTick();
 
     switch (dev->nb_state) {
@@ -263,4 +288,5 @@ int ms5611_tick(ms5611_t *dev)
     }
 
     return 0;
+#endif
 }

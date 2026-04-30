@@ -1,3 +1,8 @@
+ /* ============================================================
+ *  TIER:     SAFETY-CRITICAL
+ *  MODULE:   Pyro Manager
+ *  SUMMARY:  Per-channel arm/continuity/FSM-gated firing.
+ * ============================================================ */
 #include "pyro_manager.h"
 #include "casper_pyro.h"
 #include "flight_fsm.h"
@@ -203,3 +208,12 @@ int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms)
                     ((uint16_t)ch << 8) | (duration_ms & 0xFF));
     return 0;
 }
+
+#ifdef HIL_MODE
+void pyro_mgr_hil_set_continuity(uint8_t cont_bitmap)
+{
+    for (int i = 0; i < PYRO_MGR_NUM_CHANNELS; i++) {
+        pyro.continuity[i] = (cont_bitmap & (1u << i)) != 0u;
+    }
+}
+#endif

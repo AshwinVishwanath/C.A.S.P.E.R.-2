@@ -16,9 +16,9 @@
 #include "buzzer.h"
 #include "usbd_cdc_if.h"
 #include "fsm_util.h"
+#include "cycle_probe.h"   /* macros no-op when LOGGER_SANITY is undefined */
 #ifdef LOGGER_SANITY
 #include "logger_sanity.h"
-#include "cycle_probe.h"
 
 /* Probes — names match what gets printed in [CYC] lines. */
 diag_probe_t probe_superloop;
@@ -34,6 +34,8 @@ diag_probe_t probe_log_tick;
 #endif
 #ifdef HIL_MODE
 #include "hil_raw_handler.h"
+#include "hil_aux_handler.h"
+#include "hil_adxl_handler.h"
 #endif
 
 #include <stdbool.h>
@@ -59,9 +61,7 @@ static uint32_t last_mag_tick = 0;
 
 static const float EKF_DT   = 0.0012f;
 static const float G_CONST  = 9.80665f;
-#ifndef HIL_MODE
 static const float DEG2RAD  = 0.0174532925f;
-#endif
 
 static float   baro_ref       = 0.0f;
 static bool    init_done      = false;
@@ -346,152 +346,43 @@ void flight_loop_tick(void)
 
 #if TEST_MODE != 2
 
-#ifdef HIL_MODE
-    /* ═══════════════════════════════════════════════════════════════
-     *  HIL RAW: event-driven — one full pipeline iteration per packet
-     * ═══════════════════════════════════════════════════════════════ */
+    /* CDC commands first — must flow even when HIL has no IMU packet pending. */
     cmd_router_process();
 
-    if (!g_hil_raw.pending) return;
+#ifdef HIL_MODE
+    /* HIL: lock-step with the 0xD3 stream. Without a fresh packet,
+     * bail out (cmd_router already drained any pending commands).
+     * When a packet IS pending, sensor reads later in this function
+     * pull from g_hil_raw / g_hil_aux / g_hil_adxl via the drivers'
+     * own HIL_MODE shims, so the rest of the function is identical
+     * to the real-hardware path. */
+    if (!g_hil_raw.pending) {
+        DIAG_PROBE_END(probe_superloop);
+        return;
+    }
     g_hil_raw.pending = false;
-
-    /* Advance virtual clock */
-    static uint32_t hil_prev_tick = 0;
     fsm_set_tick(g_hil_raw.tick_ms);
+    imu.data_ready = true;          /* mimic the EXTI on PC15 */
     uint32_t now = g_hil_raw.tick_ms;
-
-    /* Compute dt from consecutive packets */
-    float hil_dt = (hil_prev_tick == 0) ? EKF_DT
-                 : (float)(now - hil_prev_tick) / 1000.0f;
-    if (hil_dt <= 0.0f || hil_dt > 0.1f) hil_dt = EKF_DT;
-    hil_prev_tick = now;
-
-    /* Copy injected sensor data */
-    float accel_ms2[3], gyro_rads[3];
-    memcpy(accel_ms2, g_hil_raw.accel_ms2, sizeof(accel_ms2));
-    memcpy(gyro_rads, g_hil_raw.gyro_rads, sizeof(gyro_rads));
-
-    if (g_hil_raw.mag_valid) {
-      memcpy(mag_cal_ut, g_hil_raw.mag_ut, sizeof(mag_cal_ut));
-      mag_new = true;
-    }
-
-    /* Skip calibration if flag set */
-    if (g_hil_raw.skip_cal && !cal_done) {
-      if (!init_done) {
-        const float *mp = g_hil_raw.mag_valid ? mag_cal_ut : NULL;
-        if (casper_att_static_init(&att, accel_ms2, mp))
-          init_done = true;
-      }
-      if (init_done) {
-        cal_done = true;
-        /* Use first baro reading as ground reference */
-        if (g_hil_raw.baro_valid && g_hil_raw.baro_pa > 0.0f) {
-          float p_hPa = g_hil_raw.baro_pa * 0.01f;
-          baro_ref = 44307.694f * (1.0f - powf(p_hPa / 1013.25f, 0.190284f));
-        }
-      }
-    }
-
-    const float *mag_ptr = mag_new ? mag_cal_ut : NULL;
-
-    /* Normal cal / init path (when not skip_cal) */
-    if (!cal_done) {
-      if (!init_done) {
-        if (casper_att_static_init(&att, accel_ms2, mag_ptr))
-          init_done = true;
-      } else {
-        casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, hil_dt);
-      }
-      if (init_done && (now - loop_start_tick) >= 30000) {
-        cal_done = true;
-        if (g_hil_raw.baro_valid && g_hil_raw.baro_pa > 0.0f) {
-          float p_hPa = g_hil_raw.baro_pa * 0.01f;
-          baro_ref = 44307.694f * (1.0f - powf(p_hPa / 1013.25f, 0.190284f));
-        }
-      }
-      mag_new = false;
-      return;  /* Still calibrating — no EKF/FSM yet */
-    }
-
-    /* ── Attitude update ── */
-    casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, hil_dt);
-    mag_new = false;
-
-    last_accel_mag_g = sqrtf(accel_ms2[0]*accel_ms2[0]
-                           + accel_ms2[1]*accel_ms2[1]
-                           + accel_ms2[2]*accel_ms2[2]) / G_CONST;
-
-    /* ── Rotate accel to NED, trapezoidal EKF predict ── */
-    {
-      float R_mat[9];
-      casper_quat_to_rotmat(att.q, R_mat);
-      float ned_accel[3];
-      ned_accel[0] = R_mat[0]*accel_ms2[0] + R_mat[1]*accel_ms2[1] + R_mat[2]*accel_ms2[2];
-      ned_accel[1] = R_mat[3]*accel_ms2[0] + R_mat[4]*accel_ms2[1] + R_mat[5]*accel_ms2[2];
-      ned_accel[2] = R_mat[6]*accel_ms2[0] + R_mat[7]*accel_ms2[1] + R_mat[8]*accel_ms2[2];
-      diag_ned_z = ned_accel[2];
-
-      if (imu_subsample_count == 0) {
-        ned_accel_accum[0] = ned_accel[0];
-        ned_accel_accum[1] = ned_accel[1];
-        ned_accel_accum[2] = ned_accel[2];
-        imu_subsample_count = 1;
-      } else {
-        float ned_avg[3];
-        ned_avg[0] = 0.5f * (ned_accel_accum[0] + ned_accel[0]);
-        ned_avg[1] = 0.5f * (ned_accel_accum[1] + ned_accel[1]);
-        ned_avg[2] = 0.5f * (ned_accel_accum[2] + ned_accel[2]);
-
-        float dt_predict = 2.0f * hil_dt;
-        casper_ekf_predict(&ekf, ned_avg, dt_predict);
-
-        diag_zupt_fired = false;
-        {
-          fsm_state_t fsm_now = flight_fsm_get_state();
-          if (fsm_now == FSM_STATE_PAD || fsm_now == FSM_STATE_LANDED) {
-            float amag = last_accel_mag_g * G_CONST;
-            if (fabsf(amag - G_CONST) < EKF_ZUPT_THRESHOLD) {
-              casper_ekf_update_zupt(&ekf);
-              diag_zupt_fired = true;
-            }
-          }
-        }
-        imu_subsample_count = 0;
-      }
-    }
-
-    /* ── Baro update from injected data ── */
-    static bool s_baro_fed_ekf = false;
-    if (g_hil_raw.baro_valid && g_hil_raw.baro_pa > 0.0f) {
-      float p_hPa = g_hil_raw.baro_pa * 0.01f;
-      float altitude = 44307.694f * (1.0f - powf(p_hPa / 1013.25f, 0.190284f)) - baro_ref;
-      last_baro_alt_agl = altitude;
-      casper_ekf_update_baro(&ekf, altitude);
-      s_baro_fed_ekf = true;
-    }
-
-    (void)s_baro_fed_ekf; /* used by LED code in non-HIL builds */
-
-    /* Store body accel for FSM section */
-    last_body_accel_ms2[0] = accel_ms2[0];
-    last_body_accel_ms2[1] = accel_ms2[1];
-    last_body_accel_ms2[2] = accel_ms2[2];
-
-    /* Pyro manager still needs ticking in HIL */
-    pyro_mgr_tick();
-
-#else /* !HIL_MODE — normal sensor-driven path */
-
+#else
     uint32_t now = HAL_GetTick();
+#endif
     /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
     if (now - last_mag_tick >= 10) {
       DIAG_PROBE_BEGIN(probe_mag_rd);
       mmc5983ma_read(&mag);
       DIAG_PROBE_END(probe_mag_rd);
       last_mag_tick = now;
+#ifdef HIL_MODE
+      /* Host already provides calibrated body-frame µT — skip the
+       * sign-flip and factory cal that the real driver needs. */
+      mag_cal_ut[0] = mag.mag_ut[0];
+      mag_cal_ut[1] = mag.mag_ut[1];
+      mag_cal_ut[2] = mag.mag_ut[2];
+#else
       float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
       mag_cal_apply(mag_raw, mag_cal_ut);
+#endif
       mag_new = true;
     }
 
@@ -611,7 +502,13 @@ void flight_loop_tick(void)
           casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, dt_actual);
         }
 
-        if (init_done && (now - loop_start_tick) >= 30000) {
+        bool cal_window_done = (now - loop_start_tick) >= 30000;
+#ifdef HIL_MODE
+        /* HIL host can fast-track the 30 s pad calibration via the
+         * skip_cal flag on the most recent 0xD3 packet. */
+        if (g_hil_raw.skip_cal) cal_window_done = true;
+#endif
+        if (init_done && cal_window_done) {
           /* att.launched stays false — Mahony gravity correction remains
            * active until FSM transitions to BOOST (PAD→BOOST). */
           cal_done = true;
@@ -731,9 +628,9 @@ void flight_loop_tick(void)
         casper_ekf_update_baro(&ekf, altitude);
 
         s_baro_fed_ekf = true;
-#ifdef LOGGER_SANITY
-        (void)s_baro_fed_ekf;  /* LED reader gated out under LOGGER_SANITY */
-#endif
+        /* LED reader is gated out under LOGGER_SANITY and under HIL,
+         * so silence the set-but-not-used warning in those builds. */
+        (void)s_baro_fed_ekf;
       } else if (init_done) {
         /* Accumulate baro altitude for ground-level reference */
         baro_cal_sum += (double)ms5611_get_altitude(&baro, 1013.25f);
@@ -754,8 +651,6 @@ void flight_loop_tick(void)
 
     /* ── Pyro manager tick (wraps casper_pyro_tick) ── */
     pyro_mgr_tick();
-
-#endif /* HIL_MODE */
 
 #endif /* TEST_MODE != 2 — end of nav stack gate */
 
@@ -785,7 +680,11 @@ void flight_loop_tick(void)
       tstate.quat[1]      = att.q[1];
       tstate.quat[2]      = att.q[2];
       tstate.quat[3]      = att.q[3];
+#ifdef HIL_MODE
+      tstate.batt_v       = hil_aux_get_batt_v();
+#else
       tstate.batt_v       = 7.4f;
+#endif
       tstate.flight_time_s = flight_fsm_get_time_s();
       tstate.accel_mag_g   = last_accel_mag_g;
       tstate.baro_alt_m    = last_baro_alt_agl;
@@ -946,62 +845,77 @@ void flight_loop_tick(void)
 #endif /* HIL_MODE */
 #endif /* !LOGGER_SANITY */
 
-#ifndef HIL_MODE
-        /* ── Radio TX + RX window ── */
-        {
-          pyro_state_t pstate = {0};
-          uint8_t arm_bm  = pyro_mgr_get_arm_bitmap();
-          uint8_t cont_bm = pyro_mgr_get_cont_bitmap();
-          pstate.armed[0] = (arm_bm & 0x01) != 0;
-          pstate.armed[1] = (arm_bm & 0x02) != 0;
-          pstate.armed[2] = (arm_bm & 0x04) != 0;
-          pstate.armed[3] = (arm_bm & 0x08) != 0;
-          pstate.continuity[0] = (cont_bm & 0x01) != 0;
-          pstate.continuity[1] = (cont_bm & 0x02) != 0;
-          pstate.continuity[2] = (cont_bm & 0x04) != 0;
-          pstate.continuity[3] = (cont_bm & 0x08) != 0;
-          pstate.fired = pyro_mgr_is_firing();
-          DIAG_PROBE_BEGIN(probe_radio);
-          radio_manager_tick(&ekf, &tstate, &pstate, fsm);
-          DIAG_PROBE_END(probe_radio);
-        }
+      /* Build pyro state snapshot once — used by tlm_tick (CDC FAST,
+       * both modes), radio_manager_tick (LoRa, non-HIL), and the
+       * LR record push (both modes). */
+      pyro_state_t pstate = {0};
+      {
+        uint8_t arm_bm  = pyro_mgr_get_arm_bitmap();
+        uint8_t cont_bm = pyro_mgr_get_cont_bitmap();
+        pstate.armed[0] = (arm_bm & 0x01) != 0;
+        pstate.armed[1] = (arm_bm & 0x02) != 0;
+        pstate.armed[2] = (arm_bm & 0x04) != 0;
+        pstate.armed[3] = (arm_bm & 0x08) != 0;
+        pstate.continuity[0] = (cont_bm & 0x01) != 0;
+        pstate.continuity[1] = (cont_bm & 0x02) != 0;
+        pstate.continuity[2] = (cont_bm & 0x04) != 0;
+        pstate.continuity[3] = (cont_bm & 0x08) != 0;
+        pstate.fired = pyro_mgr_is_firing();
+      }
 
-        /* ── Logger: LR record (pyro + radio + GPS) ── */
-        {
-          uint16_t pyro_cont[4];
-          DIAG_PROBE_BEGIN(probe_pyro_rd);
-          pyro_mgr_get_cont_adc(pyro_cont);
-          uint8_t pyro_st = (uint8_t)((pyro_mgr_get_cont_bitmap() << 4)
-                                     | pyro_mgr_get_arm_bitmap());
-          DIAG_PROBE_END(probe_pyro_rd);
-          int8_t rssi, snr;
-          uint16_t tx_cnt, rx_cnt, fail_cnt;
-          radio_get_stats(&rssi, &snr, &tx_cnt, &rx_cnt, &fail_cnt);
-          flight_logger_push_lr(&logger, pyro_st, pyro_cont,
-                                rssi, snr, tx_cnt, rx_cnt, fail_cnt, &gps);
-        }
-#endif /* !HIL_MODE */
+#ifdef HIL_MODE
+      /* CDC binary telemetry (FAST 10 Hz heartbeat). Self-throttles, so
+       * cheap to call every iteration. HIL only — non-HIL CDC stays
+       * minimal (events + command responses); the radio carries FAST. */
+      tlm_tick(&tstate, &pstate, fsm);
+#endif
+
+#ifndef HIL_MODE
+      /* ── Radio TX + RX window (LoRa, non-HIL only) ── */
+      DIAG_PROBE_BEGIN(probe_radio);
+      radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+      DIAG_PROBE_END(probe_radio);
+#endif
+
+      /* ── Logger: LR record (pyro + radio + GPS) ── runs in HIL too */
+      {
+        uint16_t pyro_cont[4];
+        DIAG_PROBE_BEGIN(probe_pyro_rd);
+        pyro_mgr_get_cont_adc(pyro_cont);
+        uint8_t pyro_st = (uint8_t)((pyro_mgr_get_cont_bitmap() << 4)
+                                   | pyro_mgr_get_arm_bitmap());
+        DIAG_PROBE_END(probe_pyro_rd);
+        int8_t rssi = 0, snr = 0;
+        uint16_t tx_cnt = 0, rx_cnt = 0, fail_cnt = 0;
+#ifndef HIL_MODE
+        radio_get_stats(&rssi, &snr, &tx_cnt, &rx_cnt, &fail_cnt);
+#endif
+        flight_logger_push_lr(&logger, pyro_st, pyro_cont,
+                              rssi, snr, tx_cnt, rx_cnt, fail_cnt, &gps);
+      }
 #endif /* TEST_MODE == 1 */
     }
 #endif /* TEST_MODE != 2 */
 
 #if TEST_MODE == 1
+    /* CDC commands are now drained at the top of this function (so HIL
+     * can flow). Flash-dump-over-CDC stays gated since HIL has no real
+     * post-flight dump workflow and the host's RX would collide with
+     * our TX during the dump. */
 #ifndef HIL_MODE
-    /* ── Process incoming CDC commands ── */
-    if (cdc_ring_available() > 0) {
-      cmd_router_process();
-    }
-
-    /* ── Flash dump over CDC (blocking, post-flight only) ── */
     if (cmd_router_dump_requested()) {
       cmd_router_dump_clear();
       flash_dump_over_cdc(&flash);
     }
+#endif
 
-    /* ── CAC confirm timeout check ── */
+    /* ── CAC confirm timeout check ── runs in both modes */
     cac_tick();
 
-    /* ── Flight logger QSPI dispatch (erase-ahead on PAD, page writes in flight) ── */
+    /* ── Flight logger QSPI dispatch (erase-ahead on PAD, page writes
+     * in flight) ── runs in both modes; in HIL the drivers feed
+     * injected sensor data, so the logger captures the simulated flight
+     * the same way it captures a real one. */
     DIAG_PROBE_BEGIN(probe_log_tick);
     flight_logger_tick(&logger);
     DIAG_PROBE_END(probe_log_tick);
@@ -1010,7 +924,9 @@ void flight_loop_tick(void)
 #endif
 
 #ifndef LOGGER_SANITY
-    /* ── Logger status LEDs ── */
+    /* ── Logger status LEDs ── (real HW only — LED pins overlap with
+     * pyro continuity LEDs which the HIL build re-uses for diag). */
+#ifndef HIL_MODE
     {
       /* LED2 (PB14): SOLID = launched (DRAIN), FAST BLINK = finalized */
       if (logger.launched && !logger.finalized) {
@@ -1027,7 +943,7 @@ void flight_loop_tick(void)
           logger.qspi_state != QSPI_IDLE ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
 #endif
-#endif /* !HIL_MODE */
+#endif
 #elif TEST_MODE == 2
     /* ── Bench test: process text commands from CDC ── */
     bench_process_cdc();
