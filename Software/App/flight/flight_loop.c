@@ -269,8 +269,9 @@ void flight_loop_init(void)
 
 static void cdc_send_blocking(const uint8_t *buf, uint16_t len)
 {
-    while (CDC_Transmit_FS((uint8_t *)buf, len) == USBD_BUSY) {}
-    /* Small delay for USB IN transfer to complete */
+    while (CDC_Transmit_FS((uint8_t *)buf, len) == USBD_BUSY) {
+        HAL_IWDG_Refresh(&hiwdg1);
+    }
     HAL_Delay(2);
 }
 
@@ -278,12 +279,13 @@ static bool wait_for_ack(void)
 {
     uint32_t t0 = HAL_GetTick();
     while (HAL_GetTick() - t0 < DUMP_TIMEOUT_MS) {
+        HAL_IWDG_Refresh(&hiwdg1);
         if (cdc_ring_available() > 0) {
             uint8_t b = cdc_ring_read_byte();
             if (b == DUMP_ACK) return true;
         }
     }
-    return false;  /* timeout */
+    return false;
 }
 
 static void flash_dump_over_cdc(w25q512jv_t *fl)
