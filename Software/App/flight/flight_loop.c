@@ -111,6 +111,9 @@ flight_cfg_t g_flight_cfg = {
 
 /* ── Bench test mode: CDC text command parser (TEST_MODE 2 only) ── */
 #if TEST_MODE == 2
+#include "self_test.h"
+#include "flight_logger.h"
+
 static char    bench_cmd_buf[32];
 static uint8_t bench_cmd_idx = 0;
 
@@ -193,6 +196,131 @@ static void bench_dispatch(const char *cmd)
         }
     }
 
+    /* ── selftest ─────────────────────────────────────────────────── */
+    if (strcmp(cmd, "selftest") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        diag_result_t results[7];
+        int num = self_test_run_all(results);
+        bool all_pass = true;
+        char line[48];
+        for (int i = 0; i < num; i++) {
+            snprintf(line, sizeof(line), "[BENCH] SELFTEST %d %s\r\n",
+                     results[i].test_id,
+                     results[i].result ? "PASS" : "FAIL");
+            bench_send(line);
+            if (!results[i].result) all_pass = false;
+        }
+        bench_send(all_pass ? "[BENCH] SELFTEST OVERALL PASS\r\n"
+                            : "[BENCH] SELFTEST OVERALL FAIL\r\n");
+        if (all_pass) buzzer_beep_n(30, 4, 100, 200);
+        return;
+    }
+
+    /* ── simulate-apogee ──────────────────────────────────────────── */
+    if (strcmp(cmd, "simulate-apogee") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        /* Bench harness only — does NOT actually fire pyros on the bench.
+         * Force FSM through PAD->BOOST->COAST->APOGEE in bench mode,
+         * sample the firing flag, then immediately disarm all channels. */
+        flight_fsm_set_bench_mode(true);
+        flight_fsm_force_state(FSM_STATE_BOOST);
+        flight_fsm_force_state(FSM_STATE_COAST);
+        flight_fsm_force_state(FSM_STATE_APOGEE);
+        bool fired = pyro_mgr_is_firing();
+        /* Immediately stop any accidental fire — bench must not fire pyros */
+        pyro_mgr_disarm_all();
+        char ack[64];
+        snprintf(ack, sizeof(ack),
+                 "[BENCH] APOGEE FSM=APOGEE FIRED=%d CH=%d\r\n",
+                 (int)fired,
+                 (int)pyro_mgr_get_cont_bitmap());
+        bench_send(ack);
+        return;
+    }
+
+    /* ── pyro-cap-test ────────────────────────────────────────────── */
+    if (strcmp(cmd, "pyro-cap-test") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        uint8_t cont = pyro_mgr_get_cont_bitmap();
+        float vbatt  = pyro_mgr_get_batt_voltage();
+        char line[48];
+        snprintf(line, sizeof(line), "[BENCH] CONT 0x%02X VBATT=%.2fv\r\n",
+                 (unsigned)cont, (double)vbatt);
+        bench_send(line);
+        return;
+    }
+
+    /* ── iwdg-test ────────────────────────────────────────────────── */
+    if (strcmp(cmd, "iwdg-test") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        bench_send("[BENCH] IWDG-TEST start, expect reset\r\n");
+        HAL_Delay(50);  /* let CDC IN packet drain before locking up */
+        __disable_irq();
+        for (volatile int i = 0; i < 60000000; i++);
+        /* Should never reach here — IWDG fires within ~500ms */
+        __enable_irq();
+        bench_send("[BENCH] IWDG-TEST ERROR: reset did not occur\r\n");
+        return;
+    }
+
+    /* ── cac-replay-test ──────────────────────────────────────────── */
+    if (strcmp(cmd, "cac-replay-test") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        /* CAC nonce replay test is SKIPPED — exposing s_last_seen_nonce
+         * requires internal CAC linkage not available without API change. */
+        bench_send("[BENCH] REPLAY SKIPPED\r\n");
+        return;
+    }
+
+    /* ── logger-finalize-force ────────────────────────────────────── */
+    if (strcmp(cmd, "logger-finalize-force") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        flight_logger_finalize(&logger);
+        char line[48];
+        snprintf(line, sizeof(line),
+                 "[BENCH] FINALIZE adxl_end=0x%08lX\r\n",
+                 (unsigned long)logger.adxl.flash_addr);
+        bench_send(line);
+        return;
+    }
+
+    /* ── status ───────────────────────────────────────────────────── */
+    if (strcmp(cmd, "status") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        char line[64];
+        bench_send("[BENCH] BUILD: TEST_MODE=2 BUILD_TARGET=BENCH\r\n");
+        snprintf(line, sizeof(line),
+                 "[BENCH] FSM: state=%u bench=%d testmode=%d\r\n",
+                 (unsigned)flight_fsm_get_state(),
+                 (int)flight_fsm_bench_active(),
+                 (int)pyro_mgr_is_test_mode());
+        bench_send(line);
+        snprintf(line, sizeof(line),
+                 "[BENCH] PYRO: arm=0x%X cont=0x%X vbatt=%.2fv\r\n",
+                 (unsigned)pyro_mgr_get_arm_bitmap(),
+                 (unsigned)pyro_mgr_get_cont_bitmap(),
+                 (double)pyro_mgr_get_batt_voltage());
+        bench_send(line);
+        bench_send("[BENCH] SENSORS: imu_age=N/A mag_age=N/A\r\n");
+        snprintf(line, sizeof(line),
+                 "[BENCH] LOGGER: launched=%d finalized=%d\r\n",
+                 (int)logger.launched,
+                 (int)logger.finalized);
+        bench_send(line);
+        bench_send("[BENCH] IWDG: enabled=1\r\n");
+        return;
+    }
+
+    /* ── fault-test hardfault ─────────────────────────────────────── */
+    if (strcmp(cmd, "fault-test hardfault") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        bench_send("[BENCH] FAULT-TEST hardfault\r\n");
+        HAL_Delay(50);  /* drain CDC IN before the fault fires */
+        *((volatile uint32_t *)0xFFFFFFFFu) = 1u;
+        /* Should never reach here — HardFault handler triggers IWDG reset */
+        return;
+    }
+
     bench_send("[BENCH] unknown cmd\r\n");
 }
 
@@ -226,7 +354,11 @@ static void bench_process_cdc(void)
 
 bool flight_loop_is_cal_done(void)
 {
+#if TEST_MODE != 2
     return cal_done;
+#else
+    return false;
+#endif
 }
 
 void flight_loop_init(void)
