@@ -883,6 +883,18 @@ void flight_loop_tick(void)
 #endif
           landed_at = 0;
         }
+
+        /* Watchdog: force finalize if 600 s elapsed since launch with no finalize.
+         * Covers FSM stuck in MAIN (e.g. main chute deploy but no landing detect). */
+        if (logger.launched && !logger.finalized) {
+          uint32_t since_launch = now - logger.summary.launch_tick;
+          if (since_launch > FSM_LAUNCH_TO_FINALIZE_MS) {
+#ifndef LOGGER_SANITY
+            flight_logger_finalize(&logger);
+            buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
+#endif
+          }
+        }
 #endif
 
         prev_fsm = fsm;

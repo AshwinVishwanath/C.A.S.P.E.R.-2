@@ -57,14 +57,16 @@ typedef struct {
 /* Burnout detection (BOOST -> COAST) */
 #define FSM_BURNOUT_ACCEL_G         0.0f        /* Accel below this = burnout     */
 #define FSM_BURNOUT_DWELL_MS        100         /* Sustain time (ms)              */
+#define FSM_BOOST_MAX_MS            10000       /* Max time in BOOST before forcing COAST (sensor failure / IMU saturation safety net) */
 
 /* Sustain re-light (COAST -> BOOST) */
 #define FSM_SUSTAIN_ACCEL_G         3.0f        /* Re-light accel threshold (g)   */
 #define FSM_SUSTAIN_DWELL_MS        100         /* Sustain time (ms)              */
+#define FSM_COAST_MAX_MS            30000       /* Max time in COAST before forcing APOGEE (EKF velocity failure safety net) */
 
 /* Apogee detection (COAST -> APOGEE) */
 #define FSM_APOGEE_VEL_MPS          0.0f        /* Velocity <= this = apogee      */
-#define FSM_APOGEE_VEL_DWELL_MS     25          /* Sustain time (ms)              */
+#define FSM_APOGEE_VEL_DWELL_MS     100         /* Increased to 100ms to filter EKF velocity transients near apogee */
 #define FSM_APOGEE_MIN_FLIGHT_S     5.0f        /* Minimum flight time gate (s)   */
 
 /* Landing detection (MAIN -> LANDED) */
@@ -74,6 +76,9 @@ typedef struct {
 
 /* Low-power auto-timer (LANDED -> RECOVERY) */
 #define FSM_LANDED_TO_LOWPOWER_S    300         /* 5 minutes after landing        */
+
+/* Hard upper bound on time-since-launch before forcing logger finalize (covers FSM-stuck-in-MAIN scenarios) */
+#define FSM_LAUNCH_TO_FINALIZE_MS   600000UL
 
 /* ── Pyro Channel Exclusion Mask (FSM_TRANSITION_SPEC.md §6.2) ──── */
 /* Set bit N to exclude channel N from auto-arm and auto-fire.        */
