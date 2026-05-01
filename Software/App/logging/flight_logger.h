@@ -122,3 +122,13 @@ static inline uint16_t flight_logger_err_count(const flight_logger_t *log)
 
 void flight_logger_qspi_complete(flight_logger_t *log);
 void flight_logger_qspi_error(flight_logger_t *log);
+
+#ifdef LOGGER_SANITY
+/* Diagnostic call-rate counters (LOGGER_SANITY only).
+ * "calls" = entry to push_hr/_lr (every invocation).
+ * "pushes" = post-divider records actually pushed into the stream. */
+uint32_t flight_logger_diag_hr_calls(void);
+uint32_t flight_logger_diag_hr_pushes(void);
+uint32_t flight_logger_diag_lr_calls(void);
+uint32_t flight_logger_diag_lr_pushes(void);
+#endif

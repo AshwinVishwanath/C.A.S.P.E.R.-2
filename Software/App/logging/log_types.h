@@ -9,7 +9,18 @@
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  Flash Layout (W25Q512JV — 64 MB total)
+ *
+ *  The flash is partitioned into two non-overlapping regions:
+ *
+ *    0x00000000 .. 0x03C00000   Flight log (60 MB) — raw NOR, custom layout
+ *    0x03C00000 .. 0x04000000   FATFS    ( 4 MB) — used by USB MSC + cal CSV
+ *
+ *  Keeping FATFS off the flight log address range is safety-critical:
+ *  f_mkfs and FATFS writes hit sector 0 of FATFS = 0x03C00000 (NOT 0), so
+ *  formatting the filesystem can never corrupt the flight index.
  * ═══════════════════════════════════════════════════════════════════════ */
+
+#define LOG_FLASH_END          0x03C00000u   /* 60 MB — top of flight log  */
 
 #define FLASH_INDEX_BASE       0x00000000u   /* 4 KB   — flight index      */
 #define FLASH_INDEX_SIZE       0x00001000u
@@ -27,11 +38,17 @@
 #define FLASH_ADXL_SIZE        0x01000000u
 #define FLASH_ADXL_END         (FLASH_ADXL_BASE + FLASH_ADXL_SIZE)
 
-#define LOG_FLASH_END          0x04000000u   /* 64 MB total */
-
-#define FLASH_HR_BASE          0x01091000u   /* ~47.4 MB — high-rate records */
+#define FLASH_HR_BASE          0x01091000u   /* ~43.4 MB high-rate records */
 #define FLASH_HR_SIZE          (LOG_FLASH_END - FLASH_HR_BASE)
 #define FLASH_HR_END           LOG_FLASH_END
+
+/* FATFS region — separate from the flight log. user_diskio.c and
+ * usbd_msc_storage_if.c offset all sector accesses by FATFS_FLASH_BASE so
+ * sector 0 of the FATFS / MSC view maps to physical flash 0x03C00000. */
+#define FATFS_FLASH_BASE       0x03C00000u   /* 4 MB FATFS partition       */
+#define FATFS_FLASH_SIZE       0x00400000u
+#define FATFS_FLASH_END        0x04000000u
+#define FATFS_SECTOR_COUNT     (FATFS_FLASH_SIZE / 0x1000u)  /* 1024 × 4 KB */
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  Constants
@@ -48,7 +65,7 @@
 #define SUMMARY_VERSION      1
 #define SUMMARY_PARTIAL      0x01
 #define SUMMARY_FINAL        0x02
-#define MAX_FLIGHTS          128
+#define MAX_FLIGHTS          113   /* floor(4096 / 36) — index entry grew to 36 B */
 #define INDEX_DIRTY          0xFFFFFFFFu
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -223,6 +240,10 @@ _Static_assert(sizeof(flight_summary_t) == 256, "flight_summary_t must be 256 by
  *  Flight index entry (32 bytes, packed)
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/* [ID:2][start_tick:4][end_tick:4][hr_start:4][hr_end:4][lr_start:4][lr_end:4]
+ * [adxl_start:4][adxl_end:4][flags:2] = 38 bytes
+ * adxl_end_addr added at end; index sector is rewritten each flight cycle so
+ * no backward compatibility concern with existing flash contents. */
 typedef struct __attribute__((packed)) {
     uint16_t flight_id;             /*  0: monotonic flight number       */
     uint32_t start_tick_ms;         /*  2: launch tick                   */
@@ -232,7 +253,8 @@ typedef struct __attribute__((packed)) {
     uint32_t lr_start_addr;         /* 18: first LR flash address        */
     uint32_t lr_end_addr;           /* 22: last LR flash addr (DIRTY)    */
     uint32_t adxl_start_addr;       /* 26: first ADXL flash address      */
-    uint16_t flags;                 /* 30: bit0: clean_shutdown          */
-} flight_index_entry_t;            /* 32 bytes total                    */
+    uint32_t adxl_end_addr;         /* 30: last ADXL flash addr (DIRTY)  */
+    uint16_t flags;                 /* 34: bit0: clean_shutdown          */
+} flight_index_entry_t;            /* 36 bytes total                    */
 
-_Static_assert(sizeof(flight_index_entry_t) == 32, "flight_index_entry_t must be 32 bytes");
+_Static_assert(sizeof(flight_index_entry_t) == 36, "flight_index_entry_t must be 36 bytes");

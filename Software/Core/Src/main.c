@@ -64,6 +64,10 @@
 #include "flight_loop.h"
 #include "radio_manager.h"
 #include "flight_logger.h"
+#ifdef LOGGER_SANITY
+#include "logger_sanity.h"
+#include "cycle_probe.h"
+#endif
 #endif /* !BUILD_TARGET_GROUND */
 #include "crc32_hw.h"
 #include "radio_irq.h"
@@ -113,6 +117,7 @@ TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN PV */
+IWDG_HandleTypeDef hiwdg1;
 ms5611_t baro;
 #ifndef BUILD_TARGET_GROUND
 lsm6dso32_t imu;
@@ -148,12 +153,19 @@ static void MX_TIM4_Init(void);
 static void MX_I2C3_Init(void);
 static void MX_SPI3_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void MX_IWDG1_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static void MX_IWDG1_Init(void)
+{
+    /* LSI ~32 kHz, /4 -> 8 kHz, reload 3999 -> 500ms timeout */
+    hiwdg1.Instance  = IWDG1;
+    hiwdg1.Prescaler = 0;     /* PR=0 -> /4 */
+    hiwdg1.Reload    = 3999;
+    HAL_IWDG_Init(&hiwdg1);
+}
 /* USER CODE END 0 */
 
 /**
@@ -198,7 +210,18 @@ int main(void)
   PeriphCommonClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  /* Enable the Cortex-M7 DWT free-running cycle counter (DWT->CYCCNT).
+   * Used by:
+   *   - flight_loop.c adaptive-dt: actual elapsed time per IMU sample,
+   *     fed to attitude estimator and EKF predict instead of a fixed
+   *     EKF_DT constant. Critical for estimator correctness.
+   *   - LOGGER_SANITY cycle probes (when enabled) — performance
+   *     measurement of the hot paths.
+   * Cost: zero — DWT runs from SYSCLK with no software intervention. */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->LAR    = 0xC5ACCE55u;            /* H7 lock register magic */
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -516,9 +539,16 @@ int main(void)
 
   } /* end DBG_PRINT scope */
 
-  /* EXTI disabled — using GPIO polling instead (see flight_loop_tick).
-   * The shared EXTI15_10/EXTI9_5 handlers had stale-pending issues
-   * from SX1276 DIO4/DIO5 pins configured as IT_RISING by CubeMX. */
+  /* EXTI15_10 (PC15 = LSM6DSO32 INT2):
+   *   Originally disabled because SX1276 DIO4 (PB12) / DIO5 (PB13) were
+   *   configured as IT_RISING by CubeMX and toggled constantly,
+   *   producing stale-pending interrupts that flooded EXTI15_10.
+   *   Fix applied in MX_GPIO_Init_2 USER block: PB12/PB13 are now plain
+   *   inputs, so EXTI15_10 only ever fires for PC15.  Enable the NVIC
+   *   line and clear any pending bit before enabling. */
+  __HAL_GPIO_EXTI_CLEAR_IT(SPI2_INT_Pin);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 2);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   // Check flash init result (already initialized before USB)
   bool flash_ok = false;
@@ -536,8 +566,11 @@ int main(void)
 #if (USB_MODE != 2)
   bool fatfs_ok = false;
   bool file_test_ok = false;
+  /* FATFS now lives in a 4 MB partition at the top of flash
+   * (FATFS_FLASH_BASE = 0x03C00000), separate from the flight log region.
+   * f_mkfs and FATFS writes only ever touch that partition, so this init
+   * is safe in every build. */
 #if (TEST_MODE != 1)
-  // Mount FATFS on flash (CDC mode only — MSC lets the PC manage the filesystem)
   if (flash_ok) {
     FRESULT fres = f_mount(&USERFatFS, USERPath, 1);
     if (fres == FR_NO_FILESYSTEM) {
@@ -685,8 +718,15 @@ int main(void)
     }
   }
 #else
+  /* IWDG: 500ms timeout (LSI ~32kHz, /4 -> 8kHz, reload 3999 -> 500ms).
+   * Started here — after all blocking init — so USB enumeration + sensor
+   * init cannot trip it.  flight_loop_tick() kicks it every iteration. */
+  MX_IWDG1_Init();
   flight_loop_init();
   flight_logger_start(&logger);  /* Begin PAD-state ring filling + erase-ahead */
+#ifdef LOGGER_SANITY
+  logger_sanity_init(&logger);
+#endif
 #endif
 
 #endif /* BUILD_TARGET_GROUND */
@@ -1816,6 +1856,32 @@ static void MX_GPIO_Init(void)
       HAL_GPIO_Init(RADIO_NRST_GPIO_Port, &nrst_fix);
   }
   HAL_GPIO_WritePin(RADIO_NRST_GPIO_Port, RADIO_NRST_Pin, GPIO_PIN_SET);
+
+  // SX1276 DIO4 (PB12) and DIO5 (PB13) were configured as GPIO_MODE_IT_RISING
+  // by CubeMX. They share EXTI15_10 with PC15 (LSM6DSO32 INT2), and the radio
+  // toggles them constantly during normal operation, causing stale-pending
+  // interrupts that previously forced us to disable EXTI15_10 entirely and
+  // fall back to a 5 ms STATUS polling watchdog (which capped the IMU service
+  // rate at ~166 Hz instead of 833).
+  //
+  // Note: HAL_GPIO_Init() with GPIO_MODE_INPUT does NOT clear the EXTI line
+  // registration in EXTI_IMR / EXTI_RTSR / SYSCFG_EXTICR — those have to be
+  // cleared explicitly. Use HAL_GPIO_DeInit() to fully tear down the EXTI
+  // configuration, then re-init as plain input. Without the DeInit, the
+  // EXTI line keeps firing for radio activity and the main loop is locked
+  // up servicing the IRQ.
+  HAL_GPIO_DeInit(GPIOB, RADIO_DIO4_Pin | RADIO_DIO5_Pin);
+  {
+      GPIO_InitTypeDef dio_fix = {0};
+      dio_fix.Pin   = RADIO_DIO4_Pin | RADIO_DIO5_Pin;
+      dio_fix.Mode  = GPIO_MODE_INPUT;
+      dio_fix.Pull  = GPIO_NOPULL;
+      dio_fix.Speed = GPIO_SPEED_FREQ_LOW;
+      HAL_GPIO_Init(GPIOB, &dio_fix);
+  }
+  /* Belt-and-braces: clear any EXTI pending bit left over for these pins. */
+  __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO4_Pin);
+  __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO5_Pin);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -1841,6 +1907,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 #ifndef BUILD_TARGET_GROUND
   /* ---- Flight-only sensor interrupts ---- */
   if (GPIO_Pin == SPI2_INT_Pin) {   /* PC15 = LSM6DSO32 INT2 */
+#ifdef LOGGER_SANITY
+    extern volatile uint32_t g_imu_exti_fires;
+    g_imu_exti_fires++;
+#endif
     lsm6dso32_irq_handler(&imu);
   }
   if (GPIO_Pin == I2C_3_INT_Pin) {  /* PC8  = MMC5983MA DRDY */

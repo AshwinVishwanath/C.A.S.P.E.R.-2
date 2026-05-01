@@ -9,6 +9,10 @@
 #include "lsm6dso32.h"
 #include "mmc5983ma.h"
 #include "ms5611.h"
+#include "casper_ekf.h"
+#include "casper_attitude.h"
+#include "w25q512jv.h"
+#include "log_types.h"
 #include <math.h>
 #include <string.h>
 
@@ -16,6 +20,11 @@
 extern lsm6dso32_t  imu;
 extern mmc5983ma_t  mag;
 extern ms5611_t     baro;
+
+/* ── Extern nav handles from app_globals ────────────────────────── */
+extern casper_ekf_t      ekf;
+extern casper_attitude_t att;
+extern w25q512jv_t       flash;
 
 /* ── Forward declaration ────────────────────────────────────────── */
 extern uint32_t cfg_get_active_hash(void);
@@ -53,33 +62,78 @@ int self_test_run_all(diag_result_t *results)
     results[n].detail  = (uint16_t)mag.product_id;
     n++;
 
-    /* Test 2: Baro PROM CRC (non-zero PROM[0] means calibration read OK) */
-    results[n].test_id = 2;
-    results[n].result  = (baro.prom[0] != 0) ? 1 : 0;
-    results[n].detail  = baro.prom[0];
-    n++;
-
-    /* Test 3: EKF init — stub: always pass */
-    results[n].test_id = 3;
-    results[n].result  = 1;
-    results[n].detail  = 0;
-    n++;
-
-    /* Test 4: Attitude quaternion norm ≈ 1.0 (±0.01)
-     * We can't access att.q directly since it's inside a struct.
-     * Use the extern float att_q[4] trick — handled in main.c integration. */
+    /* Test 2: Baro PROM calibration coefficients read OK.
+     * prom[0] is a manufacturer/factory word that is legitimately 0 on many
+     * MS5611 parts — the actual calibration coefficients are prom[1..6] (C1..C6).
+     * A working sensor never has all of C1..C6 zero. */
     {
-        /* Placeholder: will be populated when main.c provides a getter */
-        results[n].test_id = 4;
-        results[n].result  = 1;  /* Stub: pass */
-        results[n].detail  = 0;
+        results[n].test_id = 2;
+        bool any_nonzero = false;
+        for (int k = 1; k <= 6; k++) {
+            if (baro.prom[k] != 0) { any_nonzero = true; break; }
+        }
+        results[n].result = any_nonzero ? 1 : 0;
+        results[n].detail = baro.prom[1];  /* C1 = pressure sensitivity */
     }
     n++;
 
-    /* Test 5: Flash write/read — stub */
-    results[n].test_id = 5;
-    results[n].result  = 1;  /* TODO: Pattern match via FATFS */
-    results[n].detail  = 0;
+    /* Test 3: EKF init — P[0] non-zero means casper_ekf_init() ran */
+    {
+        results[n].test_id = 3;
+        results[n].result  = (ekf.P[0] > 0.0f) ? 1 : 0;
+        /* detail: upper 16 bits of P[0] raw bits (via memcpy to avoid aliasing) */
+        uint32_t p0bits = 0;
+        memcpy(&p0bits, &ekf.P[0], sizeof(p0bits));
+        results[n].detail  = (uint16_t)(p0bits >> 16);
+    }
+    n++;
+
+    /* Test 4: Attitude quaternion norm ≈ 1.0 (±0.01)
+     * If init not complete, result=0, detail=0xFF (not-ready marker). */
+    {
+        results[n].test_id = 4;
+        if (!att.init_complete) {
+            results[n].result = 0;
+            results[n].detail = 0xFF;
+        } else {
+            float n2 = att.q[0]*att.q[0] + att.q[1]*att.q[1]
+                     + att.q[2]*att.q[2] + att.q[3]*att.q[3];
+            float norm = sqrtf(n2);
+            float err  = norm - 1.0f;
+            if (err < 0.0f) err = -err;
+            results[n].result = (err < 0.01f) ? 1 : 0;
+            /* detail: norm scaled to uint16 (1.0 → 0x8000) */
+            results[n].detail = (uint16_t)(norm * 32768.0f);
+        }
+    }
+    n++;
+
+    /* Test 5: Flash write/read — erase second-to-last 4KB sector,
+     * program 256 bytes of 0xA5/0x5A, read back and verify.
+     * Sector at 0x3FFE000 is within FLASH_HR region but near the end;
+     * the logger write pointer starts at FLASH_HR_BASE (0x01091000) and
+     * advances forward, so this sector is safe at power-on self-test time. */
+    {
+        static const uint32_t SCRATCH_ADDR = 0x3FFE000u; /* second-to-last 4KB sector */
+        static uint8_t wbuf[256];
+        static uint8_t rbuf[256];
+        for (int i = 0; i < 256; i++) {
+            wbuf[i] = (i & 1) ? 0x5Au : 0xA5u;
+        }
+        int ok = 0;
+        if (flash.initialized) {
+            if (w25q512jv_erase_sector(&flash, SCRATCH_ADDR) == W25Q_OK) {
+                if (w25q512jv_write(&flash, SCRATCH_ADDR, wbuf, 256) == W25Q_OK) {
+                    if (w25q512jv_read(&flash, SCRATCH_ADDR, rbuf, 256) == W25Q_OK) {
+                        ok = (memcmp(wbuf, rbuf, 256) == 0) ? 1 : 0;
+                    }
+                }
+            }
+        }
+        results[n].test_id = 5;
+        results[n].result  = (uint8_t)ok;
+        results[n].detail  = flash.initialized ? 0x0001u : 0x0000u;
+    }
     n++;
 
     /* Test 6: Config hash non-zero */

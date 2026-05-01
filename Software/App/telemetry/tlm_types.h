@@ -47,6 +47,7 @@
 #define NACK_ERR_SELF_TEST      0x08
 #define NACK_ERR_CFG_TOO_LARGE  0x09
 #define NACK_ERR_FLASH_FAIL     0x0A
+#define NACK_ERR_NONCE_REPLAY   0x0B
 
 /* ── Event types ─────────────────────────────────────────────────── */
 #define FC_EVT_STATE         0x01
@@ -81,6 +82,7 @@
 #define SIZE_FC_MSG_EVENT    11  /* [ID:1][TYPE:1][DATA:2][TIME:2][RSVD:1][CRC:4] = 11 */
 #define SIZE_CMD_ARM         12  /* [ID:1][MAG:2][NONCE:2][CH:1][ACT:1][~CH:1][CRC:4] = 12 */
 #define SIZE_CMD_FIRE        13  /* [ID:1][MAG:2][NONCE:2][CH:1][DUR:1][~CH:1][~DUR:1][CRC:4] = 13 */
+#define SIZE_CMD_TESTMODE    10  /* [ID:1][MAG:2][NONCE:2][EN:1][CRC:4] = 10 */
 #define SIZE_CONFIRM         9   /* [ID:1][MAG:2][NONCE:2][CRC:4] = 9 */
 #define SIZE_NACK            10  /* [ID:1][NONCE:2][ERR:1][RSVD:2][CRC:4] = 10 */
 #define SIZE_ACK_ARM         12  /* [ID:1][NONCE:2][CH:1][ACT:1][ARM:1][CONT:1][RSVD:1][CRC:4] = 12 */

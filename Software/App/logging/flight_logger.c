@@ -144,6 +144,20 @@ void flight_logger_start(flight_logger_t *log)
  * ═══════════════════════════════════════════════════════════════════════ */
 void flight_logger_launch(flight_logger_t *log)
 {
+    /* If a prior session was finalized in this power cycle, restart the
+     * streams from a clean slate so the new session can write records.
+     * Without this, log->finalized stays true after the first finalize
+     * and flight_logger_tick early-returns on every subsequent call —
+     * silently dropping the entire next session's data. Real flight
+     * never hits this branch (one launch per boot) but bench testing
+     * does. The prelaunch ring is necessarily empty after a restart
+     * since LOG_FINAL streams reject pushes. */
+    if (log->finalized) {
+        log->finalized = false;
+        log_stream_start(&log->hr);
+        log_stream_start(&log->lr);
+        log_stream_start(&log->adxl);
+    }
     log_stream_launch(&log->hr);
     log_stream_launch(&log->lr);
     log_stream_launch(&log->adxl);
@@ -181,17 +195,35 @@ void flight_logger_tick(flight_logger_t *log)
     if (log->finalized)
         return;
 
-    if (!log->launched) {
-        /* PAD mode: non-blocking erase-ahead via IT mode.
-         * Demand-based: erase the pool with the least runway first. */
+    /* Erase-ahead: keep running in both PAD and DRAIN.  The tick is
+     * mutex-safe because qspi_state != QSPI_IDLE causes an early-return
+     * above, so an erase and a write can never overlap.  During DRAIN the
+     * frontier check (addr >= erased_up_to) in the write path relies on
+     * this to stay ahead of the write pointer.
+     *
+     * KEY INVARIANT: only issue an erase when a stream's runway (gap from
+     * flash_addr to erased_up_to) is below the threshold. The previous
+     * version issued an erase on every tick where ANY stream had room left
+     * to erase to flash_end, which during a flight is always true (pools
+     * are 16-47 MB) — so erases monopolised the QSPI bus and writes drained
+     * at ~33 pages/s instead of the expected 240+ pages/s. With the
+     * threshold, a few sectors of pre-erased runway are kept ahead of each
+     * write pointer; once that runway is consumed faster than writes
+     * advance, an erase is issued to top it up. */
+    #define ERASE_AHEAD_BYTES (4u * 0x1000u)   /* 4 sectors = 16 KB ahead per stream */
+    {
         log_stream_t *streams[3] = { &log->hr, &log->lr, &log->adxl };
 
         int best = -1;
-        uint32_t min_runway = 0xFFFFFFFF;
+        uint32_t min_runway = 0xFFFFFFFFu;
         for (int i = 0; i < 3; i++) {
             log_stream_t *s = streams[i];
             if (s->erased_up_to < s->flash_end) {
-                uint32_t runway = s->erased_up_to - s->flash_addr;
+                /* Use signed-aware compare: if flash_addr somehow > erased_up_to
+                 * (shouldn't happen, but defensive), treat runway as 0 (urgent). */
+                uint32_t runway;
+                if (s->flash_addr > s->erased_up_to) runway = 0;
+                else runway = s->erased_up_to - s->flash_addr;
                 if (runway < min_runway) {
                     min_runway = runway;
                     best = i;
@@ -199,16 +231,19 @@ void flight_logger_tick(flight_logger_t *log)
             }
         }
 
-        if (best >= 0) {
+        if (best >= 0 && min_runway < ERASE_AHEAD_BYTES) {
             log_stream_t *s = streams[best];
             if (w25q512jv_erase_sector_it(log->index.flash,
                                            s->erased_up_to) == W25Q_OK) {
                 log->qspi_state    = QSPI_ERASING;
                 log->active_stream = s;
+                return;  /* one operation per tick */
             }
         }
-        return;
     }
+
+    if (!log->launched)
+        return;  /* PAD: no writes until launch */
 
     /* DRAIN mode: non-blocking page writes. Priority: HR > ADXL > LR */
     log_stream_t *priority[3] = { &log->hr, &log->adxl, &log->lr };
@@ -277,6 +312,23 @@ void flight_logger_set_rate(flight_logger_t *log, uint8_t fsm_state)
 /* ═══════════════════════════════════════════════════════════════════════
  *  flight_logger_push_hr
  * ═══════════════════════════════════════════════════════════════════════ */
+#ifdef LOGGER_SANITY
+/* Call-rate diagnostics: count every entry and every divider-passed push. */
+static volatile uint32_t s_hr_calls = 0;
+static volatile uint32_t s_hr_pushes = 0;
+static volatile uint32_t s_lr_calls = 0;
+static volatile uint32_t s_lr_pushes = 0;
+/* IMU IRQ / watchdog diagnostic counters — defined here, accessed via
+ * extern declarations from main.c (EXTI ISR) and flight_loop.c (watchdog). */
+volatile uint32_t g_imu_exti_fires = 0;
+volatile uint32_t g_imu_wd_polls   = 0;
+volatile uint32_t g_imu_wd_hits    = 0;
+uint32_t flight_logger_diag_hr_calls(void)  { return s_hr_calls; }
+uint32_t flight_logger_diag_hr_pushes(void) { return s_hr_pushes; }
+uint32_t flight_logger_diag_lr_calls(void)  { return s_lr_calls; }
+uint32_t flight_logger_diag_lr_pushes(void) { return s_lr_pushes; }
+#endif
+
 void flight_logger_push_hr(flight_logger_t *log,
                            const lsm6dso32_t *imu, const ms5611_t *baro,
                            const adxl372_t *adxl, const mmc5983ma_t *mag_sensor,
@@ -284,11 +336,17 @@ void flight_logger_push_hr(flight_logger_t *log,
                            uint8_t fsm_state, uint8_t flags,
                            uint16_t sustain_ms)
 {
+#ifdef LOGGER_SANITY
+    s_hr_calls++;
+#endif
     /* Rate divider */
     log->hr_tick_count++;
     if (log->hr_tick_count < log->hr_tick_div)
         return;
     log->hr_tick_count = 0;
+#ifdef LOGGER_SANITY
+    s_hr_pushes++;
+#endif
 
     hr_record_t rec;
     memset(&rec, 0, sizeof(rec));
@@ -355,11 +413,17 @@ void flight_logger_push_lr(flight_logger_t *log,
                            uint16_t tx_count, uint16_t rx_count, uint16_t fail_count,
                            const max_m10m_t *gps)
 {
+#ifdef LOGGER_SANITY
+    s_lr_calls++;
+#endif
     /* Rate divider */
     log->lr_tick_count++;
     if (log->lr_tick_count < log->lr_tick_div)
         return;
     log->lr_tick_count = 0;
+#ifdef LOGGER_SANITY
+    s_lr_pushes++;
+#endif
 
     lr_record_t rec;
     memset(&rec, 0, sizeof(rec));

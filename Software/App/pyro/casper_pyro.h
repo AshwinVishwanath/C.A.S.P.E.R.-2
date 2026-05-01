@@ -14,6 +14,14 @@
 #define PYRO_CONTINUITY_THRESHOLD  8000   /* 16-bit ADC; tune empirically */
 #define PYRO_DEFAULT_FIRE_MS       1000   /* 1 second default fire pulse  */
 
+/* CONT4 hardware-shorted to battery sense via 100k/62k divider.
+ * Channel 4 reads Vbatt; arming/firing CH4 is rejected in pyro_manager.
+ * Vbatt = (adc / 65535) * 3.3 * (R1 + R2) / R2 */
+#define CONT4_DIVIDER_R1   100000.0f   /* high-side, ohms */
+#define CONT4_DIVIDER_R2    62000.0f   /* low-side, ohms  */
+#define ADC_VREF_V              3.3f
+#define ADC_FULL_SCALE      65535.0f
+
 typedef struct {
     /* State */
     bool     continuity[PYRO_NUM_CHANNELS];
@@ -45,5 +53,8 @@ void casper_pyro_stop_all(casper_pyro_t *p);
 
 /* Periodic tick (~10 Hz): read ADCs, update continuity + LEDs, auto-stop expired fires */
 void casper_pyro_tick(casper_pyro_t *p);
+
+/* Read battery voltage via CONT4 ADC divider (adc_raw[3] populated by tick) */
+float casper_pyro_get_batt_voltage(const casper_pyro_t *p);
 
 #endif /* CASPER_PYRO_H */

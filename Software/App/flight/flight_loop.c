@@ -21,6 +21,23 @@
 #include "buzzer.h"
 #include "usbd_cdc_if.h"
 #include "fsm_util.h"
+/* cycle_probe.h provides no-op DIAG_PROBE_BEGIN/END when LOGGER_SANITY is off */
+#include "cycle_probe.h"
+#ifdef LOGGER_SANITY
+#include "logger_sanity.h"
+
+/* Probes — names match what gets printed in [CYC] lines. */
+diag_probe_t probe_superloop;
+diag_probe_t probe_imu_svc;
+diag_probe_t probe_imu_read;
+diag_probe_t probe_att_upd;
+diag_probe_t probe_ekf_pred;
+diag_probe_t probe_hr_push;
+diag_probe_t probe_radio;
+diag_probe_t probe_mag_rd;
+diag_probe_t probe_pyro_rd;
+diag_probe_t probe_log_tick;
+#endif
 #ifdef HIL_MODE
 #include "hil_raw_handler.h"
 #endif
@@ -65,6 +82,7 @@ static uint32_t baro_cal_count = 0;
 /* NED accumulation for 416 Hz EKF predict (Item 11) */
 static float    ned_accel_accum[3];
 static uint8_t  imu_subsample_count = 0;
+static float    dt_predict_accum = 0.0f;  /* sum of dt over the 2 subsamples between predicts */
 
 /* Last computed accel magnitude for FSM launch detection */
 static float    last_accel_mag_g = 0.0f;
@@ -91,14 +109,25 @@ flight_cfg_t g_flight_cfg = {
     .main_fire_dur     = 1000,
 };
 
-/* ── Bench test mode: CDC text command parser (TEST_MODE 2 only) ── */
-#if TEST_MODE == 2
+/* ── Bench test mode: CDC text command parser (TEST_MODE 2 or MANUAL_FSM_STEP) ── */
+#if (TEST_MODE == 2) || defined(MANUAL_FSM_STEP)
+#include "self_test.h"
+#include "flight_logger.h"
+
 static char    bench_cmd_buf[32];
 static uint8_t bench_cmd_idx = 0;
 
 static void bench_send(const char *msg)
 {
-    CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
+    /* Blocking on USBD_BUSY so back-to-back lines (e.g. selftest 7 cases)
+     * don't get silently dropped when CDC TX is in flight. */
+    uint16_t len = (uint16_t)strlen(msg);
+    uint32_t t0  = HAL_GetTick();
+    while (CDC_Transmit_FS((uint8_t *)msg, len) == USBD_BUSY) {
+        HAL_IWDG_Refresh(&hiwdg1);
+        if ((HAL_GetTick() - t0) > 50u) break;  /* host disappeared — give up */
+    }
+    HAL_Delay(2);
 }
 
 static void bench_dispatch(const char *cmd)
@@ -175,13 +204,174 @@ static void bench_dispatch(const char *cmd)
         }
     }
 
+    /* ── selftest ─────────────────────────────────────────────────── */
+    if (strcmp(cmd, "selftest") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        diag_result_t results[7];
+        int num = self_test_run_all(results);
+        bool all_pass = true;
+        char line[48];
+        for (int i = 0; i < num; i++) {
+            snprintf(line, sizeof(line), "[BENCH] SELFTEST %d %s\r\n",
+                     results[i].test_id,
+                     results[i].result ? "PASS" : "FAIL");
+            bench_send(line);
+            if (!results[i].result) all_pass = false;
+        }
+        bench_send(all_pass ? "[BENCH] SELFTEST OVERALL PASS\r\n"
+                            : "[BENCH] SELFTEST OVERALL FAIL\r\n");
+        if (all_pass) buzzer_beep_n(30, 4, 100, 200);
+        return;
+    }
+
+    /* ── simulate-apogee ──────────────────────────────────────────── */
+    if (strcmp(cmd, "simulate-apogee") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        pyro_mgr_tick();   /* fresh ADC + continuity sample */
+        flight_fsm_set_bench_mode(true);
+        flight_fsm_force_state(FSM_STATE_BOOST);
+        flight_fsm_force_state(FSM_STATE_COAST);
+        flight_fsm_force_state(FSM_STATE_APOGEE);
+        bool fired = pyro_mgr_is_firing();
+        pyro_mgr_disarm_all();
+        char ack[64];
+        snprintf(ack, sizeof(ack),
+                 "[BENCH] APOGEE FSM=APOGEE FIRED=%d CONT=0x%02X\r\n",
+                 (int)fired,
+                 (unsigned)pyro_mgr_get_cont_bitmap());
+        bench_send(ack);
+        return;
+    }
+
+    /* ── pyro-cap-test ────────────────────────────────────────────── */
+    if (strcmp(cmd, "pyro-cap-test") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        pyro_mgr_tick();   /* fresh ADC + continuity sample */
+        uint8_t cont = pyro_mgr_get_cont_bitmap();
+        float vbatt  = pyro_mgr_get_batt_voltage();
+        char line[48];
+        snprintf(line, sizeof(line), "[BENCH] CONT 0x%02X VBATT=%.2fv\r\n",
+                 (unsigned)cont, (double)vbatt);
+        bench_send(line);
+        return;
+    }
+
+    /* ── iwdg-test ────────────────────────────────────────────────── */
+    if (strcmp(cmd, "iwdg-test") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        bench_send("[BENCH] IWDG-TEST start, expect reset\r\n");
+        HAL_Delay(50);  /* let CDC IN packet drain before locking up */
+        /* DWT cycle counter runs from SYSCLK (432 MHz) regardless of IRQs.
+         * 700 ms × 432 MHz = 302,400,000 cycles — well past the 500 ms IWDG. */
+        __disable_irq();
+        uint32_t t0 = DWT->CYCCNT;
+        while ((DWT->CYCCNT - t0) < (700u * 432000u)) { __NOP(); }
+        __enable_irq();
+        bench_send("[BENCH] IWDG-TEST ERROR: reset did not occur\r\n");
+        return;
+    }
+
+    /* ── cac-replay-test ──────────────────────────────────────────── */
+    if (strcmp(cmd, "cac-replay-test") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        /* CAC nonce replay test is SKIPPED — exposing s_last_seen_nonce
+         * requires internal CAC linkage not available without API change. */
+        bench_send("[BENCH] REPLAY SKIPPED\r\n");
+        return;
+    }
+
+    /* ── flash-wipe ────────────────────────────────────────────────
+     * Erases the flight index + summary regions to recover from FATFS
+     * corruption. Run once after switching off the FATFS-at-boot path. */
+    if (strcmp(cmd, "flash-wipe") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        bench_send("[BENCH] flash-wipe: erasing index sector...\r\n");
+        int rc = w25q512jv_erase_sector(&flash, 0x00000000u);
+        char line[64];
+        snprintf(line, sizeof(line), "[BENCH] index erase rc=%d\r\n", rc);
+        bench_send(line);
+        bench_send("[BENCH] flash-wipe: erasing summary region (16 sectors)...\r\n");
+        for (uint32_t a = 0x00001000u; a < 0x00011000u; a += 0x1000u) {
+            (void)w25q512jv_erase_sector(&flash, a);
+        }
+        bench_send("[BENCH] flash-wipe DONE — power-cycle the board now\r\n");
+        return;
+    }
+
+    /* ── logger-finalize-force ────────────────────────────────────── */
+    if (strcmp(cmd, "logger-finalize-force") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        if (!logger.launched) {
+            flight_logger_launch(&logger);
+        }
+        flight_logger_finalize(&logger);
+        char line[64];
+        snprintf(line, sizeof(line),
+                 "[BENCH] FINALIZE adxl_end=0x%08lX hr_end=0x%08lX\r\n",
+                 (unsigned long)logger.adxl.flash_addr,
+                 (unsigned long)logger.hr.flash_addr);
+        bench_send(line);
+        return;
+    }
+
+    /* ── status ───────────────────────────────────────────────────── */
+    if (strcmp(cmd, "status") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        char line[64];
+        bench_send("[BENCH] BUILD: TEST_MODE=2 BUILD_TARGET=BENCH\r\n");
+        snprintf(line, sizeof(line),
+                 "[BENCH] FSM: state=%u bench=%d testmode=%d\r\n",
+                 (unsigned)flight_fsm_get_state(),
+                 (int)flight_fsm_bench_active(),
+                 (int)pyro_mgr_is_test_mode());
+        bench_send(line);
+        snprintf(line, sizeof(line),
+                 "[BENCH] PYRO: arm=0x%X cont=0x%X vbatt=%.2fv\r\n",
+                 (unsigned)pyro_mgr_get_arm_bitmap(),
+                 (unsigned)pyro_mgr_get_cont_bitmap(),
+                 (double)pyro_mgr_get_batt_voltage());
+        bench_send(line);
+        bench_send("[BENCH] SENSORS: imu_age=N/A mag_age=N/A\r\n");
+        snprintf(line, sizeof(line),
+                 "[BENCH] LOGGER: launched=%d finalized=%d\r\n",
+                 (int)logger.launched,
+                 (int)logger.finalized);
+        bench_send(line);
+        bench_send("[BENCH] IWDG: enabled=1\r\n");
+        return;
+    }
+
+    /* ── fault-test hardfault ─────────────────────────────────────── */
+    if (strcmp(cmd, "fault-test hardfault") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        bench_send("[BENCH] FAULT-TEST hardfault\r\n");
+        HAL_Delay(50);  /* drain CDC IN before the fault fires */
+        *((volatile uint32_t *)0xFFFFFFFFu) = 1u;
+        /* Should never reach here — HardFault handler triggers IWDG reset */
+        return;
+    }
+
     bench_send("[BENCH] unknown cmd\r\n");
 }
 
 static void bench_process_cdc(void)
 {
+    /* Idle-dispatch timeout: if the terminal doesn't send CR/LF (some serial
+     * tools don't), dispatch when the buffer has been idle this long. */
+    #define BENCH_IDLE_DISPATCH_MS 250
+
+    static uint32_t s_last_byte_ms = 0;
+    static bool     s_ready_sent   = false;
+
+    /* One-shot boot banner so the operator sees bench mode is alive. */
+    if (!s_ready_sent) {
+        bench_send("\r\n[BENCH] READY  type 'bench' then a command (selftest, status, ...)\r\n");
+        s_ready_sent = true;
+    }
+
     while (cdc_ring_available() > 0) {
         uint8_t c = cdc_ring_read_byte();
+        s_last_byte_ms = HAL_GetTick();
 
         if (c == '\r' || c == '\n') {
             if (bench_cmd_idx > 0) {
@@ -190,21 +380,56 @@ static void bench_process_cdc(void)
                 bench_cmd_idx = 0;
             }
         } else if (c == 0x00) {
-            /* COBS delimiter — not a text command, discard accumulated text */
             bench_cmd_idx = 0;
         } else if (c >= 0x20 && c <= 0x7E) {
             if (bench_cmd_idx < sizeof(bench_cmd_buf) - 1) {
                 bench_cmd_buf[bench_cmd_idx++] = (char)c;
             } else {
-                bench_cmd_idx = 0; /* overflow — discard */
+                bench_cmd_idx = 0;
             }
         }
-        /* ignore other control chars */
+    }
+
+    /* Idle dispatch: terminator-less terminals still work. */
+    if (bench_cmd_idx > 0 &&
+        (HAL_GetTick() - s_last_byte_ms) > BENCH_IDLE_DISPATCH_MS) {
+        bench_cmd_buf[bench_cmd_idx] = '\0';
+        bench_dispatch(bench_cmd_buf);
+        bench_cmd_idx = 0;
+    }
+
+    uint32_t now_ms = HAL_GetTick();
+
+    /* 10 Hz pyro tick so continuity LEDs reflect physical wiring and
+     * battery voltage / continuity reads always return fresh data. */
+    static uint32_t s_last_pyro_ms = 0;
+    if (now_ms - s_last_pyro_ms >= 100) {
+        s_last_pyro_ms = now_ms;
+        pyro_mgr_tick();
+    }
+
+    /* 5 s heartbeat so the operator can see the loop is alive between commands. */
+    static uint32_t s_last_hb_ms = 0;
+    if (now_ms - s_last_hb_ms >= 5000) {
+        s_last_hb_ms = now_ms;
+        char hb[48];
+        int n = snprintf(hb, sizeof(hb), "[BENCH] heartbeat uptime=%lums\r\n",
+                         (unsigned long)now_ms);
+        if (n > 0) bench_send(hb);
     }
 }
 #endif
 
 /* ─────────────────────────────────────────────────────────────── */
+
+bool flight_loop_is_cal_done(void)
+{
+#if TEST_MODE != 2
+    return cal_done;
+#else
+    return false;
+#endif
+}
 
 void flight_loop_init(void)
 {
@@ -222,6 +447,9 @@ void flight_loop_init(void)
     ned_accel_accum[0] = ned_accel_accum[1] = ned_accel_accum[2] = 0.0f;
     last_accel_mag_g = 0.0f;
     last_baro_alt_agl = 0.0f;
+#ifdef MANUAL_FSM_STEP
+    flight_fsm_set_bench_mode(true);
+#endif
 #endif
 }
 
@@ -246,8 +474,9 @@ void flight_loop_init(void)
 
 static void cdc_send_blocking(const uint8_t *buf, uint16_t len)
 {
-    while (CDC_Transmit_FS((uint8_t *)buf, len) == USBD_BUSY) {}
-    /* Small delay for USB IN transfer to complete */
+    while (CDC_Transmit_FS((uint8_t *)buf, len) == USBD_BUSY) {
+        HAL_IWDG_Refresh(&hiwdg1);
+    }
     HAL_Delay(2);
 }
 
@@ -255,12 +484,13 @@ static bool wait_for_ack(void)
 {
     uint32_t t0 = HAL_GetTick();
     while (HAL_GetTick() - t0 < DUMP_TIMEOUT_MS) {
+        HAL_IWDG_Refresh(&hiwdg1);
         if (cdc_ring_available() > 0) {
             uint8_t b = cdc_ring_read_byte();
             if (b == DUMP_ACK) return true;
         }
     }
-    return false;  /* timeout */
+    return false;
 }
 
 static void flash_dump_over_cdc(w25q512jv_t *fl)
@@ -323,10 +553,15 @@ static void flash_dump_over_cdc(w25q512jv_t *fl)
 
 void flight_loop_tick(void)
 {
+    DIAG_PROBE_BEGIN(probe_superloop);
+    /* Kick IWDG each iteration — loop runs ~833 Hz, timeout is 500ms */
+    HAL_IWDG_Refresh(&hiwdg1);
     /* ── Buzzer state machine ── */
     buzzer_tick();
 
 #if TEST_MODE != 2
+
+    bool s_imu_fault = false;  /* set in non-HIL path; false in HIL (simulated data always present) */
 
 #ifdef HIL_MODE
     /* ═══════════════════════════════════════════════════════════════
@@ -468,24 +703,114 @@ void flight_loop_tick(void)
     uint32_t now = HAL_GetTick();
     /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
     if (now - last_mag_tick >= 10) {
-      mmc5983ma_read(&mag);
-      last_mag_tick = now;
-      float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
-      mag_cal_apply(mag_raw, mag_cal_ut);
-      mag_new = true;
+      DIAG_PROBE_BEGIN(probe_mag_rd);
+      int mag_ret = mmc5983ma_read(&mag);
+      DIAG_PROBE_END(probe_mag_rd);
+      last_mag_tick = now;  /* always advance — failed reads still consume the slot */
+      if (mag_ret == MMC5983MA_OK) {
+        float mag_raw[3] = {-mag.mag_ut[0], -mag.mag_ut[1], -mag.mag_ut[2]};
+        mag_cal_apply(mag_raw, mag_cal_ut);
+        mag_new = true;
+      }
     }
 
-    /* ── IMU interrupt watchdog: poll STATUS if EXTI hasn't fired in 5ms ── */
-    if (!imu.data_ready && (now - last_imu_tick) > 5) {
+#ifdef LOGGER_SANITY
+    /* IMU watchdog diagnostic counters (used in the watchdog branch below).
+     * g_imu_exti_fires is also defined in flight_logger.c but only the
+     * EXTI ISR in main.c writes it — flight_loop.c doesn't need it here. */
+    extern volatile uint32_t g_imu_wd_polls;
+    extern volatile uint32_t g_imu_wd_hits;
+#endif
+
+    /* ── IMU servicing: polled at SysTick granularity ─────────────────────
+     * EXTI on PC15 is now the primary path (sets data_ready in ISR).
+     * The 1 ms watchdog STATUS poll stays as belt-and-braces — fires only
+     * when EXTI hasn't latched a sample. */
+    if (!imu.data_ready && (now - last_imu_tick) >= 1) {
+#ifdef LOGGER_SANITY
+      g_imu_wd_polls++;
+#endif
       uint8_t status = lsm6dso32_read_reg_ext(&imu, LSM6DSO32_STATUS_REG);
-      if (status & 0x01)  /* XLDA = accel data available */
+      if (status & 0x01) {  /* XLDA = accel data available */
         imu.data_ready = true;
+#ifdef LOGGER_SANITY
+        g_imu_wd_hits++;
+#endif
+      }
     }
+
+    /* Dead-man: flag if IMU data has not been refreshed in >5 ms.
+     * Routes into telemetry via fsm_in; FSM behaviour is unchanged. */
+    s_imu_fault = ((now - last_imu_tick) > 5);
 
     /* ── 833 Hz: IMU read + attitude estimator (interrupt-driven) ── */
     if (imu.data_ready) {
+      DIAG_PROBE_BEGIN(probe_imu_svc);
       last_imu_tick = now;
+      DIAG_PROBE_BEGIN(probe_imu_read);
       lsm6dso32_read(&imu);
+      DIAG_PROBE_END(probe_imu_read);
+
+      /* ADXL372: drain up to ADXL_BATCH triplets from the on-chip 512-entry
+       * FIFO every IMU service. Pre-launch (PAD) the device runs in single-
+       * sample mode and we just snapshot the latest reading; post-launch the
+       * device is in FIFO stream mode at 800 Hz (configured at PAD->BOOST)
+       * and we drain and push to the dedicated ADXL log stream so the
+       * high-rate burst is captured for shock analysis.
+       *
+       * The latest triplet always lands in high_g.raw_accel so the HR record
+       * snapshot at 139 Hz continues to see fresh high-G data either way. */
+      if (logger.launched && !logger.finalized) {
+          enum { ADXL_BATCH = 8 };
+          int16_t adxl_batch[ADXL_BATCH][3];
+          uint8_t batch_count = 0;
+          while (batch_count < ADXL_BATCH && adxl372_fifo_read(&high_g) == 1) {
+              adxl_batch[batch_count][0] = high_g.raw_accel[0];
+              adxl_batch[batch_count][1] = high_g.raw_accel[1];
+              adxl_batch[batch_count][2] = high_g.raw_accel[2];
+              batch_count++;
+          }
+          if (batch_count > 0) {
+              flight_logger_push_adxl(&logger, adxl_batch, batch_count);
+          }
+      } else {
+          /* Pre-launch single-sample read — keeps HR record's high_g
+           * columns valid during PAD. */
+          adxl372_read(&high_g);
+      }
+
+      /* ── Adaptive dt: measure actual elapsed time since the previous
+       * IMU service via the DWT cycle counter. The estimators must be
+       * fed real elapsed time, not a constant 1/833 = EKF_DT, otherwise
+       * gyro integration and EKF state propagation are systematically
+       * scaled by the rate-mismatch factor. With our ~736 Hz observed
+       * service rate vs. the 833 Hz the constant assumes, that was a
+       * 13% under-integration — visible as cumulative attitude drift
+       * and EKF position bias.
+       *
+       * SYSCLK = 432 MHz so each cycle = 1/432e6 s. DWT->CYCCNT is a
+       * 32-bit free-running counter (rolls over every ~10 s), so
+       * unsigned subtraction handles wrap correctly. On the very first
+       * call we have no history, so fall back to EKF_DT.
+       *
+       * Also clamp the upper bound: if a long-running call (e.g. radio
+       * TX, USB stall) blocks us for >5 ms, don't feed that gigantic
+       * dt to the filter — it would destabilise. Better to drop a
+       * step's accuracy than blow up the estimator. */
+      float dt_actual;
+      {
+          static uint32_t s_prev_imu_cyc = 0;
+          uint32_t cyc = DWT->CYCCNT;
+          if (s_prev_imu_cyc == 0u) {
+              dt_actual = EKF_DT;
+          } else {
+              uint32_t delta = cyc - s_prev_imu_cyc;  /* unsigned wrap-safe */
+              dt_actual = (float)delta * (1.0f / 432000000.0f);
+              if (dt_actual > 0.005f) dt_actual = 0.005f;
+              if (dt_actual < 0.0001f) dt_actual = 0.0001f;
+          }
+          s_prev_imu_cyc = cyc;
+      }
 
       float gyro_sensor[3] = {
         imu.gyro_dps[0] * DEG2RAD,
@@ -534,7 +859,7 @@ void flight_loop_tick(void)
               HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
           }
         } else {
-          casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
+          casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, dt_actual);
         }
 
         if (init_done && (now - loop_start_tick) >= 30000) {
@@ -551,8 +876,10 @@ void flight_loop_tick(void)
           HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
         }
       } else {
-        /* 833 Hz: attitude update (unchanged rate) */
-        casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, EKF_DT);
+        /* Attitude update at actual sample rate (see adaptive-dt block above) */
+        DIAG_PROBE_BEGIN(probe_att_upd);
+        casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, dt_actual);
+        DIAG_PROBE_END(probe_att_upd);
 
         /* Compute accel magnitude for launch detection */
         last_accel_mag_g = sqrtf(accel_ms2[0]*accel_ms2[0]
@@ -573,11 +900,14 @@ void flight_loop_tick(void)
         ned_accel[2] = R_mat[6]*accel_ms2[0] + R_mat[7]*accel_ms2[1] + R_mat[8]*accel_ms2[2];
         diag_ned_z = ned_accel[2];
 
-        /* 416 Hz: trapezoidal accumulation -> EKF predict every 2nd sample */
+        /* Trapezoidal NED-accel accumulation -> EKF predict every 2nd sample.
+         * dt_predict accumulates the two adaptive sample intervals so the
+         * predict step gets the true elapsed time, not 2*EKF_DT. */
         if (imu_subsample_count == 0) {
           ned_accel_accum[0] = ned_accel[0];
           ned_accel_accum[1] = ned_accel[1];
           ned_accel_accum[2] = ned_accel[2];
+          dt_predict_accum   = dt_actual;
           imu_subsample_count = 1;
         } else {
           /* Trapezoidal average of 2 NED-frame samples */
@@ -586,8 +916,10 @@ void flight_loop_tick(void)
           ned_avg[1] = 0.5f * (ned_accel_accum[1] + ned_accel[1]);
           ned_avg[2] = 0.5f * (ned_accel_accum[2] + ned_accel[2]);
 
-          float dt_predict = 2.0f * EKF_DT;
+          float dt_predict = dt_predict_accum + dt_actual;
+          DIAG_PROBE_BEGIN(probe_ekf_pred);
           casper_ekf_predict(&ekf, ned_avg, dt_predict);
+          DIAG_PROBE_END(probe_ekf_pred);
 
           /* ZUPT at predict rate (416 Hz): clamp velocity when stationary */
           diag_zupt_fired = false;
@@ -620,8 +952,10 @@ void flight_loop_tick(void)
             if (mag_new)                              flags |= 0x20;
             if (pyro_mgr_get_arm_bitmap())            flags |= 0x40;
 
+            DIAG_PROBE_BEGIN(probe_hr_push);
             flight_logger_push_hr(&logger, &imu, &baro, &high_g, &mag,
                                   &ekf, &att, fsm_now, flags, 0);
+            DIAG_PROBE_END(probe_hr_push);
 
             flight_logger_summary_imu(&logger, last_accel_mag_g, tilt_deg,
                                       roll_dps, fsm_now);
@@ -634,6 +968,7 @@ void flight_loop_tick(void)
       }
 
       mag_new = false;
+      DIAG_PROBE_END(probe_imu_svc);
     }
 
     /* ── Async baro: accumulate during cal, feed EKF after cal_done ── */
@@ -647,6 +982,9 @@ void flight_loop_tick(void)
         casper_ekf_update_baro(&ekf, altitude);
 
         s_baro_fed_ekf = true;
+#ifdef LOGGER_SANITY
+        (void)s_baro_fed_ekf;  /* LED reader gated out under LOGGER_SANITY */
+#endif
       } else if (init_done) {
         /* Accumulate baro altitude for ground-level reference */
         baro_cal_sum += (double)ms5611_get_altitude(&baro, 1013.25f);
@@ -674,6 +1012,7 @@ void flight_loop_tick(void)
 
 #if TEST_MODE != 2
 #ifndef HIL_MODE
+#ifndef LOGGER_SANITY
     /* ── EKF diagnostic LEDs (override pyro LEDs after init) ── */
     if (cal_done) {
       static uint32_t ekf_led_tick = 0;
@@ -686,6 +1025,7 @@ void flight_loop_tick(void)
       }
     }
 #endif
+#endif
 
     /* ── Build telemetry state + FSM tick (all modes) ── */
     {
@@ -696,7 +1036,7 @@ void flight_loop_tick(void)
       tstate.quat[1]      = att.q[1];
       tstate.quat[2]      = att.q[2];
       tstate.quat[3]      = att.q[3];
-      tstate.batt_v       = 7.4f;
+      tstate.batt_v       = pyro_mgr_get_batt_voltage();
       tstate.flight_time_s = flight_fsm_get_time_s();
       tstate.accel_mag_g   = last_accel_mag_g;
       tstate.baro_alt_m    = last_baro_alt_agl;
@@ -712,7 +1052,7 @@ void flight_loop_tick(void)
 #ifndef HIL_MODE
       if (flight_fsm_sim_active()) {
         flight_fsm_sim_get_state(&tstate);
-        tstate.batt_v = 7.4f;
+        tstate.batt_v = pyro_mgr_get_batt_voltage();
       }
 #endif
 
@@ -732,6 +1072,7 @@ void flight_loop_tick(void)
       fsm_in.main_pyro_ch        = g_flight_cfg.main_pyro_ch;
       fsm_in.apogee_fire_dur_ms  = g_flight_cfg.apogee_fire_dur;
       fsm_in.main_fire_dur_ms    = g_flight_cfg.main_fire_dur;
+      fsm_in.sensor_fault_imu    = s_imu_fault;
 
       fsm_state_t fsm = flight_fsm_tick(&fsm_in);
 
@@ -751,11 +1092,16 @@ void flight_loop_tick(void)
           att.launched = true;
           att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
 #ifndef HIL_MODE
-          adxl372_enter_measurement(&high_g);
+          /* Switch ADXL372 to 800 Hz FIFO stream mode for the dedicated
+           * high-rate shock log. The IMU service block drains the FIFO
+           * every iteration (see adxl372_fifo_read call above). */
+          adxl372_fifo_init(&high_g, ADXL372_ODR_800HZ);
 #endif
 #if TEST_MODE == 1
+#ifndef LOGGER_SANITY
           flight_logger_launch(&logger);
           buzzer_beep_n(30, 2, 100, 200);  /* 2 short beeps = launch */
+#endif
 #endif
         }
 
@@ -773,16 +1119,42 @@ void flight_loop_tick(void)
         if (prev_fsm != FSM_STATE_MAIN && fsm == FSM_STATE_MAIN)
           log_stream_finalize(&logger.adxl);
 
-        /* Landed: record 5 more seconds, then finalize */
+        /* Landed: 10 s grace, then finalize. The grace gives a bouncy or
+         * wind-blown landing time to settle so the file we close on is the
+         * actual rest state. */
         static uint32_t landed_at = 0;
         if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED) {
           landed_at = now;
         }
         if (fsm == FSM_STATE_LANDED && landed_at != 0
-            && (now - landed_at >= 5000) && !logger.finalized) {
+            && (now - landed_at >= 10000) && !logger.finalized) {
+#ifndef LOGGER_SANITY
           flight_logger_finalize(&logger);
           buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
+#endif
           landed_at = 0;
+        }
+
+        /* Watchdog: force finalize if 600 s elapsed since launch with no finalize.
+         * Covers FSM stuck in MAIN (e.g. main chute deploy but no landing detect).
+         *
+         * Sign-aware: `now` is the loop's cached HAL_GetTick from earlier in the
+         * iteration; flight_logger_launch internally calls HAL_GetTick AGAIN to
+         * stamp summary.launch_tick, after several ms of QSPI work. That makes
+         * launch_tick > now in the same tick where launch fires, and naive
+         * uint32 subtraction underflows to ~0xFFFFFFFD > 600000 — so the
+         * watchdog spuriously fires finalize the instant launch returns. The
+         * < 0x80000000 guard rejects the underflow case (treat negative
+         * elapsed as 0). */
+        if (logger.launched && !logger.finalized) {
+          uint32_t since_launch = now - logger.summary.launch_tick;
+          if (since_launch < 0x80000000u
+              && since_launch > FSM_LAUNCH_TO_FINALIZE_MS) {
+#ifndef LOGGER_SANITY
+            flight_logger_finalize(&logger);
+            buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
+#endif
+          }
         }
 #endif
 
@@ -790,6 +1162,7 @@ void flight_loop_tick(void)
       }
 
 #if TEST_MODE == 1
+#ifdef FLIGHT_ASCII_PLOT
       /* ── Serial plotter telemetry ── */
 #ifdef HIL_MODE
       /* HIL: output every packet (PC controls rate), all FSM states */
@@ -840,16 +1213,24 @@ void flight_loop_tick(void)
                 (double)heading_deg,
                 (double)mag_norm);
           } else {
+            /* Roll = body Y rotation (spin about nose) per casper_quat.h
+             * convention. euler[1] is the right index. */
+            float euler[3];
+            casper_quat_to_euler(att.q, euler);
+            float roll_deg = euler[1];
             len = snprintf(buf, sizeof(buf),
-                ">alt:%.1f,vel:%.1f,vaccel:%.2f,fsm:%u,t:%.1f\r\n",
+                ">alt:%.1f,vel:%.1f,vaccel:%.2f,pitch:%.1f,yaw:%.1f,roll:%.1f,tilt:%.1f,fsm:%u,t:%.1f\r\n",
                 (double)tstate.alt_m, (double)tstate.vel_mps,
-                (double)fsm_in.vert_accel_g, (unsigned)fsm,
-                (double)tstate.flight_time_s);
+                (double)fsm_in.vert_accel_g,
+                (double)diag_pitch_deg, (double)diag_yaw_deg,
+                (double)roll_deg, (double)diag_tilt_deg,
+                (unsigned)fsm, (double)tstate.flight_time_s);
           }
           if (len > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)len);
         }
       }
 #endif /* HIL_MODE */
+#endif /* FLIGHT_ASCII_PLOT */
 
 #ifndef HIL_MODE
         /* ── Radio TX + RX window ── */
@@ -866,15 +1247,19 @@ void flight_loop_tick(void)
           pstate.continuity[2] = (cont_bm & 0x04) != 0;
           pstate.continuity[3] = (cont_bm & 0x08) != 0;
           pstate.fired = pyro_mgr_is_firing();
+          DIAG_PROBE_BEGIN(probe_radio);
           radio_manager_tick(&ekf, &tstate, &pstate, fsm);
+          DIAG_PROBE_END(probe_radio);
         }
 
         /* ── Logger: LR record (pyro + radio + GPS) ── */
         {
           uint16_t pyro_cont[4];
+          DIAG_PROBE_BEGIN(probe_pyro_rd);
           pyro_mgr_get_cont_adc(pyro_cont);
           uint8_t pyro_st = (uint8_t)((pyro_mgr_get_cont_bitmap() << 4)
                                      | pyro_mgr_get_arm_bitmap());
+          DIAG_PROBE_END(probe_pyro_rd);
           int8_t rssi, snr;
           uint16_t tx_cnt, rx_cnt, fail_cnt;
           radio_get_stats(&rssi, &snr, &tx_cnt, &rx_cnt, &fail_cnt);
@@ -888,10 +1273,20 @@ void flight_loop_tick(void)
 
 #if TEST_MODE == 1
 #ifndef HIL_MODE
-    /* ── Process incoming CDC commands ── */
+    /* ── Process incoming CDC commands ──
+     * MANUAL_FSM_STEP: bench_process_cdc must run every tick — its
+     * 250 ms idle-dispatch + 5 s heartbeat timers are time-based and
+     * only advance when the function is called, so gating on
+     * cdc_ring_available() would freeze them whenever no new bytes
+     * arrive. The internal while-loop is a no-op when the ring is
+     * empty so the unconditional call is cheap. */
+#ifdef MANUAL_FSM_STEP
+    bench_process_cdc();
+#else
     if (cdc_ring_available() > 0) {
       cmd_router_process();
     }
+#endif
 
     /* ── Flash dump over CDC (blocking, post-flight only) ── */
     if (cmd_router_dump_requested()) {
@@ -903,8 +1298,14 @@ void flight_loop_tick(void)
     cac_tick();
 
     /* ── Flight logger QSPI dispatch (erase-ahead on PAD, page writes in flight) ── */
+    DIAG_PROBE_BEGIN(probe_log_tick);
     flight_logger_tick(&logger);
+    DIAG_PROBE_END(probe_log_tick);
+#ifdef LOGGER_SANITY
+    logger_sanity_tick(HAL_GetTick());
+#endif
 
+#ifndef LOGGER_SANITY
     /* ── Logger status LEDs ── */
     {
       /* LED2 (PB14): SOLID = launched (DRAIN), FAST BLINK = finalized */
@@ -921,9 +1322,11 @@ void flight_loop_tick(void)
       HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin,
           logger.qspi_state != QSPI_IDLE ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
+#endif
 #endif /* !HIL_MODE */
 #elif TEST_MODE == 2
     /* ── Bench test: process text commands from CDC ── */
     bench_process_cdc();
 #endif
+    DIAG_PROBE_END(probe_superloop);
 }

@@ -1,18 +1,26 @@
 /**
  * USB MSC Storage Interface — bridges SCSI commands to W25Q512JV QSPI flash.
  *
- * Block size = 4096 bytes (matches NOR flash sector erase granularity).
- * Block count = 16384 (64 MB total).
+ * The MSC view exposes only the FATFS partition (top 4 MB of flash), NOT
+ * the whole 64 MB device. This keeps the flight log invisible to the host
+ * (so a Windows "format this drive?" prompt cannot wipe flight data) and
+ * matches user_diskio.c so the FATFS view and MSC view are identical.
+ *
+ * MSC sector 0 → physical flash FATFS_FLASH_BASE (0x03C00000)
+ * Block size = 4096 bytes, block count = 1024 (4 MB).
+ *
+ * Flight data extraction uses the CDC dump path, not MSC.
  */
 
 #include "usbd_msc_storage_if.h"
 #include "w25q512jv.h"
+#include "log_types.h"
 
 /* The flash device struct is defined in main.c */
 extern w25q512jv_t flash;
 
-#define STORAGE_BLK_NBR   W25Q512JV_SECTOR_COUNT   /* 16384 */
-#define STORAGE_BLK_SIZ   W25Q512JV_SECTOR_SIZE    /* 4096  */
+#define STORAGE_BLK_NBR   FATFS_SECTOR_COUNT       /* 1024 sectors = 4 MB */
+#define STORAGE_BLK_SIZ   W25Q512JV_SECTOR_SIZE    /* 4096                */
 
 /* SCSI INQUIRY response: 8-byte vendor + 16-byte product + 4-byte revision */
 static const int8_t STORAGE_Inquirydata[] = {
@@ -82,7 +90,8 @@ static int8_t STORAGE_Read(uint8_t lun, uint8_t *buf, uint32_t blk_addr,
                            uint16_t blk_len)
 {
   (void)lun;
-  if (w25q512jv_read(&flash, (uint32_t)blk_addr * STORAGE_BLK_SIZ,
+  if (w25q512jv_read(&flash,
+                     FATFS_FLASH_BASE + (uint32_t)blk_addr * STORAGE_BLK_SIZ,
                      buf, (uint32_t)blk_len * STORAGE_BLK_SIZ) != W25Q_OK)
     return -1;
   return 0;
@@ -91,16 +100,11 @@ static int8_t STORAGE_Read(uint8_t lun, uint8_t *buf, uint32_t blk_addr,
 static int8_t STORAGE_Write(uint8_t lun, uint8_t *buf, uint32_t blk_addr,
                             uint16_t blk_len)
 {
-  (void)lun;
-  for (uint16_t i = 0; i < blk_len; i++) {
-    uint32_t addr = ((uint32_t)blk_addr + i) * STORAGE_BLK_SIZ;
-    if (w25q512jv_erase_sector(&flash, addr) != W25Q_OK)
-      return -1;
-    if (w25q512jv_write(&flash, addr, buf + (uint32_t)i * STORAGE_BLK_SIZ,
-                        STORAGE_BLK_SIZ) != W25Q_OK)
-      return -1;
-  }
-  return 0;
+  /* Drive is advertised as read-only via STORAGE_IsWriteProtected().
+   * Windows still issues WRITE_10 commands during mount / fix-disk anyway.
+   * Refuse them here so they don't erase flight data. */
+  (void)lun; (void)buf; (void)blk_addr; (void)blk_len;
+  return -1;
 }
 
 static int8_t STORAGE_GetMaxLun(void)

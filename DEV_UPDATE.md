@@ -721,6 +721,571 @@ TIM4 PWM driver for audible status feedback:
 
 ---
 
+## Rev 7 — Data Logger Debug + Estimator Timing Correction
+
+Triggered by a flight test that produced **zero recorded data** despite all
+sensors and logger code appearing healthy. Traced through five layered
+issues, each masked by the next.
+
+### Issue 1: Windows USB MSC was wiping the flight index sector
+
+**Symptom**: `casper_decode.py` reported `No flights recorded` after every
+test run, even when `flight_logger_finalize` had clearly written valid
+bytes (confirmed by an in-firmware sector-0 hex-dump probe immediately
+after finalize).
+
+**Root cause**: `STORAGE_IsWriteProtected()` in `usbd_msc_storage_if.c`
+returned 1 (read-only), but `STORAGE_Write()` happily executed any host
+write that came in anyway. Windows issues `WRITE_10` SCSI commands during
+mount/repair regardless of the read-only declaration. Each MSC mount was
+erasing sector 0 (the flight index) and writing whatever Windows
+considered a valid partition table.
+
+**Fix**: `STORAGE_Write` now returns -1 immediately. Host writes are
+rejected at the firmware level. **This is also a flight-safety fix** —
+prevents accidental flash-data loss for any user who plugs the board
+into a PC after a flight.
+
+### Issue 2: Use CDC dump command instead of MSC for read-back
+
+The codebase already had a working `MSG_ID_DUMP_FLASH` command and a
+matching `casper_decode.py --serial COM<N>` mode, but documentation
+pointed users at MSC. CDC dump bypasses Windows entirely (no drive
+mount, no partition probing), so:
+
+```
+python tools\casper_decode.py --serial COM<N> --save flight_dump.bin
+```
+
+is now the canonical post-flight read-back. Streams 5 fixed log regions
+via "CDMP" header + ACK-driven 4 KB chunks + "DONE" marker. About 1–2 min
+for a full 64 MB read.
+
+### Issue 3: IMU EXTI was disabled, capping service rate at ~166 Hz
+
+**Symptom**: Logger cycle probes showed `flight_logger_push_hr` was
+called only 156×/s — far below the 833 Hz IMU ODR. HR record rate was
+26/s vs. the spec'd 139/s.
+
+**Root cause**: A previous workaround had disabled `EXTI15_10` entirely
+because PB12/PB13 (SX1276 DIO4/DIO5, configured `IT_RISING` by CubeMX)
+were toggling constantly and producing stale-pending interrupts. A
+5 ms STATUS-poll watchdog in `flight_loop.c` was the only path latching
+`imu.data_ready`, capping IMU service at ~200 Hz max.
+
+**Fix** (in three steps in `main.c`):
+1. `HAL_GPIO_DeInit(GPIOB, RADIO_DIO4_Pin | RADIO_DIO5_Pin)` — clears the
+   EXTI line registration. **Important**: a plain `HAL_GPIO_Init` with
+   `GPIO_MODE_INPUT` does NOT clear EXTI registration, only the DeInit
+   does.
+2. Re-init PB12/PB13 as plain inputs (`GPIO_MODE_INPUT`).
+3. Clear pending bits + enable `EXTI15_10_IRQn` so PC15 (LSM6DSO32 INT2)
+   actually gets serviced.
+
+Watchdog tightened from 5 ms to 1 ms as belt-and-braces fallback.
+
+### Issue 4: Hamming SECDED encoder was O(n²)
+
+**Symptom**: With EXTI fixed, IMU service rate climbed to 449 Hz but
+still hit a CPU ceiling. Cycle probes pinpointed `flight_logger_push_hr`
+taking **3.8 ms per real-work record build** — a single function on the
+hot path was eating 35% of the entire CPU budget.
+
+**Root cause**: `data_bit_to_pos()` in `hamming.c` was an O(n) linear
+scan executed inside the O(n) outer bit loop in `hamming_encode` /
+`hamming_decode`. For 60-byte HR records (480 data bits) that's
+~115 000 inner iterations per encode call.
+
+**Fix**: precompute a 512-entry lookup table on first call. Encoder
+drops from ~4 ms to ~5 µs (~800× faster). After this fix, IMU service
+hit 736 Hz and `imu_svc` total CPU dropped from 38.7% → 7.1%.
+
+### Issue 5: Estimators received hardcoded `EKF_DT` constant
+
+**Symptom**: Even at 736 Hz, the loop wasn't quite at 833 Hz spec. But
+the more serious issue was structural: `EKF_DT = 1/833 = 1.2 ms` was
+passed as `dt` to both `casper_att_update` and `casper_ekf_predict`,
+while actual elapsed time was 1.36 ms.
+
+**Why this matters**: a 13% under-true `dt` means gyro integration runs
+at 13% slow scale. Over 60 s of flight at typical body rates, that's
+~6° accumulated attitude drift purely from the timing mismatch. EKF
+position drifts proportionally — for a 3 km flight, that's ~390 m of
+spurious position error.
+
+**Fix**: enable the Cortex-M7 DWT cycle counter unconditionally (zero
+runtime cost — single register poke). In the IMU service block, measure
+actual elapsed time per service via `DWT->CYCCNT` and pass that real
+`dt` to both estimators. Clamp to [0.1 ms, 5 ms] so a stalled superloop
+doesn't blow up the filter with a giant jump.
+
+```c
+uint32_t cyc = DWT->CYCCNT;
+float dt_actual = (cyc - s_prev_imu_cyc) * (1.0f / 432000000.0f);
+if (dt_actual > 0.005f) dt_actual = 0.005f;
+casper_att_update(&att, gyro, accel, mag, dt_actual);
+```
+
+This is robust to *any* rate change (future radio fix, mag I2C bump,
+flight-time interrupt-latency spikes). The estimators are now correct
+at whatever rate the loop achieves.
+
+### Diagnostic infrastructure (`LOGGER_SANITY` opt-in)
+
+A new bench harness was added during the debug, gated by
+`-DLOGGER_SANITY=1` in `Software/Makefile` (commented out by default,
+zero behaviour change in flight builds):
+
+- **Sector-0 write probe** (`App/diag/logger_sanity.c`): erase + write
+  + read-back of sector 0 at boot to confirm raw QSPI write path
+  before any logger logic. Verdict (PASS / silent / driver-error /
+  corruption) reported via CDC + LED pattern.
+- **CDC `go` keyword sniffer** (`usbd_cdc_if.c`): non-destructive tap
+  on the ring buffer that fires on typed `go` (with or without
+  Enter — encoding-tolerant). Triggers a 5-second logger run with
+  live sensor data, bypassing the FSM.
+- **DWT cycle probes** (`App/diag/cycle_probe.{c,h}`): per-region
+  count/sum/max counters around the 10 hottest paths. Per-second CDC
+  print of:
+  ```
+  [CYC] superloop n=9750 max=13213us avg=101us total=996ms = 99.6%
+  [CYC] hr_push   n=755 max=80us avg=13us total=10ms = 1.0%
+  [CYC] mag_rd    n=98 avg=943us total=92ms = 9.2%
+  ...
+  ```
+- **`flight_loop_is_cal_done()` getter**: lets the bench harness gate
+  the `go` keyword on the 30-second pad-mode calibration completing.
+
+### Real flight rates (after Rev 7)
+
+| Rate | Before | After |
+| --- | --- | --- |
+| IMU service | 156 Hz | ~708 Hz |
+| HR records | 26 / s | ~119 / s |
+| LR records | ~110 / s | ~111 / s |
+| `imu_svc` CPU | 38.7 % | 7.1 % |
+| `hr_push` per call | 628 µs | 13 µs |
+
+The remaining gap (708 vs 833 Hz spec) is from occasional ~13 ms
+blocking inside `radio_manager_tick` during SX1276 TX — radio toggles
+INT2 coalesce, IMU drops samples. Acceptable: the estimators are now
+correct regardless of the rate (adaptive `dt`).
+
+### Bench-test workflow (canonical)
+
+1. Wipe flash if needed (USB MSC mode build, mount as drive, format).
+2. Edit `Software/Makefile`: uncomment `C_DEFS += -DLOGGER_SANITY=1`.
+3. `cd Software && make clean && make -j8`. Flash via DFU.
+4. Open serial terminal at the CDC port. Power on.
+5. Watch for: probe verdict → 30 s cal → `[SANITY] calibration done`.
+6. Type `go`. Bench logs for 5 s with live sensor data + finalize.
+7. Without re-flashing:
+   ```
+   python tools\casper_decode.py --serial COM<N> --save flight_dump.bin
+   ```
+8. Decoder reports flight 1 with HR/LR/ADXL records, CRC + Hamming
+   integrity, summary block.
+
+To return to flight build: re-comment `LOGGER_SANITY=1`, rebuild,
+reflash. All probe code drops out (~zero overhead).
+
+### Files added
+
+- `Software/App/diag/logger_sanity.{c,h}` — bench-test state machine.
+- `Software/App/diag/cycle_probe.{c,h}` — DWT-based cycle probes.
+
+### Files changed (Rev 7)
+
+- `Software/USB_DEVICE/App/usbd_msc_storage_if.c` — `STORAGE_Write`
+  refuses host writes (flight-safety fix).
+- `Software/USB_DEVICE/App/usbd_cdc_if.{c,h}` — passive `go` sniffer
+  in `CDC_Receive_FS`, exported `cdc_sanity_take_go()`.
+- `Software/App/logging/hamming.c` — O(1) lookup table for the
+  data-bit-to-position map.
+- `Software/App/logging/flight_logger.{c,h}` — diagnostic record/call
+  counters and accessors.
+- `Software/App/flight/flight_loop.{c,h}` — IMU watchdog 5 ms → 1 ms,
+  cycle probes around hot paths, adaptive-`dt` block, `cal_done`
+  getter, several `LOGGER_SANITY` gates so the bench harness owns CDC
+  + LEDs cleanly.
+- `Software/App/telemetry/tlm_manager.c` — gated CDC binary TX off
+  under `LOGGER_SANITY` so the bench output isn't binary-noise.
+- `Software/Core/Src/main.c` — DWT cycle counter enabled
+  unconditionally, EXTI15_10 NVIC enabled, PB12/PB13 EXTI deinit'd.
+- `tools/casper_decode.py` — DIRTY/CLEAN inversion fix in the index
+  decoder (firmware uses NOR `1→0` trick: bit 0 cleared = clean
+  shutdown; decoder had it backwards).
+
+### Deferred to Phase D
+
+- **Mag I2C 100 → 400 kHz**: would save ~7% CPU on `mag_rd` (943 µs →
+  ~250 µs per read). Single-line change of the `Timing` constant in
+  `MX_I2C3_Init`, but needs to be verified via CubeMX or by deriving
+  from the I2C kernel clock to avoid breaking the bus.
+- **Radio TX non-blocking**: `radio_manager_tick` shows `max=13 ms`
+  occasional spikes during SX1276 TX. Costs ~10 IMU samples per spike,
+  ~10 spikes/s. Real refactor (state machine for TX, IT-mode SPI), not
+  a single-line fix. The 5 ms `dt` clamp in adaptive-`dt` absorbs the
+  estimator impact — accuracy slightly degraded during stalls but
+  filter doesn't diverge.
+
+---
+
+## Rev 8 — Flight-prep audit fixes for launch readiness
+
+A systematic pre-launch audit of the full flight firmware stack found 17 issues across six batches (A–F). Every issue was either a potential crash, a silent data-loss path, or a safety violation. All have been resolved; both the `flight` and `bench` builds are clean with zero new warnings. The changes span diagnostic infrastructure, telemetry integrity, FSM safety, watchdog coverage, fault handling, and hardware self-test.
+
+---
+
+### 1. LOGGER_SANITY disabling launch and finalize paths (A1)
+
+**Symptom:** With `-DLOGGER_SANITY=1` set in the Makefile, `flight_logger_launch()` and `flight_logger_finalize()` were gated out by the same `#ifndef LOGGER_SANITY` macro. A bench test with `LOGGER_SANITY` left on would never commit flight records to flash.
+
+**Root Cause:** The LOGGER_SANITY guard was overly broad — it was intended only to suppress the 5-beep finalize buzzer in bench context, but wrapped the entire `flight_logger_launch()` and `flight_logger_finalize()` call sites. Leaving the flag set between test sessions would silently disable logging on a live flight.
+
+**Fix:** Removed `-DLOGGER_SANITY=1` from the Makefile `C_DEFS` for the flight build target (`Software/Makefile`). The sanity test infrastructure remains available but must be explicitly opt-in at compile time; the flight build is never built with it set.
+
+---
+
+### 2. ASCII plotter output corrupting COBS binary telemetry (A2)
+
+**Symptom:** The ground station COBS decoder would intermittently lose sync and report framing errors at ~10 Hz, coinciding with the ASCII plotter output period.
+
+**Root Cause:** `-DFLIGHT_ASCII_PLOT=1` was set in the flight Makefile `C_DEFS` alongside the binary COBS telemetry path. Both paths share the single USB CDC pipe; the interleaved ASCII and COBS bytes violated CLAUDE.md rule 4 (only one output stream per USB CDC at a time).
+
+**Fix:** Removed `-DFLIGHT_ASCII_PLOT=1` from the flight build `C_DEFS` in `Software/Makefile`. The bench target retains it for human-readable serial plotter output.
+
+---
+
+### 3. SX1276 debug ASCII emitted at boot corrupting telemetry (A3)
+
+**Symptom:** On power-up, the ground station received a burst of ASCII characters before the first COBS frame, causing the decoder to discard the first valid packet.
+
+**Root Cause:** `sx1276_dbg()` log calls inside `sx1276_init()` and the radio driver were unconditionally emitting ASCII over CDC during radio bring-up. These were not gated by any debug flag.
+
+**Fix:** Wrapped all `sx1276_dbg()` calls in `#ifdef SX1276_DEBUG` guards (`Software/App/radio/sx1276.c`). The flag is not set in the flight or bench builds.
+
+---
+
+### 4. DEBUG=1, OPT=-Og wrong for flight (A4)
+
+**Symptom:** Flight build ran at -Og (debug optimization) instead of -O2, producing a significantly larger binary that did not fit comfortably in 128 KB flash and was slower than needed at 432 MHz.
+
+**Root Cause:** The Makefile `OPT` variable was set to `-Og` (a leftover from early bring-up debugging), and `-DDEBUG=1` was present in `C_DEFS`, enabling debug assertions and trace paths that add overhead.
+
+**Fix:** Changed `OPT = -Og` to `OPT = -O2` and removed `-DDEBUG=1` from `C_DEFS` in `Software/Makefile`. Binary size decreased by ~4 KB and IMU service rate improved measurably.
+
+---
+
+### 5. CAC test-mode handler accepted commands without magic/CRC validation (B1)
+
+**Symptom:** A `cac_handle_testmode()` call with a malformed or truncated packet would still set `s_test_mode = true`, bypassing the command authentication chain entirely.
+
+**Root Cause:** The test-mode handler was checking only packet length, not the magic bytes (`0xCA 0x5A`) and CRC-32 that the ARM/FIRE handlers require. A single-byte USB glitch could accidentally activate test mode.
+
+**Fix:** Added magic-byte check (`data[1] == 0xCA && data[2] == 0x5A`) and CRC-32 verification over the full payload in `cac_handle_testmode()` (`Software/App/command/cac_handler.c`), matching the validation used by all other CAC handlers.
+
+---
+
+### 6. CAC nonce non-monotonic across handlers (B2)
+
+**Symptom:** Replaying a captured ARM confirm packet with the same nonce as a previous FIRE command would be accepted by the confirm handler, violating replay protection.
+
+**Root Cause:** `s_last_seen_nonce` was updated inside `cac_handle_arm()` and `cac_handle_fire()` but not consulted in `cac_handle_confirm()`. The monotonic guard only protected individual command handlers, not the confirm path.
+
+**Fix:** Added nonce monotonicity check at the top of `cac_handle_confirm()`: reject if incoming nonce ≤ `s_last_seen_nonce`. Updated `s_last_seen_nonce` on every accepted confirm in `cac_handler.c`.
+
+---
+
+### 7. Pyro auto-fire allowed in-flight without test mode gate (C1)
+
+**Symptom:** The FSM could call `pyro_mgr_auto_fire()` on a real flight and successfully fire a channel even though no test-mode interlock existed on that path. This meant the pyro fire path differed from what was validated on the bench.
+
+**Root Cause:** `pyro_mgr_auto_fire()` checked arm state and continuity but not `s_test_mode`. Combined with `pyro_mgr_auto_arm_flight()` arming channels on BOOST entry, this meant any FSM that reached APOGEE would fire pyros without operator confirmation.
+
+**Fix:** Added FSM-state-based PAD lockout (`PYRO_PAD_LOCKOUT()`) to `pyro_mgr_auto_fire()` (`Software/App/pyro/pyro_manager.c`). The function is only called from the FSM on APOGEE/MAIN transitions, which are themselves gated by min-flight-time and velocity conditions.
+
+---
+
+### 8. No IWDG — board would hang silently on sensor stall or flash deadlock (C2)
+
+**Symptom:** If a blocking flash operation stalled (e.g., W25Q busy poll spinning), or a sensor read hung on SPI, the firmware would stop responding with no recovery mechanism.
+
+**Root Cause:** The IWDG peripheral was not initialized. HAL_IWDG_Init() was never called in main.c. The 500 ms timeout window was never configured.
+
+**Fix:** Added `MX_IWDG1_Init()` call and `HAL_IWDG_Refresh()` at the top of `flight_loop_tick()` (`Software/App/flight/flight_loop.c`). Also added `HAL_IWDG_Refresh()` inside the blocking `wait_for_ack()` loop in the CDC flash dump path (C2 patch: `flight_loop.c`) so the dump does not trip the watchdog during normal 5 s ACK wait.
+
+---
+
+### 9. Fault handlers spinning silently — no reset on HardFault/BusFault (C3)
+
+**Symptom:** A HardFault (null dereference, stack overflow, bus error) would leave the MCU in the default infinite loop inside `stm32h7xx_it.c`, with no IWDG kick and no recovery. The board would appear frozen with no telemetry until a manual power cycle.
+
+**Root Cause:** `HardFault_Handler`, `BusFault_Handler`, and `UsageFault_Handler` in `stm32h7xx_it.c` used the default CubeMX stub that loops forever on `while(1)`.
+
+**Fix:** Replaced the infinite loops with register capture (`SCB->HFSR`, `SCB->CFSR`, `SCB->MMFAR`, `SCB->BFAR`) into a `volatile` structure for post-mortem inspection, followed by `__disable_irq()` and allowing the IWDG to expire within 500 ms for automatic reset (`Software/Core/Src/stm32h7xx_it.c`).
+
+---
+
+### 10. flight_fsm_force_state auto-arms all channels in bench mode (C4)
+
+**Symptom:** Sending the bench command `apogee` would call `flight_fsm_force_state(FSM_STATE_APOGEE)` which internally called `pyro_mgr_auto_arm_flight()` on the BOOST transition, arming any channel with continuity even on the bench.
+
+**Root Cause:** The FSM `transition_to(BOOST)` path unconditionally called `pyro_mgr_auto_arm_flight()` regardless of bench mode. On the bench with live e-matches installed, this could arm a channel and leave it armed for a subsequent fire command.
+
+**Fix:** Added a bench-mode guard: `if (!flight_fsm_bench_active()) pyro_mgr_auto_arm_flight()` inside the BOOST transition in `Software/App/fsm/flight_fsm.c`. In bench mode, channels must be armed explicitly via the CAC arm command.
+
+---
+
+### 11. No maximum BOOST duration — IMU saturation could skip burnout detect (D1)
+
+**Symptom:** If the LSM6DSO32 saturated at peak thrust (±32g limit), the burnout accel threshold check would never trigger, leaving the FSM stuck in BOOST until the COAST max-timer fired — but that timer did not exist.
+
+**Root Cause:** The FSM had no upper bound on time in BOOST state. If burnout detection failed (saturated IMU, corrupted sample), the FSM would never transition to COAST, and apogee detection would never activate.
+
+**Fix:** Added `FSM_BOOST_MAX_MS = 10000` constant in `Software/App/fsm/fsm_types.h` and a max-timeout check in the BOOST state handler in `flight_fsm.c`. After 10 s in BOOST the FSM forces transition to COAST regardless of accel.
+
+---
+
+### 12. No maximum COAST duration — EKF velocity failure could prevent apogee (D2)
+
+**Symptom:** If the EKF velocity estimate was biased positive (e.g., due to accel bias drift or baro dropout during Mach gate), the apogee velocity threshold `vel ≤ 0` might never trigger, leaving the FSM in COAST indefinitely and never firing the apogee pyro.
+
+**Root Cause:** No upper bound on time in COAST. The apogee detection relied entirely on EKF velocity sign, with no time-based backstop.
+
+**Fix:** Added `FSM_COAST_MAX_MS = 30000` constant in `fsm_types.h` and a max-timeout check in the COAST handler. After 30 s in COAST the FSM forces transition to APOGEE.
+
+---
+
+### 13. No finalize watchdog — logger could remain unfinalised after LANDED (D3)
+
+**Symptom:** If the FSM landed but the 5 s post-landing wait was interrupted (e.g., by a power glitch, or the FSM re-entered RECOVERY before the timer expired), `flight_logger_finalize()` would never be called and the flash index end-tick would remain `INDEX_DIRTY`, making the flight unreadable by the decode tool.
+
+**Root Cause:** The finalize logic only ran when `fsm == FSM_STATE_LANDED && (now - landed_at >= 5000)`. If `landed_at` was reset or the FSM transitioned away, the window was missed with no fallback.
+
+**Fix:** Added a 600 s watchdog in `flight_loop.c`: if `logger.launched && !logger.finalized && (now - logger.summary.launch_tick) > FSM_LAUNCH_TO_FINALIZE_MS`, force-call `flight_logger_finalize()`. `FSM_LAUNCH_TO_FINALIZE_MS = 600000` is defined in `fsm_types.h`.
+
+---
+
+### 14. Apogee dwell 25 ms → 100 ms — too short, EKF velocity transients (D4)
+
+**Symptom:** During bench simulation and early HIL runs, the FSM would trigger spurious apogee detections when the EKF velocity briefly crossed zero due to baro measurement noise or the post-Mach un-gate R-inflate step.
+
+**Root Cause:** `FSM_APOGEE_VEL_DWELL_MS` was set to 25 ms. At 416 Hz EKF predict rate and baro noise of ~0.5 m σ, velocity could transiently read negative for 25 ms without being a true apogee.
+
+**Fix:** Increased `FSM_APOGEE_VEL_DWELL_MS` from 25 to 100 ms in `fsm_types.h`. The 100 ms window filters EKF transients while remaining well within the tens-of-milliseconds true apogee plateau for any rocket in the COTS high-power range.
+
+---
+
+### 15. No in-flight erase-ahead — QSPI write stalls when erase frontier hit (E1)
+
+**Symptom:** During DRAIN phase (flight), the logger write pointer would catch up to the erase frontier, then block for up to 400 ms on a synchronous 4 KB sector erase, missing hundreds of IMU samples.
+
+**Root Cause:** Erase-ahead was only scheduled during PAD state (pre-launch idle). Once DRAIN started, no additional erase operations were dispatched, so the write pointer would stall every 4 KB.
+
+**Fix:** Extended the erase-ahead scheduler in `flight_logger_tick()` (`Software/App/logging/flight_logger.c`) to also fire during LOG_DRAIN state — specifically when `flash_addr + erase_lookahead > erased_up_to`. The IT-mode erase runs asynchronously alongside the write path.
+
+---
+
+### 16. No IMU dead-man flag — silent data loss undetectable by FSM (E2)
+
+**Symptom:** If the LSM6DSO32 stopped responding (SPI bus fault, EXTI line stuck), the flight loop would silently stop updating attitude and EKF, but the FSM would keep running with stale sensor data and no indication to the telemetry stream that a fault had occurred.
+
+**Root Cause:** There was no timeout check on `last_imu_tick`. The `imu.data_ready` flag would remain false indefinitely, and no fault condition was set.
+
+**Fix:** Added `s_imu_fault = ((now - last_imu_tick) > 5)` after the watchdog STATUS poll in `flight_loop.c`. This flag is passed into `fsm_input_t.sensor_fault_imu` and included in the `FC_MSG_FAST` telemetry status word so the ground station can detect IMU loss in real time.
+
+---
+
+### 17. mmc5983ma_read return value discarded — silent mag dropout (E3)
+
+**Symptom:** If the MMC5983MA I2C bus stalled or the sensor returned a NAK, the magnetometer data would silently remain stale. The attitude estimator would continue feeding the last-good reading into the mag correction step with no indication that the data was old.
+
+**Root Cause:** The return value of `mmc5983ma_read(&mag)` was not checked. The `mag_new = true` flag was set unconditionally after the call.
+
+**Fix:** Changed the mag read block to check `if (mmc5983ma_read(&mag) == MMC5983MA_OK)` before setting `mag_new = true` and applying calibration (`Software/App/flight/flight_loop.c` line ~504).
+
+---
+
+### 18. ADXL end address missing from flight index — decode tool failed (E4)
+
+**Symptom:** The Python decode tool (`tools/casper_decode.py`) reported `adxl_end_addr = 0xFFFFFFFF` (INDEX_DIRTY) for all flights, making the ADXL stream unreadable even after a clean finalize.
+
+**Root Cause:** `log_index_end_flight()` was called with `adxl_end = logger.adxl.flash_base` (the start address) instead of `logger.adxl.flash_addr` (the actual write pointer at finalize time).
+
+**Fix:** Changed the `flight_logger_finalize()` call to pass `logger.adxl.flash_addr` as the ADXL end address in `Software/App/logging/flight_logger.c`. Added the `adxl_end_addr` field to the flight index entry struct in `log_types.h` (struct grew from 32 to 36 bytes; `MAX_FLIGHTS` updated to 113).
+
+---
+
+### 19. Battery voltage hardcoded — no real-time monitoring (E5)
+
+**Symptom:** The `FC_MSG_FAST` telemetry `batt_v` field always reported a fixed placeholder value (3.3 V or 0.0 V), so the ground station could not monitor battery state during flight.
+
+**Root Cause:** `pyro_mgr_get_batt_voltage()` returned a compile-time constant. The CONT4 ADC channel (CH4 of the pyro manager, PC0 on ADC2_CH10) is hardware-connected to a 100 kΩ / 62 kΩ resistor divider from the battery rail, giving `V_batt = V_adc × (100 + 62) / 62`. This path was never implemented.
+
+**Fix:** Implemented `casper_pyro_get_batt_voltage()` in `Software/App/pyro/casper_pyro.c` to read `pyro.adc_raw[3]` (CH4, 0-indexed), convert via the 16-bit ADC reference (3.3 V full-scale = 65535 counts), and apply the 162/62 divider ratio. Result is used in `pyro_mgr_get_batt_voltage()` and propagated to `fc_telem_state_t.batt_v`.
+
+---
+
+### 20. Self-test stubs filled — tests 3, 4, 5 now active (F1)
+
+**Symptom:** `diag_result_t` entries for tests 3 (EKF init), 4 (attitude quaternion norm), and 5 (flash write/read) always returned hardcoded PASS, providing no real integrity signal at power-on.
+
+**Root Cause:** Tests 3–5 were left as placeholder stubs after the self-test module was scaffolded. Without them, a dead EKF, unnormalized quaternion, or bad flash page would pass the self-test gate and allow arming.
+
+**Fix:** Test 3 checks `ekf.P[0] > 0` (non-zero P diagonal confirms `casper_ekf_init()` ran). Test 4 computes `|‖q‖ − 1| < 0.01` from `att.q[0..3]`; returns result=0 with detail=0xFF if `att.init_complete` is false. Test 5 erases the second-to-last 4 KB sector (`0x3FFE000`), programs 256 bytes of alternating `0xA5/0x5A`, reads back, and `memcmp`s. All implemented in `Software/App/diag/self_test.c`.
+
+---
+
+### 21. Bench harness extended with selftest, sim-apogee, iwdg-test, fault-test (F2)
+
+**Symptom:** The TEST_MODE=2 bench build had no way to exercise the self-test suite, simulate the apogee pyro path without launching, verify IWDG resets the board on a lockup, or trigger a controlled HardFault for handler validation — all needed before a launch-readiness sign-off.
+
+**Root Cause:** The bench dispatch (`bench_dispatch()` in `flight_loop.c`) was limited to FSM state stepping, buzzer test, and bench-mode toggle. No coverage of safety-critical paths.
+
+**Fix:** Added eight new bench commands to `bench_dispatch()` (`Software/App/flight/flight_loop.c`, `#if TEST_MODE == 2`): `selftest` (runs all 7 diag tests, prints PASS/FAIL per case, 4-beep on overall pass), `simulate-apogee` (forces FSM PAD→BOOST→COAST→APOGEE in bench mode, checks `pyro_mgr_is_firing()`, then immediately calls `pyro_mgr_disarm_all()` — bench harness does not fire real pyros), `pyro-cap-test` (continuity bitmap + battery voltage), `iwdg-test` (disables IRQ, spins 60M cycles — IWDG must reset within 500 ms), `cac-replay-test` (SKIPPED — would require CAC private API), `logger-finalize-force`, `status` (multi-line system dump), `fault-test hardfault` (writes to `0xFFFFFFFF`, exercises fault handler → IWDG reset). Each command toggles LED4 (`CONT_YN_4_Pin`) on entry.
+
+---
+
+### 22. Manual FSM step mode for HIL-style bench validation (M)
+
+**Symptom:** Pre-flight validation needed a binary that runs the full nav stack (live sensors, EKF, attitude, ASCII plotter, logger lifecycle) but with autonomous FSM transitions disabled, so an operator could step through PAD→BOOST→COAST→APOGEE→MAIN→LANDED via typed CDC commands while watching real telemetry.
+
+**Root Cause:** TEST_MODE=2 (bench) stripped the entire flight loop; TEST_MODE=1 (flight) had no text command interface. Neither covered the use case.
+
+**Fix:** Added `make manual` target (TEST_MODE=1 + new `MANUAL_FSM_STEP` define + `FLIGHT_ASCII_PLOT=1`). The define lifts `bench_dispatch` / `bench_process_cdc` out of their `#if TEST_MODE == 2` guard via `#if (TEST_MODE == 2) || defined(MANUAL_FSM_STEP)`, replaces `cmd_router_process` with `bench_process_cdc` in the TEST_MODE=1 CDC dispatch site, and auto-calls `flight_fsm_set_bench_mode(true)` from `flight_loop_init()` so autonomous transitions are frozen at boot. LANDED→finalize grace bumped 5 s → 10 s for both flight and manual builds. Files: `Software/Makefile`, `Software/App/flight/flight_loop.c`.
+
+---
+
+### 23. Bench dispatch unreliable without explicit terminator (G, H, P)
+
+**Symptom:** Typing `boost` over CDC produced no transition, no beep, no ack — even though the heartbeat was firing and the build was current. Multiple compounding issues surfaced over a single hardware session.
+
+**Root Cause (three-part):**
+1. `bench_send` fired `CDC_Transmit_FS` and immediately returned. Back-to-back lines (e.g. `selftest` printing 7 PASS lines) returned `USBD_BUSY` for the second-onward calls and the lines were dropped.
+2. Many serial UIs do not append CR/LF on Send. The dispatcher only triggered on `\r` or `\n`, so commands accumulated in the buffer forever.
+3. In manual mode, `bench_process_cdc` was wrapped in `if (cdc_ring_available() > 0)`. Its 250 ms idle-dispatch timer and 5 s heartbeat are time-driven and only advance when the function is actually called — so with no new bytes arriving, the timer never advanced.
+
+**Fix:** `bench_send` now spins on `USBD_BUSY` (with IWDG kick) up to 50 ms before giving up — back-to-back lines all flush. Added a 250 ms idle-dispatch path: if the buffer has content and no new bytes have arrived for that long, dispatch as if a terminator had been received. Boot-time `[BENCH] READY` banner and 5 s `[BENCH] heartbeat` so the operator can see the loop is alive even without commands. In manual mode, `bench_process_cdc` is now called unconditionally (no `cdc_ring_available()` gate) so the time-based logic always advances. File: `Software/App/flight/flight_loop.c`.
+
+---
+
+### 24. selftest test 2 (baro PROM) FAILed on a working sensor (H)
+
+**Symptom:** `selftest` reported `SELFTEST 2 FAIL` even though the boot prints showed valid PROM coefficients (C1..C6 all nonzero) and the barometer was reading correctly.
+
+**Root Cause:** Test 2 checked `baro.prom[0] != 0`. PROM word 0 is a manufacturer/factory word that is legitimately 0 on many MS5611 parts; the actual calibration coefficients are PROM[1..6].
+
+**Fix:** Test 2 now passes if any of `baro.prom[1..6]` is nonzero, with `baro.prom[1]` (C1, pressure sensitivity) reported in the detail field. File: `Software/App/diag/self_test.c`.
+
+---
+
+### 25. IWDG never actually started — `iwdg-test` did not reset (I)
+
+**Symptom:** `iwdg-test` produced "ERROR: reset did not occur" on every run. Other firmware paths that should have been protected by the watchdog were also unguarded in practice.
+
+**Root Cause:** `HAL_IWDG_Init` wrote `PR` and `RLR` *before* sending the IWDG start key (`KR=0xCCCC`). Per RM0433 §50.4.5, those registers reset when IWDG starts, so the configured prescaler and reload were lost. Worse, LSI is not running until 0xCCCC is written, so the SR-sync wait timed out and the function returned `HAL_TIMEOUT` *before* ever writing the start key. Watchdog was never enabled in any build.
+
+**Fix:** Reordered `HAL_IWDG_Init` to write the start key first (also enables LSI), then unlock, then PR/RLR, then wait for SR sync, then refresh once with 0xAAAA. File: `Software/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_iwdg.c`.
+
+---
+
+### 26. selftest 5 (flash R/W) failed once IWDG was real (J)
+
+**Symptom:** With the IWDG fix in place, selftest 5 (flash erase + program + read) flipped from PASS to FAIL.
+
+**Root Cause:** `w25q_wait_busy` is a blocking poll loop with timeout up to 400 ms (`W25Q_TIMEOUT_SECTOR_ERASE`). With the now-real 500 ms IWDG, a sector erase plus any other work in the same tick exceeded the window, the watchdog fired mid-erase, and on reset the test returned `W25Q_TIMEOUT`.
+
+**Fix:** `HAL_IWDG_Refresh` inside the `w25q_wait_busy` poll loop. Same pattern as the flash-dump CDC waits. Covers logger writes, FATFS, MSC, and the bench self-test sector probe. File: `Software/App/drivers/w25q512jv.c`.
+
+---
+
+### 27. FATFS f_mkfs corrupting flight log index (K, L)
+
+**Symptom:** First `logger-finalize-force` after a fresh boot reported `adxl_end=0x00000000 hr_end=0x00000000` — clearly nonsensical. A diagnostic re-run of `flight_logger_init` showed all 113 index entries returning bytes that made `flight_count=113` with bogus base addresses.
+
+**Root Cause:** FATFS's `user_diskio.c` mapped sector 0 of the FAT volume to physical flash address `0x00000000`, which is `FLASH_INDEX_BASE`. On any boot where FATFS found `FR_NO_FILESYSTEM`, `f_mkfs` would write a FAT boot sector + FAT tables starting at flash address 0, overwriting the flight log index region. `log_index_init` then read those FAT bytes back as flight entries, computed garbage `next_addr` values, and `log_stream_init` initialised every stream with `flash_base = 0`.
+
+**Fix:** Repartitioned the W25Q512JV layout. Added `FATFS_FLASH_BASE = 0x03C00000` (top 4 MB) and `FATFS_FLASH_SIZE = 0x00400000` constants in `log_types.h`. `LOG_FLASH_END` reduced from `0x04000000` to `0x03C00000` (HR pool drops to 43.7 MB — still 80+ minutes of flight at full rate). `user_diskio.c` and `usbd_msc_storage_if.c` both offset their sector accesses by `FATFS_FLASH_BASE`, so MSC sector 0 and FATFS sector 0 both map to physical flash `0x03C00000`. MSC drive size now 4 MB instead of 64 MB — the flight log region is invisible to the host OS. Existing flash that had been corrupted by a prior `f_mkfs` is recovered by typing `flash-wipe` once and power-cycling. Files: `Software/App/logging/log_types.h`, `Software/FATFS/Target/user_diskio.c`, `Software/USB_DEVICE/App/usbd_msc_storage_if.c`, `Software/Core/Src/main.c`.
+
+---
+
+### 28. Logger silently dropped second-and-subsequent sessions per power cycle (Q)
+
+**Symptom:** On the manual-mode bench, after running `logger-finalize-force` followed by a normal PAD→BOOST→…→LANDED session, no records were written and the LANDED 5-beep never fired. Real flight only does one launch per boot so this had been hidden.
+
+**Root Cause:** `flight_logger_launch` set `log->launched = true` but never reset `log->finalized`. Once any prior call to `flight_logger_finalize` set `finalized=true`, every subsequent session in the same power cycle silently failed: `flight_logger_tick` early-returns on `(log->finalized)`, so no QSPI writes happen, and the LANDED-grace check `(!logger.finalized)` was false so finalize never fired.
+
+**Fix:** When `flight_logger_launch` is called with `finalized==true` it now clears the flag and calls `log_stream_start` on each stream to take them from `LOG_FINAL` back through `LOG_PAD` for the next launch's prelaunch ring. Real flight (single launch per boot) takes the unchanged `!finalized` path and is identical to before. File: `Software/App/logging/flight_logger.c`.
+
+---
+
+### 29. 600 s finalize watchdog firing immediately on launch (R)
+
+**Symptom:** Bench operator heard the 5-beep finalize pattern on PAD→BOOST instead of the 2-beep launch pattern, and no beep on LANDED. Records stopped writing the moment of launch.
+
+**Root Cause:** `now = HAL_GetTick()` was cached at the top of `flight_loop_tick`. `flight_logger_launch` ran several ms of QSPI work (idle-spin + index entry write) and inside set `summary.launch_tick = HAL_GetTick()` — typically 3 ms later than the cached `now`. The watchdog at the end of the FSM transition block then computed `since_launch = now - launch_tick`, which underflowed `uint32_t` to ~`0xFFFFFFFD`. The check `(since_launch > FSM_LAUNCH_TO_FINALIZE_MS)` evaluated true on the very tick of launch and fired finalize, set `.finalized=true`, and disabled the rest of the session.
+
+**Fix:** Sign-aware comparison: `if (since_launch < 0x80000000u && since_launch > FSM_LAUNCH_TO_FINALIZE_MS)`. The high-bit guard rejects underflowed-negative deltas (treats them as zero). 600 s threshold for the normal path is unaffected. Real-flight path was masking this same bug — it would have spuriously finalised the actual flight on the launch tick. File: `Software/App/flight/flight_loop.c`.
+
+---
+
+### 30. HR records had all-zero LSM6 + ADXL columns (S)
+
+**Symptom:** After capturing a clean session, the decoded HR CSV showed `accel_x..adxl_z` literally zero in every record — even though EKF + attitude were running on real IMU data.
+
+**Root Cause (two parts):**
+1. `lsm6dso32_read` (the function the flight loop calls every IMU service) computed `ax/ay/az/gx/gy/gz` as locals, derived `accel_g[]` and `gyro_dps[]` floats, then discarded the raw int16 values. The HR record packer reads `imu->raw_accel[]` / `imu->raw_gyro[]` though, so HR records snapshotted whatever was in those fields at boot — zero. A separate `lsm6dso32_read_raw` does populate the raw fields but had no caller.
+2. ADXL372 had no read site anywhere in the flight loop. `high_g.raw_accel[]` sat at boot zeros forever, and the dedicated `flight_logger_push_adxl()` was also unwired.
+
+**Fix:** `lsm6dso32_read` now writes `raw_accel[]` and `raw_gyro[]` alongside the float forms (single read, both forms available, ~50 ns extra per IMU service). Added `adxl372_read` call to the IMU service block so `high_g.raw_accel[]` is fresh at the next HR push. Files: `Software/App/drivers/lsm6dso32.c`, `Software/App/flight/flight_loop.c`.
+
+---
+
+### 31. Drain pipeline only writing 33 pages/s — 82% of HR pushes dropped (T)
+
+**Symptom:** Decoded HR CSV had a 44 s gap spanning COAST/APOGEE/MAIN. Summary said 5059 records written but only 1200 made it to flash. `drops=23764`. Drain rate was ~33 pages/s vs the ~240 pages/s expected.
+
+**Root Cause:** `flight_logger_tick` issued an IT erase on every iteration where any stream had `erased_up_to < flash_end`. For a flight, this is always true (HR pool 43.7 MB, ADXL pool 16 MB, LR pool 512 KB), so the tick was issuing an erase, taking the QSPI bus busy for ~50 ms, returning, then issuing another erase. Page writes only ran on the rare tick where all three pools were fully erased to their ends — which never happens during a flight.
+
+**Fix:** Erase-ahead now only fires when the lowest-runway stream has fewer than 4 sectors (16 KB) of pre-erased space ahead of its write pointer. Once the runway is built up, erases pause and writes drain the ring at full speed; when the runway is consumed faster than writes advance, an erase fires to top it back up. Verified on hardware: drops dropped from 23,764 (82% loss) to 352 (7%), all FSM states fully captured. File: `Software/App/logging/flight_logger.c`.
+
+---
+
+### 32. Quaternion smallest-three packing clamped at ~60° (U)
+
+**Symptom:** A bench session in which the operator tipped the rocket past 90° showed `max tilt = 96.9°` in the post-flight summary (computed from the float quaternion) but the per-record HR quat values were clearly wrong — Tipping events looked like ~60° even though the physical tip was much larger.
+
+**Root Cause:** `quat_pack_smallest_three` scaled int12 components by `4096.0f` directly. The smallest-three components of a unit quaternion can be as large as `1/sqrt(2) ≈ 0.7071`. With the 4096 scale, that maps to 2896, which exceeds the int12 max of 2047 — every value above ~0.5 (i.e. every rotation beyond ~60°) clamped to the maximum.
+
+**Fix:** Scale by `2896.309 ≈ 2048 * sqrt(2)` so the full smallest-three range maps cleanly to `[-2048, +2047]`. Round-trip test passes for identity, 30°, 45°, 60°, 90° about X, 96° about Y, all-equal — max error 0.00035 in any component. The Python decoder (`tools/casper_decode.py`) matches the new scale and adds CSV columns for `qw, qx, qy, qz, roll_deg, pitch_deg, yaw_deg, tilt_deg` and `quat_packed_hex` for offline re-decode. Files: `Software/App/pack/quat_pack.c`, `Software/App/pack/quat_pack.h`, `tools/casper_decode.py`.
+
+---
+
+### 33. ADXL372 800 Hz dedicated stream completely unwired (V)
+
+**Symptom:** Every dump reported `ADXL records: 0`. The high-rate shock log was empty on every flight.
+
+**Root Cause:** `adxl372_fifo_init` was never called (the device stayed in single-sample 400 Hz mode) and `flight_logger_push_adxl` had no caller (the dedicated 16 MB ADXL pool received no records).
+
+**Fix:** PAD→BOOST handler now calls `adxl372_fifo_init(&high_g, ADXL372_ODR_800HZ)` instead of `adxl372_enter_measurement`, putting the device into 800 Hz FIFO stream mode (the configuration the driver had always supported but which nothing called). Each IMU service iteration drains up to 8 triplets from the on-chip 512-entry FIFO and pushes them as a batch to `flight_logger_push_adxl`. The latest triplet still lands in `high_g.raw_accel` so the HR record's high-G columns continue to work. SPI3 traffic ~5 kB/s at flight rate, well under bus capacity. File: `Software/App/flight/flight_loop.c`.
+
+---
+
+### 34. Plotter ASCII output limited to PAD-state attitude + post-PAD position (N, O)
+
+**Symptom:** Operator wanted live attitude visibility throughout flight states, not just on the pad. The post-PAD plotter line was limited to alt/vel/vaccel/fsm/t.
+
+**Fix:** Added `pitch_deg`, `yaw_deg`, `roll_deg`, and `tilt_deg` to the post-PAD `>alt:..,vel:..,...` line. Roll computed from the quaternion via `casper_quat_to_euler` (body Y rotation per repo convention). Operator can now graph attitude continuously through BOOST/COAST/APOGEE/MAIN/LANDED in any Teleplot-compatible viewer. File: `Software/App/flight/flight_loop.c`.
+
+---
+
+### 35. Final tidy: stripped diagnostic instrumentation before flight (W)
+
+**Fix:** Removed the bench-only `logger-init-test` command, the per-line PRE/POST diagnostic dump from `logger-finalize-force` (back to a single `[BENCH] FINALIZE adxl_end=… hr_end=…` line), the LANDED-grace `landed grace started` / `grace expired` / `finalize returned` triplet, and the launch_tick + now extra columns in the `status` output. These were added during the bench debugging arc to find the watchdog underflow and FATFS corruption bugs and are no longer needed. The bench harness keeps the production-useful commands (`selftest`, `simulate-apogee`, `pyro-cap-test`, `iwdg-test`, `cac-replay-test`, `logger-finalize-force`, `flash-wipe`, `status`, `fault-test`). File: `Software/App/flight/flight_loop.c`.
+
+---
+
 ## Next Steps
 
 - [x] Fix power supply and clock configuration
@@ -756,6 +1321,8 @@ TIM4 PWM driver for audible status feedback:
 - [ ] Implement real sensor-based FSM transitions (launch detect, apogee, etc.)
 - [ ] Implement EKF GPS update math (stubs ready)
 - [ ] Config persistence to QSPI flash
-- [ ] Flight log recording + readback
+- [x] Flight log recording + readback (Rev 7: Hamming-O(1) + adaptive dt + CDC dump path canonical)
 - [ ] Servo PWM output (TIM2 CH1-4)
 - [ ] Power sensor bring-up
+- [ ] Mag I2C 400 kHz bump (Phase D)
+- [ ] Radio TX non-blocking refactor (Phase D)

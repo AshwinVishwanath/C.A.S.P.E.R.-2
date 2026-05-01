@@ -37,8 +37,8 @@ bool log_index_init(log_index_t *idx, w25q512jv_t *flash)
     idx->adxl_next_addr = FLASH_ADXL_BASE;
 
     /*
-     * Scan flight index entries. Each entry is 32 bytes.
-     * FLASH_INDEX_SIZE (4 KB) / 32 = 128 entries max.
+     * Scan flight index entries. Each entry is 36 bytes.
+     * FLASH_INDEX_SIZE (4 KB) / 36 = 113 entries max (MAX_FLIGHTS = 113).
      * An empty slot has flight_id == 0xFFFF (erased NOR flash).
      */
     flight_index_entry_t entry;
@@ -80,9 +80,12 @@ bool log_index_init(log_index_t *idx, w25q512jv_t *flash)
             idx->lr_next_addr = pool_wrap(idx->lr_next_addr, FLASH_LR_BASE, FLASH_LR_END);
         }
 
-        if (entry.adxl_start_addr != INDEX_DIRTY) {
-            /* ADXL end address is not stored separately in the 32-byte entry.
-             * Derive from the next flight's start, or use start + sector. */
+        if (entry.adxl_end_addr != INDEX_DIRTY) {
+            idx->adxl_next_addr = sector_align_up(entry.adxl_end_addr);
+            idx->adxl_next_addr = pool_wrap(idx->adxl_next_addr, FLASH_ADXL_BASE, FLASH_ADXL_END);
+        } else if (entry.adxl_start_addr != INDEX_DIRTY) {
+            /* Dirty flight — end not recorded; skip at least one sector to
+             * avoid overwriting partial data. */
             idx->adxl_next_addr = sector_align_up(entry.adxl_start_addr + SECTOR_SIZE);
             idx->adxl_next_addr = pool_wrap(idx->adxl_next_addr, FLASH_ADXL_BASE, FLASH_ADXL_END);
         }
@@ -112,15 +115,16 @@ bool log_index_start_flight(log_index_t *idx, uint32_t start_tick)
     flight_index_entry_t entry;
     memset(&entry, 0xFF, sizeof(entry));  /* Start with all 0xFF */
 
-    entry.flight_id      = idx->current_flight;
-    entry.start_tick_ms  = start_tick;
-    entry.end_tick_ms    = INDEX_DIRTY;
-    entry.hr_start_addr  = idx->hr_next_addr;
-    entry.hr_end_addr    = INDEX_DIRTY;
-    entry.lr_start_addr  = idx->lr_next_addr;
-    entry.lr_end_addr    = INDEX_DIRTY;
+    entry.flight_id       = idx->current_flight;
+    entry.start_tick_ms   = start_tick;
+    entry.end_tick_ms     = INDEX_DIRTY;
+    entry.hr_start_addr   = idx->hr_next_addr;
+    entry.hr_end_addr     = INDEX_DIRTY;
+    entry.lr_start_addr   = idx->lr_next_addr;
+    entry.lr_end_addr     = INDEX_DIRTY;
     entry.adxl_start_addr = idx->adxl_next_addr;
-    entry.flags          = 0xFFFF;  /* Dirty — bit 0 will be cleared on clean shutdown */
+    entry.adxl_end_addr   = INDEX_DIRTY;
+    entry.flags           = 0xFFFF;  /* Dirty — bit 0 will be cleared on clean shutdown */
 
     uint32_t addr = FLASH_INDEX_BASE + (uint32_t)idx->flight_count * sizeof(flight_index_entry_t);
     int ret = w25q512jv_write(idx->flash, addr, (const uint8_t *)&entry, sizeof(entry));
@@ -155,7 +159,7 @@ bool log_index_end_flight(log_index_t *idx, uint32_t end_tick,
     entry.end_tick_ms  = end_tick;
     entry.hr_end_addr  = hr_end;
     entry.lr_end_addr  = lr_end;
-    /* adxl_start_addr was already written; we update flags for clean shutdown */
+    entry.adxl_end_addr = adxl_end;
     entry.flags        = entry.flags & ~0x0001u;  /* Clear bit 0: clean_shutdown = 0 */
 
     /* Re-write the entire entry */

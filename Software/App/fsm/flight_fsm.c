@@ -73,7 +73,7 @@ static void transition_to(fsm_state_t new_state)
     s_state_entry_ms = fsm_get_tick();
     tlm_queue_event(FC_EVT_STATE, (uint16_t)new_state);
 
-    if (new_state == FSM_STATE_BOOST) {
+    if (new_state == FSM_STATE_BOOST && !s_bench_mode) {
         pyro_mgr_auto_arm_flight();
     }
 }
@@ -160,6 +160,13 @@ fsm_state_t flight_fsm_tick(const fsm_input_t *in)
         if (in->vert_accel_g > s_peak_accel_g)
             s_peak_accel_g = in->vert_accel_g;
 
+        if ((fsm_get_tick() - s_state_entry_ms) > FSM_BOOST_MAX_MS) {
+            /* BOOST timeout — sensor stuck or IMU saturated. Force coast. */
+            s_peak_alt_m = 0.0f;
+            transition_to(FSM_STATE_COAST);
+            break;
+        }
+
         if (dwell_check(&s_burnout_dwell,
                          in->vert_accel_g < FSM_BURNOUT_ACCEL_G,
                          FSM_BURNOUT_DWELL_MS)) {
@@ -175,6 +182,15 @@ fsm_state_t flight_fsm_tick(const fsm_input_t *in)
         /* Track peak altitude */
         if (in->alt_m > s_peak_alt_m)
             s_peak_alt_m = in->alt_m;
+
+        if ((fsm_get_tick() - s_state_entry_ms) > FSM_COAST_MAX_MS) {
+            /* COAST timeout — EKF velocity never crossed zero. Force apogee. */
+            tlm_queue_event(FC_EVT_APOGEE,
+                            (uint16_t)(s_peak_alt_m / 10.0f));
+            pyro_mgr_auto_fire(in->apogee_pyro_ch, in->apogee_fire_dur_ms);
+            transition_to(FSM_STATE_APOGEE);
+            break;
+        }
 
         /* S4.4: Check sustain re-light FIRST */
         if (dwell_check(&s_sustain_relight_dwell,

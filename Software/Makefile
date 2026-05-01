@@ -27,9 +27,9 @@ endif
 # building variables
 ######################################
 # debug build?
-DEBUG = 1
+DEBUG = 0
 # optimization
-OPT = -Og
+OPT = -O2
 
 
 #######################################
@@ -78,6 +78,7 @@ Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_adc.c \
 Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_adc_ex.c \
 Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_crc.c \
 Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_crc_ex.c \
+Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_iwdg.c \
 Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_qspi.c \
 Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_ll_delayblock.c \
 Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_spi.c \
@@ -153,6 +154,8 @@ App/command/hil_raw_handler.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
+App/diag/logger_sanity.c \
+App/diag/cycle_probe.c \
 App/flight/flight_loop.c \
 App/radio/radio_manager.c \
 App/logging/flight_logger.c \
@@ -218,8 +221,10 @@ C_DEFS =  \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
 -DTEST_MODE=1 \
--DGPS_TEST \
 -DMSC_MEDIA_PACKET=4096
+
+# Uncomment to enable bench logger sanity test (CDC 'go' + 5s + finalize):
+# C_DEFS += -DLOGGER_SANITY=1
 
 ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND
@@ -334,6 +339,18 @@ $(BUILD_DIR):
 # ── Convenience build targets ─────────────────────────────────
 flight:
 	$(MAKE) BUILD_TARGET=FLIGHT
+
+bench:
+	$(MAKE) BUILD_TARGET=BENCH \
+	    TARGET=Casper2_Bench \
+	    BUILD_DIR=build/Bench \
+	    EXTRA_DEFS="-DTEST_MODE=2 -DFLIGHT_ASCII_PLOT=1"
+
+manual:
+	$(MAKE) BUILD_TARGET=FLIGHT \
+	    TARGET=Casper2_Manual \
+	    BUILD_DIR=build/Manual \
+	    EXTRA_DEFS="-DMANUAL_FSM_STEP=1 -DFLIGHT_ASCII_PLOT=1"
 
 ground:
 	$(MAKE) BUILD_TARGET=GROUND

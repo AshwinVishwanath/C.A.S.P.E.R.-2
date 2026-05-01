@@ -93,11 +93,15 @@ static int w25q_write_enable(w25q512jv_t *dev)
     return W25Q_OK;
 }
 
-/* Poll SR1.BUSY until clear or timeout */
+/* Poll SR1.BUSY until clear or timeout. Sector erase can take up to 400 ms,
+ * which exceeds the 500 ms IWDG window if any other work also runs in the
+ * same tick. Refresh the watchdog while polling. */
+extern IWDG_HandleTypeDef hiwdg1;
 static int w25q_wait_busy(w25q512jv_t *dev, uint32_t timeout_ms)
 {
     uint32_t start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout_ms) {
+        HAL_IWDG_Refresh(&hiwdg1);
         uint8_t sr1 = w25q_read_sr(dev, W25Q_CMD_READ_SR1);
         if (!(sr1 & W25Q_SR1_BUSY))
             return W25Q_OK;

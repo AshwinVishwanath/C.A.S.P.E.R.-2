@@ -100,6 +100,12 @@ void casper_pyro_stop_all(casper_pyro_t *p)
         casper_pyro_stop(p, i);
 }
 
+float casper_pyro_get_batt_voltage(const casper_pyro_t *p)
+{
+    float v_adc = ((float)p->adc_raw[3] / ADC_FULL_SCALE) * ADC_VREF_V;
+    return v_adc * (CONT4_DIVIDER_R1 + CONT4_DIVIDER_R2) / CONT4_DIVIDER_R2;
+}
+
 void casper_pyro_tick(casper_pyro_t *p)
 {
     /* ── 1. Read all continuity ADCs ── */

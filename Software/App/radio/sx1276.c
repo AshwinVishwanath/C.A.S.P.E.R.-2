@@ -154,44 +154,60 @@ void sx1276_reset(void)
 
 /* ── Init ──────────────────────────────────────────────────────── */
 
+#ifdef DEBUG_SX1276_INIT
 static void sx1276_dbg(const char *msg)
 {
     CDC_Transmit_FS((uint8_t *)msg, (uint16_t)strlen(msg));
     HAL_Delay(20);
 }
+#endif /* DEBUG_SX1276_INIT */
 
 int sx1276_init(SPI_HandleTypeDef *hspi)
 {
+#ifdef DEBUG_SX1276_INIT
     char dbg[80];
+#endif
     s_spi = hspi->Instance;
 
     cs_deselect();
 
+#ifdef DEBUG_SX1276_INIT
     sx1276_dbg("[SX1276] resetting...\r\n");
+#endif
     sx1276_reset();
+#ifdef DEBUG_SX1276_INIT
     sx1276_dbg("[SX1276] reset done, reading version\r\n");
+#endif
 
     /* Read version register — expect 0x12 for SX1276 */
     uint8_t ver = sx1276_read_reg(SX1276_REG_VERSION);
 
+#ifdef DEBUG_SX1276_INIT
     snprintf(dbg, sizeof(dbg), "[SX1276] version=0x%02X (expect 0x%02X)\r\n",
              ver, SX1276_VERSION_EXPECTED);
     sx1276_dbg(dbg);
+#endif
 
     if (ver != SX1276_VERSION_EXPECTED) {
+#ifdef DEBUG_SX1276_INIT
         sx1276_dbg("[SX1276] FAIL: bad version\r\n");
+#endif
         return -1;
     }
 
     /* Set LoRa mode */
     sx1276_set_lora_mode();
+#ifdef DEBUG_SX1276_INIT
     sx1276_dbg("[SX1276] LoRa mode set\r\n");
+#endif
 
     /* Set FIFO base addresses */
     sx1276_write_reg(SX1276_REG_FIFO_TX_BASE_ADDR, SX1276_FIFO_TX_BASE);
     sx1276_write_reg(SX1276_REG_FIFO_RX_BASE_ADDR, SX1276_FIFO_RX_BASE);
 
+#ifdef DEBUG_SX1276_INIT
     sx1276_dbg("[SX1276] init OK\r\n");
+#endif
     return 0;
 }
 

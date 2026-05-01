@@ -16,7 +16,9 @@
 #include "mmc5983ma.h"
 #include "tlm_types.h"
 #include "flight_logger.h"
+#include "stm32h7xx_hal.h"
 
+extern IWDG_HandleTypeDef hiwdg1;
 extern ms5611_t baro;
 extern lsm6dso32_t imu;
 extern adxl372_t high_g;

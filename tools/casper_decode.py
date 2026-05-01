@@ -11,6 +11,7 @@ Usage:
 """
 import argparse
 import csv
+import math
 import os
 import struct
 import sys
@@ -104,6 +105,71 @@ def hamming_encode(data: bytes) -> int:
 # ═══════════════════════════════════════════════════════════════════════
 #  Struct parsers
 # ═══════════════════════════════════════════════════════════════════════
+
+def quat_unpack_smallest_three(packed):
+    """Inverse of quat_pack_smallest_three: 5 bytes -> (w, x, y, z) floats.
+
+    Bit layout (matches quat_pack.h):
+      [39:38] drop index, [37:36] reserved, [35:24] qa int12,
+      [23:12] qb int12, [11:0] qc int12.
+    Packed values are signed 12-bit, scaled by 4096. The dropped component
+    is reconstructed from sqrt(1 - qa^2 - qb^2 - qc^2). """
+    if len(packed) != 5:
+        return (0.0, 0.0, 0.0, 0.0)
+    p = bytes(packed)
+
+    qc = (p[0] | ((p[1] & 0x0F) << 8))
+    qb = ((p[1] >> 4) | (p[2] << 4))
+    qa = (p[3] | ((p[4] & 0x0F) << 8))
+    drop = (p[4] >> 6) & 0x03
+
+    def sx(v):
+        return v - 4096 if v & 0x800 else v
+
+    # Scale matches firmware quat_pack.c (2048 * sqrt(2)). Pre-flight-prep
+    # firmware scaled by 4096 directly, which clamped rotations beyond ~60°.
+    QUAT_PACK_INT12_SCALE = 2896.309
+    a = sx(qa) / QUAT_PACK_INT12_SCALE
+    b = sx(qb) / QUAT_PACK_INT12_SCALE
+    c = sx(qc) / QUAT_PACK_INT12_SCALE
+
+    s = 1.0 - a*a - b*b - c*c
+    d = math.sqrt(s) if s > 0.0 else 0.0
+
+    rest = [a, b, c]
+    out = [0.0, 0.0, 0.0, 0.0]
+    out[drop] = d
+    ri = 0
+    for i in range(4):
+        if i != drop:
+            out[i] = rest[ri]
+            ri += 1
+    return tuple(out)
+
+
+def quat_to_euler_deg(q):
+    """Hamilton (w,x,y,z) -> (roll, pitch, yaw) deg matching firmware
+    casper_quat_to_euler convention (roll = body Y, pitch = body X,
+    yaw = body Z). Returns roll, pitch, yaw in degrees plus tilt-from-vertical."""
+    w, x, y, z = q
+    n = math.sqrt(w*w + x*x + y*y + z*z)
+    if n < 1e-9:
+        return (0.0, 0.0, 0.0, 0.0)
+    w, x, y, z = w/n, x/n, y/n, z/n
+    # Yaw (Z), Pitch (X), Roll (Y) — to match firmware euler[] indices
+    siny = 2.0 * (w*z + x*y)
+    cosy = 1.0 - 2.0 * (y*y + z*z)
+    yaw_deg = math.degrees(math.atan2(siny, cosy))
+    sinp = max(-1.0, min(1.0, 2.0 * (w*y - z*x)))
+    pitch_deg = math.degrees(math.asin(sinp))
+    sinr = 2.0 * (w*x + y*z)
+    cosr = 1.0 - 2.0 * (x*x + y*y)
+    roll_deg = math.degrees(math.atan2(sinr, cosr))
+    # Tilt from vertical (body-Y to NED-Z angle)
+    cos_tilt = max(-1.0, min(1.0, 1.0 - 2.0 * (x*x + z*z)))
+    tilt_deg = math.degrees(math.acos(cos_tilt))
+    return (roll_deg, pitch_deg, yaw_deg, tilt_deg)
+
 
 def parse_index_entry(data):
     """Parse 32-byte flight_index_entry_t (packed)."""
@@ -292,7 +358,9 @@ def decode(flash, flight_num=None, export_csv=False, verbose=False, plot=False):
     print(f"  {len(flights)} flight(s) found:\n")
     for f in flights:
         dirty = f["end_tick_ms"] == INDEX_DIRTY
-        clean = (f["flags"] & 0x0001) != 0
+        # log_index_end_flight() clears bit 0 of flags (NOR 1->0 trick) to mark
+        # a clean shutdown, so 0 = clean, 1 (default 0xFFFF) = dirty.
+        clean = (f["flags"] & 0x0001) == 0
         print(f"  Flight {f['flight_id']:3d}: "
               f"t={f['start_tick_ms']}-{'DIRTY' if dirty else f['end_tick_ms']}ms  "
               f"HR=0x{f['hr_start_addr']:07X}-0x{f['hr_end_addr']:07X}  "
@@ -457,13 +525,22 @@ def decode(flash, flight_num=None, export_csv=False, verbose=False, plot=False):
             w.writerow(["timestamp_ms", "baro_pressure_2Pa", "accel_x", "accel_y",
                          "accel_z", "gyro_x", "gyro_y", "gyro_z", "adxl_x", "adxl_y",
                          "adxl_z", "mag_x", "mag_y", "mag_z", "ekf_alt_m", "ekf_vel_mps",
+                         "qw", "qx", "qy", "qz",
+                         "roll_deg", "pitch_deg", "yaw_deg", "tilt_deg",
+                         "quat_packed_hex",
                          "fsm_state", "flags", "imu_temp_c100", "baro_temp_c100",
                          "seq_num"])
             for r in hr_records:
+                q = quat_unpack_smallest_three(r["quat_packed"])
+                roll, pitch, yaw, tilt = quat_to_euler_deg(q)
+                qhex = bytes(r["quat_packed"]).hex()
                 w.writerow([
                     r["timestamp_ms"], r["baro_pressure"],
                     *r["lsm6_accel"], *r["lsm6_gyro"], *r["adxl372"], *r["mmc"],
                     f"{r['ekf_alt_m']:.4f}", f"{r['ekf_vel_mps']:.4f}",
+                    f"{q[0]:.4f}", f"{q[1]:.4f}", f"{q[2]:.4f}", f"{q[3]:.4f}",
+                    f"{roll:.2f}", f"{pitch:.2f}", f"{yaw:.2f}", f"{tilt:.2f}",
+                    qhex,
                     r["fsm_state"], r["flags"], r["imu_temp"], r["baro_temp"],
                     r["seq_num"],
                 ])

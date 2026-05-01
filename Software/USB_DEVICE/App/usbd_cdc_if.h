@@ -31,7 +31,9 @@
 #include "usbd_cdc.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#ifdef LOGGER_SANITY
+#include <stdbool.h>
+#endif
 /* USER CODE END INCLUDE */
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY
@@ -113,6 +115,9 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 /* USER CODE BEGIN EXPORTED_FUNCTIONS */
 uint16_t cdc_ring_available(void);
 uint8_t  cdc_ring_read_byte(void);
+#ifdef LOGGER_SANITY
+bool cdc_sanity_take_go(void);
+#endif
 /* USER CODE END EXPORTED_FUNCTIONS */
 
 /**
