@@ -9,7 +9,18 @@
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  Flash Layout (W25Q512JV — 64 MB total)
+ *
+ *  The flash is partitioned into two non-overlapping regions:
+ *
+ *    0x00000000 .. 0x03C00000   Flight log (60 MB) — raw NOR, custom layout
+ *    0x03C00000 .. 0x04000000   FATFS    ( 4 MB) — used by USB MSC + cal CSV
+ *
+ *  Keeping FATFS off the flight log address range is safety-critical:
+ *  f_mkfs and FATFS writes hit sector 0 of FATFS = 0x03C00000 (NOT 0), so
+ *  formatting the filesystem can never corrupt the flight index.
  * ═══════════════════════════════════════════════════════════════════════ */
+
+#define LOG_FLASH_END          0x03C00000u   /* 60 MB — top of flight log  */
 
 #define FLASH_INDEX_BASE       0x00000000u   /* 4 KB   — flight index      */
 #define FLASH_INDEX_SIZE       0x00001000u
@@ -27,11 +38,17 @@
 #define FLASH_ADXL_SIZE        0x01000000u
 #define FLASH_ADXL_END         (FLASH_ADXL_BASE + FLASH_ADXL_SIZE)
 
-#define LOG_FLASH_END          0x04000000u   /* 64 MB total */
-
-#define FLASH_HR_BASE          0x01091000u   /* ~47.4 MB — high-rate records */
+#define FLASH_HR_BASE          0x01091000u   /* ~43.4 MB high-rate records */
 #define FLASH_HR_SIZE          (LOG_FLASH_END - FLASH_HR_BASE)
 #define FLASH_HR_END           LOG_FLASH_END
+
+/* FATFS region — separate from the flight log. user_diskio.c and
+ * usbd_msc_storage_if.c offset all sector accesses by FATFS_FLASH_BASE so
+ * sector 0 of the FATFS / MSC view maps to physical flash 0x03C00000. */
+#define FATFS_FLASH_BASE       0x03C00000u   /* 4 MB FATFS partition       */
+#define FATFS_FLASH_SIZE       0x00400000u
+#define FATFS_FLASH_END        0x04000000u
+#define FATFS_SECTOR_COUNT     (FATFS_FLASH_SIZE / 0x1000u)  /* 1024 × 4 KB */
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  Constants

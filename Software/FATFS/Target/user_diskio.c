@@ -36,11 +36,15 @@
 #include <string.h>
 #include "ff_gen_drv.h"
 #include "w25q512jv.h"
+#include "log_types.h"
 
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
 #define SECTOR_SIZE   W25Q512JV_SECTOR_SIZE   /* 4096 bytes */
-#define SECTOR_COUNT  W25Q512JV_SECTOR_COUNT  /* 16384 sectors = 64MB */
+/* FATFS lives in a 4 MB partition at the end of flash, separate from the
+ * flight log (see log_types.h FATFS_FLASH_BASE). Sector 0 of the FATFS view
+ * maps to physical flash FATFS_FLASH_BASE, NOT to address 0. */
+#define SECTOR_COUNT  FATFS_SECTOR_COUNT      /* 1024 sectors = 4 MB */
 #define BLOCK_SIZE    16  /* sectors per erase block (64KB / 4KB) */
 
 /* Private variables ---------------------------------------------------------*/
@@ -130,7 +134,7 @@ DRESULT USER_read (
     if (!flash.initialized)
       return RES_NOTRDY;
 
-    uint32_t addr = sector * SECTOR_SIZE;
+    uint32_t addr = FATFS_FLASH_BASE + sector * SECTOR_SIZE;
     if (w25q512jv_read(&flash, addr, buff, count * SECTOR_SIZE) != W25Q_OK)
       return RES_ERROR;
 
@@ -159,7 +163,7 @@ DRESULT USER_write (
       return RES_NOTRDY;
 
     for (UINT i = 0; i < count; i++) {
-      uint32_t addr = (sector + i) * SECTOR_SIZE;
+      uint32_t addr = FATFS_FLASH_BASE + (sector + i) * SECTOR_SIZE;
 
       /* NOR flash requires erase before write */
       if (w25q512jv_erase_sector(&flash, addr) != W25Q_OK)
