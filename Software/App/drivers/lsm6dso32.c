@@ -129,6 +129,17 @@ int lsm6dso32_read(lsm6dso32_t *dev)
     int16_t ay = (int16_t)((uint16_t)buf[11] << 8 | buf[10]);
     int16_t az = (int16_t)((uint16_t)buf[13] << 8 | buf[12]);
 
+    /* Stash raw int16 values too — the HR record packer reads these,
+     * and the prior version of this function only populated the float
+     * forms (accel_g/gyro_dps), so HR records were silently writing
+     * zeros for every accel/gyro field. */
+    dev->raw_accel[0] = ax;
+    dev->raw_accel[1] = ay;
+    dev->raw_accel[2] = az;
+    dev->raw_gyro[0]  = gx;
+    dev->raw_gyro[1]  = gy;
+    dev->raw_gyro[2]  = gz;
+
     /* Convert to physical units */
     /* ±32g: sensitivity = 0.976 mg/LSB → g = raw * 0.000976 */
     dev->accel_g[0] = (float)ax * 0.000976f;

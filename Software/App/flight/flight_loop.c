@@ -814,6 +814,12 @@ void flight_loop_tick(void)
       lsm6dso32_read(&imu);
       DIAG_PROBE_END(probe_imu_read);
 
+      /* Snapshot ADXL372 single sample alongside the IMU service so the HR
+       * record sees fresh high-G data. The dedicated 800 Hz ADXL stream is
+       * still TODO — this is just enough to populate high_g.raw_accel for
+       * flight_logger_push_hr. Cost: ~50 µs SPI3 burst at IMU service rate. */
+      adxl372_read(&high_g);
+
       /* ── Adaptive dt: measure actual elapsed time since the previous
        * IMU service via the DWT cycle counter. The estimators must be
        * fed real elapsed time, not a constant 1/833 = EKF_DT, otherwise
