@@ -1292,14 +1292,20 @@ void flight_loop_tick(void)
 
 #if TEST_MODE == 1
 #ifndef HIL_MODE
-    /* ── Process incoming CDC commands ── */
-    if (cdc_ring_available() > 0) {
+    /* ── Process incoming CDC commands ──
+     * MANUAL_FSM_STEP: bench_process_cdc must run every tick — its
+     * 250 ms idle-dispatch + 5 s heartbeat timers are time-based and
+     * only advance when the function is called, so gating on
+     * cdc_ring_available() would freeze them whenever no new bytes
+     * arrive. The internal while-loop is a no-op when the ring is
+     * empty so the unconditional call is cheap. */
 #ifdef MANUAL_FSM_STEP
-      bench_process_cdc();
+    bench_process_cdc();
 #else
+    if (cdc_ring_available() > 0) {
       cmd_router_process();
-#endif
     }
+#endif
 
     /* ── Flash dump over CDC (blocking, post-flight only) ── */
     if (cmd_router_dump_requested()) {
