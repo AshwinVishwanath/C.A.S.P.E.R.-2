@@ -199,17 +199,31 @@ void flight_logger_tick(flight_logger_t *log)
      * mutex-safe because qspi_state != QSPI_IDLE causes an early-return
      * above, so an erase and a write can never overlap.  During DRAIN the
      * frontier check (addr >= erased_up_to) in the write path relies on
-     * this to stay ahead of the write pointer. */
+     * this to stay ahead of the write pointer.
+     *
+     * KEY INVARIANT: only issue an erase when a stream's runway (gap from
+     * flash_addr to erased_up_to) is below the threshold. The previous
+     * version issued an erase on every tick where ANY stream had room left
+     * to erase to flash_end, which during a flight is always true (pools
+     * are 16-47 MB) — so erases monopolised the QSPI bus and writes drained
+     * at ~33 pages/s instead of the expected 240+ pages/s. With the
+     * threshold, a few sectors of pre-erased runway are kept ahead of each
+     * write pointer; once that runway is consumed faster than writes
+     * advance, an erase is issued to top it up. */
+    #define ERASE_AHEAD_BYTES (4u * 0x1000u)   /* 4 sectors = 16 KB ahead per stream */
     {
-        /* Demand-based: erase the pool with the least runway first. */
         log_stream_t *streams[3] = { &log->hr, &log->lr, &log->adxl };
 
         int best = -1;
-        uint32_t min_runway = 0xFFFFFFFF;
+        uint32_t min_runway = 0xFFFFFFFFu;
         for (int i = 0; i < 3; i++) {
             log_stream_t *s = streams[i];
             if (s->erased_up_to < s->flash_end) {
-                uint32_t runway = s->erased_up_to - s->flash_addr;
+                /* Use signed-aware compare: if flash_addr somehow > erased_up_to
+                 * (shouldn't happen, but defensive), treat runway as 0 (urgent). */
+                uint32_t runway;
+                if (s->flash_addr > s->erased_up_to) runway = 0;
+                else runway = s->erased_up_to - s->flash_addr;
                 if (runway < min_runway) {
                     min_runway = runway;
                     best = i;
@@ -217,7 +231,7 @@ void flight_logger_tick(flight_logger_t *log)
             }
         }
 
-        if (best >= 0) {
+        if (best >= 0 && min_runway < ERASE_AHEAD_BYTES) {
             log_stream_t *s = streams[best];
             if (w25q512jv_erase_sector_it(log->index.flash,
                                            s->erased_up_to) == W25Q_OK) {
