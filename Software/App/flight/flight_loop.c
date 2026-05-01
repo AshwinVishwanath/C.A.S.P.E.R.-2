@@ -394,9 +394,11 @@ static void bench_dispatch(const char *cmd)
         bench_send(line);
         bench_send("[BENCH] SENSORS: imu_age=N/A mag_age=N/A\r\n");
         snprintf(line, sizeof(line),
-                 "[BENCH] LOGGER: launched=%d finalized=%d\r\n",
+                 "[BENCH] LOGGER: launched=%d finalized=%d launch_tick=%lu now=%lu\r\n",
                  (int)logger.launched,
-                 (int)logger.finalized);
+                 (int)logger.finalized,
+                 (unsigned long)logger.summary.launch_tick,
+                 (unsigned long)HAL_GetTick());
         bench_send(line);
         bench_send("[BENCH] IWDG: enabled=1\r\n");
         return;
@@ -1153,22 +1155,41 @@ void flight_loop_tick(void)
         static uint32_t landed_at = 0;
         if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED) {
           landed_at = now;
+#ifdef MANUAL_FSM_STEP
+          bench_send("[BENCH] landed grace started, finalize in 10s\r\n");
+#endif
         }
         /* 10 s grace before finalize so a noisy landing has time to settle */
         if (fsm == FSM_STATE_LANDED && landed_at != 0
             && (now - landed_at >= 10000) && !logger.finalized) {
+#ifdef MANUAL_FSM_STEP
+          bench_send("[BENCH] grace expired, calling flight_logger_finalize...\r\n");
+#endif
 #ifndef LOGGER_SANITY
           flight_logger_finalize(&logger);
           buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
+#endif
+#ifdef MANUAL_FSM_STEP
+          bench_send("[BENCH] finalize returned, 5-beep queued\r\n");
 #endif
           landed_at = 0;
         }
 
         /* Watchdog: force finalize if 600 s elapsed since launch with no finalize.
-         * Covers FSM stuck in MAIN (e.g. main chute deploy but no landing detect). */
+         * Covers FSM stuck in MAIN (e.g. main chute deploy but no landing detect).
+         *
+         * Sign-aware: `now` is the loop's cached HAL_GetTick from earlier in the
+         * iteration; flight_logger_launch internally calls HAL_GetTick AGAIN to
+         * stamp summary.launch_tick, after several ms of QSPI work. That makes
+         * launch_tick > now in the same tick where launch fires, and naive
+         * uint32 subtraction underflows to ~0xFFFFFFFD > 600000 — so the
+         * watchdog spuriously fires finalize the instant launch returns. The
+         * < 0x80000000 guard rejects the underflow case (treat negative
+         * elapsed as 0). */
         if (logger.launched && !logger.finalized) {
           uint32_t since_launch = now - logger.summary.launch_tick;
-          if (since_launch > FSM_LAUNCH_TO_FINALIZE_MS) {
+          if (since_launch < 0x80000000u
+              && since_launch > FSM_LAUNCH_TO_FINALIZE_MS) {
 #ifndef LOGGER_SANITY
             flight_logger_finalize(&logger);
             buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
