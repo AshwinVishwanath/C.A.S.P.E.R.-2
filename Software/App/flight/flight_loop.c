@@ -814,11 +814,33 @@ void flight_loop_tick(void)
       lsm6dso32_read(&imu);
       DIAG_PROBE_END(probe_imu_read);
 
-      /* Snapshot ADXL372 single sample alongside the IMU service so the HR
-       * record sees fresh high-G data. The dedicated 800 Hz ADXL stream is
-       * still TODO — this is just enough to populate high_g.raw_accel for
-       * flight_logger_push_hr. Cost: ~50 µs SPI3 burst at IMU service rate. */
-      adxl372_read(&high_g);
+      /* ADXL372: drain up to ADXL_BATCH triplets from the on-chip 512-entry
+       * FIFO every IMU service. Pre-launch (PAD) the device runs in single-
+       * sample mode and we just snapshot the latest reading; post-launch the
+       * device is in FIFO stream mode at 800 Hz (configured at PAD->BOOST)
+       * and we drain and push to the dedicated ADXL log stream so the
+       * high-rate burst is captured for shock analysis.
+       *
+       * The latest triplet always lands in high_g.raw_accel so the HR record
+       * snapshot at 139 Hz continues to see fresh high-G data either way. */
+      if (logger.launched && !logger.finalized) {
+          enum { ADXL_BATCH = 8 };
+          int16_t adxl_batch[ADXL_BATCH][3];
+          uint8_t batch_count = 0;
+          while (batch_count < ADXL_BATCH && adxl372_fifo_read(&high_g) == 1) {
+              adxl_batch[batch_count][0] = high_g.raw_accel[0];
+              adxl_batch[batch_count][1] = high_g.raw_accel[1];
+              adxl_batch[batch_count][2] = high_g.raw_accel[2];
+              batch_count++;
+          }
+          if (batch_count > 0) {
+              flight_logger_push_adxl(&logger, adxl_batch, batch_count);
+          }
+      } else {
+          /* Pre-launch single-sample read — keeps HR record's high_g
+           * columns valid during PAD. */
+          adxl372_read(&high_g);
+      }
 
       /* ── Adaptive dt: measure actual elapsed time since the previous
        * IMU service via the DWT cycle counter. The estimators must be
@@ -1133,7 +1155,10 @@ void flight_loop_tick(void)
           att.launched = true;
           att.e_int[0] = att.e_int[1] = att.e_int[2] = 0.0f;
 #ifndef HIL_MODE
-          adxl372_enter_measurement(&high_g);
+          /* Switch ADXL372 to 800 Hz FIFO stream mode for the dedicated
+           * high-rate shock log. The IMU service block drains the FIFO
+           * every iteration (see adxl372_fifo_read call above). */
+          adxl372_fifo_init(&high_g, ADXL372_ODR_800HZ);
 #endif
 #if TEST_MODE == 1
 #ifndef LOGGER_SANITY
