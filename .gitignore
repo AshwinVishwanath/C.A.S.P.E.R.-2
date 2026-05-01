@@ -60,17 +60,8 @@ dkms.conf
 build/
 
 
-# STM32CubeMX project file
-*.ioc
-
-# Startup/assembly files
-*.s
-
 # IDE files
 *.id
-
-# Middleware libraries
-Middlewares/
 
 # Windows reserved device names
 nul
