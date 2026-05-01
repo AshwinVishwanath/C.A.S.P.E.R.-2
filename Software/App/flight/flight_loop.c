@@ -280,20 +280,95 @@ static void bench_dispatch(const char *cmd)
         return;
     }
 
+    /* ── flash-wipe ────────────────────────────────────────────────
+     * Erases the flight index + summary regions to recover from FATFS
+     * corruption. Run once after switching off the FATFS-at-boot path. */
+    if (strcmp(cmd, "flash-wipe") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        bench_send("[BENCH] flash-wipe: erasing index sector...\r\n");
+        int rc = w25q512jv_erase_sector(&flash, 0x00000000u);
+        char line[64];
+        snprintf(line, sizeof(line), "[BENCH] index erase rc=%d\r\n", rc);
+        bench_send(line);
+        bench_send("[BENCH] flash-wipe: erasing summary region (16 sectors)...\r\n");
+        for (uint32_t a = 0x00001000u; a < 0x00011000u; a += 0x1000u) {
+            (void)w25q512jv_erase_sector(&flash, a);
+        }
+        bench_send("[BENCH] flash-wipe DONE — power-cycle the board now\r\n");
+        return;
+    }
+
+    /* ── logger-init-test ──────────────────────────────────────────
+     * Diagnostic: re-runs flight_logger_init and reports each step. */
+    if (strcmp(cmd, "logger-init-test") == 0) {
+        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        char line[80];
+
+        snprintf(line, sizeof(line),
+                 "[BENCH] flash.initialized=%d jedec=%02X%02X%02X\r\n",
+                 (int)flash.initialized,
+                 flash.jedec_id[0], flash.jedec_id[1], flash.jedec_id[2]);
+        bench_send(line);
+
+        /* Try a direct read of the first index entry to test w25q paths */
+        uint8_t buf[36];
+        int rc = w25q512jv_read(&flash, 0x00000000u, buf, sizeof(buf));
+        snprintf(line, sizeof(line),
+                 "[BENCH] w25q_read(0x0,36) rc=%d first8=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
+                 rc, buf[0], buf[1], buf[2], buf[3],
+                 buf[4], buf[5], buf[6], buf[7]);
+        bench_send(line);
+
+        bool ok = flight_logger_init(&logger, &flash);
+        snprintf(line, sizeof(line),
+                 "[BENCH] flight_logger_init ok=%d flight_count=%u\r\n",
+                 (int)ok, (unsigned)logger.index.flight_count);
+        bench_send(line);
+        snprintf(line, sizeof(line),
+                 "[BENCH] hr   base=0x%08lX adxl base=0x%08lX\r\n",
+                 (unsigned long)logger.hr.flash_base,
+                 (unsigned long)logger.adxl.flash_base);
+        bench_send(line);
+        return;
+    }
+
     /* ── logger-finalize-force ────────────────────────────────────── */
     if (strcmp(cmd, "logger-finalize-force") == 0) {
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
-        /* If the logger never launched (no flight detected), launching it now
-         * lets us exercise the full finalize path and produces a non-trivial
-         * adxl_end_addr. Without this, the live adxl.flash_addr is 0 and the
-         * finalize is essentially a no-op. */
+        char line[80];
+
+        /* Pre-call state */
+        snprintf(line, sizeof(line),
+                 "[BENCH] PRE   launched=%d finalized=%d\r\n",
+                 (int)logger.launched, (int)logger.finalized);
+        bench_send(line);
+        snprintf(line, sizeof(line),
+                 "[BENCH] PRE   adxl base=0x%08lX addr=0x%08lX state=%d\r\n",
+                 (unsigned long)logger.adxl.flash_base,
+                 (unsigned long)logger.adxl.flash_addr,
+                 (int)logger.adxl.state);
+        bench_send(line);
+        snprintf(line, sizeof(line),
+                 "[BENCH] PRE   hr   base=0x%08lX addr=0x%08lX state=%d\r\n",
+                 (unsigned long)logger.hr.flash_base,
+                 (unsigned long)logger.hr.flash_addr,
+                 (int)logger.hr.state);
+        bench_send(line);
+
         if (!logger.launched) {
             flight_logger_launch(&logger);
+            bench_send("[BENCH] launch called\r\n");
         }
         flight_logger_finalize(&logger);
-        char line[64];
+        bench_send("[BENCH] finalize called\r\n");
+
+        /* Post-call state */
         snprintf(line, sizeof(line),
-                 "[BENCH] FINALIZE adxl_end=0x%08lX hr_end=0x%08lX\r\n",
+                 "[BENCH] POST  launched=%d finalized=%d\r\n",
+                 (int)logger.launched, (int)logger.finalized);
+        bench_send(line);
+        snprintf(line, sizeof(line),
+                 "[BENCH] POST  adxl_end=0x%08lX hr_end=0x%08lX\r\n",
                  (unsigned long)logger.adxl.flash_addr,
                  (unsigned long)logger.hr.flash_addr);
         bench_send(line);

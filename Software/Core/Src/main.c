@@ -566,8 +566,13 @@ int main(void)
 #if (USB_MODE != 2)
   bool fatfs_ok = false;
   bool file_test_ok = false;
-#if (TEST_MODE != 1)
-  // Mount FATFS on flash (CDC mode only — MSC lets the PC manage the filesystem)
+  /* CRITICAL: FATFS uses sector 0 → flash address 0, which is the same as
+   * FLASH_INDEX_BASE. f_mkfs at boot writes FAT structures over the flight
+   * index region, corrupting log_index_init on the next boot. Only run the
+   * FATFS init in the deprecated USB_MODE=3 data-collection build. The flight
+   * build (TEST_MODE=1) and the bench build (TEST_MODE=2) both rely on raw
+   * flash with no filesystem on the same media. */
+#if (TEST_MODE != 1) && (TEST_MODE != 2)
   if (flash_ok) {
     FRESULT fres = f_mount(&USERFatFS, USERPath, 1);
     if (fres == FR_NO_FILESYSTEM) {
