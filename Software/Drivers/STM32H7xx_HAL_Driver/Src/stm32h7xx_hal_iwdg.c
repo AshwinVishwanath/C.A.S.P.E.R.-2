@@ -15,20 +15,29 @@ HAL_StatusTypeDef HAL_IWDG_Init(IWDG_HandleTypeDef *hiwdg)
     if (hiwdg == NULL || hiwdg->Instance == NULL) {
         return HAL_ERROR;
     }
-    /* Unlock PR and RLR */
-    hiwdg->Instance->KR  = IWDG_KEY_WRITE;
+    /* Order matters (RM0433 §50.4.5):
+     *  1. Start the watchdog (also starts LSI clock domain)
+     *  2. Unlock PR/RLR
+     *  3. Write PR/RLR
+     *  4. Wait for SR sync (PVU + RVU clear when LSI synchronizes)
+     *  5. Refresh once to load new RLR
+     *
+     * The previous order (unlock -> PR/RLR -> wait -> 0xCCCC) failed because
+     * (a) PR/RLR reset when IWDG starts so the configured values were lost,
+     * and (b) LSI was not yet running so the SR-sync wait timed out, the
+     * function returned HAL_TIMEOUT before ever writing 0xCCCC, and the
+     * watchdog was never enabled. */
+    hiwdg->Instance->KR  = IWDG_KEY_ENABLE;   /* 0xCCCC */
+    hiwdg->Instance->KR  = IWDG_KEY_WRITE;    /* 0x5555 */
     hiwdg->Instance->PR  = hiwdg->Prescaler;
     hiwdg->Instance->RLR = hiwdg->Reload;
-    /* Wait for registers to update (SR bits clear when done) */
     uint32_t tickstart = HAL_GetTick();
     while ((hiwdg->Instance->SR & 0x7UL) != 0UL) {
-        if ((HAL_GetTick() - tickstart) > 50UL) {
+        if ((HAL_GetTick() - tickstart) > 100UL) {
             return HAL_TIMEOUT;
         }
     }
-    /* Reload and start */
-    hiwdg->Instance->KR = IWDG_KEY_RELOAD;
-    hiwdg->Instance->KR = IWDG_KEY_ENABLE;
+    hiwdg->Instance->KR = IWDG_KEY_RELOAD;    /* 0xAAAA */
     return HAL_OK;
 }
 

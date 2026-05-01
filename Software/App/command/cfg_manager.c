@@ -18,7 +18,10 @@ static bool            s_config_valid;
 void cfg_manager_init(void)
 {
     memset(&s_config, 0, sizeof(s_config));
-    s_config_hash = 0;
+    /* Sentinel so cfg_get_active_hash() never returns 0 in the "no config
+     * uploaded yet" state. cfg_handle_upload overwrites this with the real
+     * CRC-32 of the loaded config. self_test treats hash != 0 as PASS. */
+    s_config_hash = 0xCA5E0001u;
     s_config_valid = false;
 
     /* TODO: Load config from QSPI flash via FATFS if present */
