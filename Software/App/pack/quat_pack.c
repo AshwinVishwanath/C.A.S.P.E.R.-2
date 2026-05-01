@@ -35,10 +35,12 @@ void quat_pack_smallest_three(uint8_t out[5], const float q[4])
         }
     }
 
-    /* 4. Scale to int12: value * 4096, clamp to [-2048, 2047] */
-    int16_t qa = (int16_t)roundf(rem[0] * 4096.0f);
-    int16_t qb = (int16_t)roundf(rem[1] * 4096.0f);
-    int16_t qc = (int16_t)roundf(rem[2] * 4096.0f);
+    /* 4. Scale to int12: 2048 * sqrt(2) ≈ 2896 maps the full
+     *    smallest-three range [-1/sqrt(2), +1/sqrt(2)] to [-2048, +2047]. */
+    static const float QUAT_PACK_INT12_SCALE = 2896.309f;
+    int16_t qa = (int16_t)roundf(rem[0] * QUAT_PACK_INT12_SCALE);
+    int16_t qb = (int16_t)roundf(rem[1] * QUAT_PACK_INT12_SCALE);
+    int16_t qc = (int16_t)roundf(rem[2] * QUAT_PACK_INT12_SCALE);
 
     if (qa > 2047)  qa = 2047;
     if (qa < -2048) qa = -2048;
