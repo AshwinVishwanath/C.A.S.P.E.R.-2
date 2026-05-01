@@ -298,77 +298,16 @@ static void bench_dispatch(const char *cmd)
         return;
     }
 
-    /* ── logger-init-test ──────────────────────────────────────────
-     * Diagnostic: re-runs flight_logger_init and reports each step. */
-    if (strcmp(cmd, "logger-init-test") == 0) {
-        HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
-        char line[80];
-
-        snprintf(line, sizeof(line),
-                 "[BENCH] flash.initialized=%d jedec=%02X%02X%02X\r\n",
-                 (int)flash.initialized,
-                 flash.jedec_id[0], flash.jedec_id[1], flash.jedec_id[2]);
-        bench_send(line);
-
-        /* Try a direct read of the first index entry to test w25q paths */
-        uint8_t buf[36];
-        int rc = w25q512jv_read(&flash, 0x00000000u, buf, sizeof(buf));
-        snprintf(line, sizeof(line),
-                 "[BENCH] w25q_read(0x0,36) rc=%d first8=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
-                 rc, buf[0], buf[1], buf[2], buf[3],
-                 buf[4], buf[5], buf[6], buf[7]);
-        bench_send(line);
-
-        bool ok = flight_logger_init(&logger, &flash);
-        snprintf(line, sizeof(line),
-                 "[BENCH] flight_logger_init ok=%d flight_count=%u\r\n",
-                 (int)ok, (unsigned)logger.index.flight_count);
-        bench_send(line);
-        snprintf(line, sizeof(line),
-                 "[BENCH] hr   base=0x%08lX adxl base=0x%08lX\r\n",
-                 (unsigned long)logger.hr.flash_base,
-                 (unsigned long)logger.adxl.flash_base);
-        bench_send(line);
-        return;
-    }
-
     /* ── logger-finalize-force ────────────────────────────────────── */
     if (strcmp(cmd, "logger-finalize-force") == 0) {
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
-        char line[80];
-
-        /* Pre-call state */
-        snprintf(line, sizeof(line),
-                 "[BENCH] PRE   launched=%d finalized=%d\r\n",
-                 (int)logger.launched, (int)logger.finalized);
-        bench_send(line);
-        snprintf(line, sizeof(line),
-                 "[BENCH] PRE   adxl base=0x%08lX addr=0x%08lX state=%d\r\n",
-                 (unsigned long)logger.adxl.flash_base,
-                 (unsigned long)logger.adxl.flash_addr,
-                 (int)logger.adxl.state);
-        bench_send(line);
-        snprintf(line, sizeof(line),
-                 "[BENCH] PRE   hr   base=0x%08lX addr=0x%08lX state=%d\r\n",
-                 (unsigned long)logger.hr.flash_base,
-                 (unsigned long)logger.hr.flash_addr,
-                 (int)logger.hr.state);
-        bench_send(line);
-
         if (!logger.launched) {
             flight_logger_launch(&logger);
-            bench_send("[BENCH] launch called\r\n");
         }
         flight_logger_finalize(&logger);
-        bench_send("[BENCH] finalize called\r\n");
-
-        /* Post-call state */
+        char line[64];
         snprintf(line, sizeof(line),
-                 "[BENCH] POST  launched=%d finalized=%d\r\n",
-                 (int)logger.launched, (int)logger.finalized);
-        bench_send(line);
-        snprintf(line, sizeof(line),
-                 "[BENCH] POST  adxl_end=0x%08lX hr_end=0x%08lX\r\n",
+                 "[BENCH] FINALIZE adxl_end=0x%08lX hr_end=0x%08lX\r\n",
                  (unsigned long)logger.adxl.flash_addr,
                  (unsigned long)logger.hr.flash_addr);
         bench_send(line);
@@ -394,11 +333,9 @@ static void bench_dispatch(const char *cmd)
         bench_send(line);
         bench_send("[BENCH] SENSORS: imu_age=N/A mag_age=N/A\r\n");
         snprintf(line, sizeof(line),
-                 "[BENCH] LOGGER: launched=%d finalized=%d launch_tick=%lu now=%lu\r\n",
+                 "[BENCH] LOGGER: launched=%d finalized=%d\r\n",
                  (int)logger.launched,
-                 (int)logger.finalized,
-                 (unsigned long)logger.summary.launch_tick,
-                 (unsigned long)HAL_GetTick());
+                 (int)logger.finalized);
         bench_send(line);
         bench_send("[BENCH] IWDG: enabled=1\r\n");
         return;
@@ -1182,26 +1119,18 @@ void flight_loop_tick(void)
         if (prev_fsm != FSM_STATE_MAIN && fsm == FSM_STATE_MAIN)
           log_stream_finalize(&logger.adxl);
 
-        /* Landed: record 5 more seconds, then finalize */
+        /* Landed: 10 s grace, then finalize. The grace gives a bouncy or
+         * wind-blown landing time to settle so the file we close on is the
+         * actual rest state. */
         static uint32_t landed_at = 0;
         if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED) {
           landed_at = now;
-#ifdef MANUAL_FSM_STEP
-          bench_send("[BENCH] landed grace started, finalize in 10s\r\n");
-#endif
         }
-        /* 10 s grace before finalize so a noisy landing has time to settle */
         if (fsm == FSM_STATE_LANDED && landed_at != 0
             && (now - landed_at >= 10000) && !logger.finalized) {
-#ifdef MANUAL_FSM_STEP
-          bench_send("[BENCH] grace expired, calling flight_logger_finalize...\r\n");
-#endif
 #ifndef LOGGER_SANITY
           flight_logger_finalize(&logger);
           buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
-#endif
-#ifdef MANUAL_FSM_STEP
-          bench_send("[BENCH] finalize returned, 5-beep queued\r\n");
 #endif
           landed_at = 0;
         }
