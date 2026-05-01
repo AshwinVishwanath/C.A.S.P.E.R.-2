@@ -1233,10 +1233,11 @@ void flight_loop_tick(void)
                 (double)mag_norm);
           } else {
             len = snprintf(buf, sizeof(buf),
-                ">alt:%.1f,vel:%.1f,vaccel:%.2f,fsm:%u,t:%.1f\r\n",
+                ">alt:%.1f,vel:%.1f,vaccel:%.2f,pitch:%.1f,yaw:%.1f,tilt:%.1f,fsm:%u,t:%.1f\r\n",
                 (double)tstate.alt_m, (double)tstate.vel_mps,
-                (double)fsm_in.vert_accel_g, (unsigned)fsm,
-                (double)tstate.flight_time_s);
+                (double)fsm_in.vert_accel_g,
+                (double)diag_pitch_deg, (double)diag_yaw_deg, (double)diag_tilt_deg,
+                (unsigned)fsm, (double)tstate.flight_time_s);
           }
           if (len > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)len);
         }
