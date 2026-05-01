@@ -119,7 +119,15 @@ static uint8_t bench_cmd_idx = 0;
 
 static void bench_send(const char *msg)
 {
-    CDC_Transmit_FS((uint8_t *)msg, strlen(msg));
+    /* Blocking on USBD_BUSY so back-to-back lines (e.g. selftest 7 cases)
+     * don't get silently dropped when CDC TX is in flight. */
+    uint16_t len = (uint16_t)strlen(msg);
+    uint32_t t0  = HAL_GetTick();
+    while (CDC_Transmit_FS((uint8_t *)msg, len) == USBD_BUSY) {
+        HAL_IWDG_Refresh(&hiwdg1);
+        if ((HAL_GetTick() - t0) > 50u) break;  /* host disappeared — give up */
+    }
+    HAL_Delay(2);
 }
 
 static void bench_dispatch(const char *cmd)
@@ -219,21 +227,18 @@ static void bench_dispatch(const char *cmd)
     /* ── simulate-apogee ──────────────────────────────────────────── */
     if (strcmp(cmd, "simulate-apogee") == 0) {
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
-        /* Bench harness only — does NOT actually fire pyros on the bench.
-         * Force FSM through PAD->BOOST->COAST->APOGEE in bench mode,
-         * sample the firing flag, then immediately disarm all channels. */
+        pyro_mgr_tick();   /* fresh ADC + continuity sample */
         flight_fsm_set_bench_mode(true);
         flight_fsm_force_state(FSM_STATE_BOOST);
         flight_fsm_force_state(FSM_STATE_COAST);
         flight_fsm_force_state(FSM_STATE_APOGEE);
         bool fired = pyro_mgr_is_firing();
-        /* Immediately stop any accidental fire — bench must not fire pyros */
         pyro_mgr_disarm_all();
         char ack[64];
         snprintf(ack, sizeof(ack),
-                 "[BENCH] APOGEE FSM=APOGEE FIRED=%d CH=%d\r\n",
+                 "[BENCH] APOGEE FSM=APOGEE FIRED=%d CONT=0x%02X\r\n",
                  (int)fired,
-                 (int)pyro_mgr_get_cont_bitmap());
+                 (unsigned)pyro_mgr_get_cont_bitmap());
         bench_send(ack);
         return;
     }
@@ -241,6 +246,7 @@ static void bench_dispatch(const char *cmd)
     /* ── pyro-cap-test ────────────────────────────────────────────── */
     if (strcmp(cmd, "pyro-cap-test") == 0) {
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        pyro_mgr_tick();   /* fresh ADC + continuity sample */
         uint8_t cont = pyro_mgr_get_cont_bitmap();
         float vbatt  = pyro_mgr_get_batt_voltage();
         char line[48];
@@ -255,9 +261,11 @@ static void bench_dispatch(const char *cmd)
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
         bench_send("[BENCH] IWDG-TEST start, expect reset\r\n");
         HAL_Delay(50);  /* let CDC IN packet drain before locking up */
+        /* DWT cycle counter runs from SYSCLK (432 MHz) regardless of IRQs.
+         * 700 ms × 432 MHz = 302,400,000 cycles — well past the 500 ms IWDG. */
         __disable_irq();
-        for (volatile int i = 0; i < 60000000; i++);
-        /* Should never reach here — IWDG fires within ~500ms */
+        uint32_t t0 = DWT->CYCCNT;
+        while ((DWT->CYCCNT - t0) < (700u * 432000u)) { __NOP(); }
         __enable_irq();
         bench_send("[BENCH] IWDG-TEST ERROR: reset did not occur\r\n");
         return;
@@ -275,11 +283,19 @@ static void bench_dispatch(const char *cmd)
     /* ── logger-finalize-force ────────────────────────────────────── */
     if (strcmp(cmd, "logger-finalize-force") == 0) {
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+        /* If the logger never launched (no flight detected), launching it now
+         * lets us exercise the full finalize path and produces a non-trivial
+         * adxl_end_addr. Without this, the live adxl.flash_addr is 0 and the
+         * finalize is essentially a no-op. */
+        if (!logger.launched) {
+            flight_logger_launch(&logger);
+        }
         flight_logger_finalize(&logger);
-        char line[48];
+        char line[64];
         snprintf(line, sizeof(line),
-                 "[BENCH] FINALIZE adxl_end=0x%08lX\r\n",
-                 (unsigned long)logger.adxl.flash_addr);
+                 "[BENCH] FINALIZE adxl_end=0x%08lX hr_end=0x%08lX\r\n",
+                 (unsigned long)logger.adxl.flash_addr,
+                 (unsigned long)logger.hr.flash_addr);
         bench_send(line);
         return;
     }
@@ -368,10 +384,18 @@ static void bench_process_cdc(void)
         bench_cmd_idx = 0;
     }
 
-    /* 5 s heartbeat so the operator can see the loop is alive even with
-     * no commands in flight. */
-    static uint32_t s_last_hb_ms = 0;
     uint32_t now_ms = HAL_GetTick();
+
+    /* 10 Hz pyro tick so continuity LEDs reflect physical wiring and
+     * battery voltage / continuity reads always return fresh data. */
+    static uint32_t s_last_pyro_ms = 0;
+    if (now_ms - s_last_pyro_ms >= 100) {
+        s_last_pyro_ms = now_ms;
+        pyro_mgr_tick();
+    }
+
+    /* 5 s heartbeat so the operator can see the loop is alive between commands. */
+    static uint32_t s_last_hb_ms = 0;
     if (now_ms - s_last_hb_ms >= 5000) {
         s_last_hb_ms = now_ms;
         char hb[48];

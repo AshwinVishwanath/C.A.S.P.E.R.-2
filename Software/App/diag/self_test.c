@@ -62,10 +62,19 @@ int self_test_run_all(diag_result_t *results)
     results[n].detail  = (uint16_t)mag.product_id;
     n++;
 
-    /* Test 2: Baro PROM CRC (non-zero PROM[0] means calibration read OK) */
-    results[n].test_id = 2;
-    results[n].result  = (baro.prom[0] != 0) ? 1 : 0;
-    results[n].detail  = baro.prom[0];
+    /* Test 2: Baro PROM calibration coefficients read OK.
+     * prom[0] is a manufacturer/factory word that is legitimately 0 on many
+     * MS5611 parts — the actual calibration coefficients are prom[1..6] (C1..C6).
+     * A working sensor never has all of C1..C6 zero. */
+    {
+        results[n].test_id = 2;
+        bool any_nonzero = false;
+        for (int k = 1; k <= 6; k++) {
+            if (baro.prom[k] != 0) { any_nonzero = true; break; }
+        }
+        results[n].result = any_nonzero ? 1 : 0;
+        results[n].detail = baro.prom[1];  /* C1 = pressure sensitivity */
+    }
     n++;
 
     /* Test 3: EKF init — P[0] non-zero means casper_ekf_init() ran */
