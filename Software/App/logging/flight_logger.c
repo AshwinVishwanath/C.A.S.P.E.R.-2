@@ -144,6 +144,20 @@ void flight_logger_start(flight_logger_t *log)
  * ═══════════════════════════════════════════════════════════════════════ */
 void flight_logger_launch(flight_logger_t *log)
 {
+    /* If a prior session was finalized in this power cycle, restart the
+     * streams from a clean slate so the new session can write records.
+     * Without this, log->finalized stays true after the first finalize
+     * and flight_logger_tick early-returns on every subsequent call —
+     * silently dropping the entire next session's data. Real flight
+     * never hits this branch (one launch per boot) but bench testing
+     * does. The prelaunch ring is necessarily empty after a restart
+     * since LOG_FINAL streams reject pushes. */
+    if (log->finalized) {
+        log->finalized = false;
+        log_stream_start(&log->hr);
+        log_stream_start(&log->lr);
+        log_stream_start(&log->adxl);
+    }
     log_stream_launch(&log->hr);
     log_stream_launch(&log->lr);
     log_stream_launch(&log->adxl);
