@@ -326,8 +326,22 @@ static void bench_dispatch(const char *cmd)
 
 static void bench_process_cdc(void)
 {
+    /* Idle-dispatch timeout: if the terminal doesn't send CR/LF (some serial
+     * tools don't), dispatch when the buffer has been idle this long. */
+    #define BENCH_IDLE_DISPATCH_MS 250
+
+    static uint32_t s_last_byte_ms = 0;
+    static bool     s_ready_sent   = false;
+
+    /* One-shot boot banner so the operator sees bench mode is alive. */
+    if (!s_ready_sent) {
+        bench_send("\r\n[BENCH] READY  type 'bench' then a command (selftest, status, ...)\r\n");
+        s_ready_sent = true;
+    }
+
     while (cdc_ring_available() > 0) {
         uint8_t c = cdc_ring_read_byte();
+        s_last_byte_ms = HAL_GetTick();
 
         if (c == '\r' || c == '\n') {
             if (bench_cmd_idx > 0) {
@@ -336,16 +350,34 @@ static void bench_process_cdc(void)
                 bench_cmd_idx = 0;
             }
         } else if (c == 0x00) {
-            /* COBS delimiter — not a text command, discard accumulated text */
             bench_cmd_idx = 0;
         } else if (c >= 0x20 && c <= 0x7E) {
             if (bench_cmd_idx < sizeof(bench_cmd_buf) - 1) {
                 bench_cmd_buf[bench_cmd_idx++] = (char)c;
             } else {
-                bench_cmd_idx = 0; /* overflow — discard */
+                bench_cmd_idx = 0;
             }
         }
-        /* ignore other control chars */
+    }
+
+    /* Idle dispatch: terminator-less terminals still work. */
+    if (bench_cmd_idx > 0 &&
+        (HAL_GetTick() - s_last_byte_ms) > BENCH_IDLE_DISPATCH_MS) {
+        bench_cmd_buf[bench_cmd_idx] = '\0';
+        bench_dispatch(bench_cmd_buf);
+        bench_cmd_idx = 0;
+    }
+
+    /* 5 s heartbeat so the operator can see the loop is alive even with
+     * no commands in flight. */
+    static uint32_t s_last_hb_ms = 0;
+    uint32_t now_ms = HAL_GetTick();
+    if (now_ms - s_last_hb_ms >= 5000) {
+        s_last_hb_ms = now_ms;
+        char hb[48];
+        int n = snprintf(hb, sizeof(hb), "[BENCH] heartbeat uptime=%lums\r\n",
+                         (unsigned long)now_ms);
+        if (n > 0) bench_send(hb);
     }
 }
 #endif
