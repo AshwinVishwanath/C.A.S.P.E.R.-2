@@ -346,6 +346,12 @@ bench:
 	    BUILD_DIR=build/Bench \
 	    EXTRA_DEFS="-DTEST_MODE=2 -DFLIGHT_ASCII_PLOT=1"
 
+manual:
+	$(MAKE) BUILD_TARGET=FLIGHT \
+	    TARGET=Casper2_Manual \
+	    BUILD_DIR=build/Manual \
+	    EXTRA_DEFS="-DMANUAL_FSM_STEP=1 -DFLIGHT_ASCII_PLOT=1"
+
 ground:
 	$(MAKE) BUILD_TARGET=GROUND
 

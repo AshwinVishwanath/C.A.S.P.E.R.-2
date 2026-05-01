@@ -109,8 +109,8 @@ flight_cfg_t g_flight_cfg = {
     .main_fire_dur     = 1000,
 };
 
-/* ── Bench test mode: CDC text command parser (TEST_MODE 2 only) ── */
-#if TEST_MODE == 2
+/* ── Bench test mode: CDC text command parser (TEST_MODE 2 or MANUAL_FSM_STEP) ── */
+#if (TEST_MODE == 2) || defined(MANUAL_FSM_STEP)
 #include "self_test.h"
 #include "flight_logger.h"
 
@@ -508,6 +508,9 @@ void flight_loop_init(void)
     ned_accel_accum[0] = ned_accel_accum[1] = ned_accel_accum[2] = 0.0f;
     last_accel_mag_g = 0.0f;
     last_baro_alt_agl = 0.0f;
+#ifdef MANUAL_FSM_STEP
+    flight_fsm_set_bench_mode(true);
+#endif
 #endif
 }
 
@@ -1151,8 +1154,9 @@ void flight_loop_tick(void)
         if (prev_fsm != FSM_STATE_LANDED && fsm == FSM_STATE_LANDED) {
           landed_at = now;
         }
+        /* 10 s grace before finalize so a noisy landing has time to settle */
         if (fsm == FSM_STATE_LANDED && landed_at != 0
-            && (now - landed_at >= 5000) && !logger.finalized) {
+            && (now - landed_at >= 10000) && !logger.finalized) {
 #ifndef LOGGER_SANITY
           flight_logger_finalize(&logger);
           buzzer_beep_n(30, 5, 200, 300);  /* 5 long beeps = finalized */
@@ -1283,7 +1287,11 @@ void flight_loop_tick(void)
 #ifndef HIL_MODE
     /* ── Process incoming CDC commands ── */
     if (cdc_ring_available() > 0) {
+#ifdef MANUAL_FSM_STEP
+      bench_process_cdc();
+#else
       cmd_router_process();
+#endif
     }
 
     /* ── Flash dump over CDC (blocking, post-flight only) ── */
