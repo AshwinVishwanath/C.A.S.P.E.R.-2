@@ -43,7 +43,7 @@ If these pass, the sim is "trustworthy" for forward exploration of estimator cha
 ## File layout
 
 ```
-Software/Sim/
+Matlab Code/Simulink Development/Markdown Claude Docs
 ├── README.md                          (this file — entry point only)
 ├── ARCHITECTURE.md                    (locked decisions, frame conventions)
 ├── PHASE0_SPEC.md                     (mission + acceptance criteria)
@@ -65,7 +65,7 @@ Software/Sim/
     └── SIMULINK_PATTERNS.md
 ```
 
-All sub-agent build outputs land in `Software/Sim/build/T0X_*/` directories created during execution.
+All sub-agent build outputs land in `Matlab Code/Simulink Development/Software/T0X_*/` directories created during execution.
 
 ## Hard constraints on the manager and sub-agents
 
