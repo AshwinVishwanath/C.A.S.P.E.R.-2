@@ -92,6 +92,8 @@ Software/build_out.txt
 
 # Flight data images
 *.png
+# But keep Simulink dev build plots (each task's plots/ subdir is part of the deliverable)
+!Matlab Code/Simulink Development/build/**/*.png
 
 # Python cache
 __pycache__/
