@@ -66,13 +66,15 @@ where `qa = ACCEL_VRW²`, `qab = ACCEL_BI_SIGMA²`, `qbb = BARO_BI_SIGMA²`.
 | `gyro_arw[2]` (body Z) | 6.73e-5 | rad/√s | same | Z-axis |
 | `expected mag magnitude` | 40.18 | µT | `mag_cal.h` `MAG_CAL_EXPECTED_MAG` | After hard/soft iron applied |
 | `mag_update_hz` (flight) | 10.0 | Hz | `casper_att_config_t` default | Decimate 100 Hz raw to 10 Hz |
-| `Kp_grav` (pad gain) | 1.0 | — | typical config (see `flight_loop.c`) | Mahony gravity correction gain |
-| `Kp_mag_pad` | 0.5 | — | same | Mag correction on pad |
-| `Kp_mag_flight` | 2.0 | — | same | Mag correction in flight |
-| `Ki` | 0.0 | — | same (typically 0 to start) | Integral gain — keep at 0 in Phase 0 |
-| `gyro_lpf_cutoff_hz` | 50.0 | Hz | same | IIR LPF on gyro |
+| `Kp_grav` (pad gain) | 10.0 | — | `Software/Core/Src/main.c:385` | Mahony gravity correction gain |
+| `Kp_mag_pad` | 0.0 | — | `Software/Core/Src/main.c:386` | Mag correction on pad — **disabled** |
+| `Kp_mag_flight` | 0.0 | — | `Software/Core/Src/main.c:387` | Mag correction in flight — **disabled** |
+| `Ki` | 0.1 | — | `Software/Core/Src/main.c:388` | Integral gain |
+| `gyro_lpf_cutoff_hz` | 50.0 | Hz | `Software/Core/Src/main.c:389` | IIR LPF on gyro |
+| `launch_accel_g` | 3.0 | g | `Software/Core/Src/main.c:391` | Launch-detect accel threshold |
 
-**Note**: Mahony gains (Kp_*, Ki) are configurable. The Phase 0 sim must read them from a configuration block to match what flight code is currently flying with. Default values above. Confirm against actual values in `Software/App/flight/flight_loop_init()` or the global config struct.
+**Operational note** (corrected from earlier draft; T02 verification flagged the delta):
+Both `Kp_mag_*` are currently zero in flight firmware, meaning mag corrections are disabled. After the static pad init averaging completes, heading propagates open-loop from the gyro (subject to bias drift). `Kp_grav = 10.0` is an order of magnitude higher than the earlier draft suggested. The Phase 0 attitude port (T09) must use these live values from `casper_att_config_t` in `main.c:384-392`, not the prior placeholder defaults.
 
 ## 3. Gyro temperature coefficients (`Software/App/nav/temp_cal_coeffs.h`)
 
