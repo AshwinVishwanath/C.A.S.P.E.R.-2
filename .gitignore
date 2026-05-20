@@ -56,8 +56,16 @@ dkms.conf
 .vscode/settings.json
 .vscode/tasks.json
 
-# Build output
-build/
+# Build output (firmware only — Simulink dev build/ under Matlab Code/ is NOT firmware build)
+Software/build/
+Software/Debug/
+Software/Release/
+
+# Simulink dev build artifacts that exceed GitHub's 100MB push limit or are
+# trivially regeneratable from checked-in build scripts. Source-of-truth is
+# the .m build script; .mat files are caches.
+Matlab Code/Simulink Development/build/**/*.mat
+Matlab Code/Simulink Development/build/**/*.slxc
 
 
 # STM32CubeMX project file
@@ -84,6 +92,8 @@ Software/build_out.txt
 
 # Flight data images
 *.png
+# But keep Simulink dev build plots (each task's plots/ subdir is part of the deliverable)
+!Matlab Code/Simulink Development/build/**/*.png
 
 # Python cache
 __pycache__/
