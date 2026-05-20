@@ -85,6 +85,12 @@ function cfg = casper_sim_config(varargin)
     % even when the trust-gate driver calls the MATLAB functions directly).
     truth_bus_obj = casper_truth_build_bus();
 
+    % Build the unified visual-model bus dialect (SensorInputBus +
+    % {IMU,Baro,Mag,GPS}OutputBus + EstimateBus). Used by the new visual
+    % top-level model casper_sim_phase0.slx. Legacy blocks still consume
+    % TruthBus directly via Bus Selector.
+    unified_buses = casper_build_unified_buses();
+
     base_vars = struct( ...
         'Sim',         Sim, ...
         'IMU',         IMU, ...
@@ -103,6 +109,10 @@ function cfg = casper_sim_config(varargin)
     fns = fieldnames(base_vars);
     for k = 1:numel(fns)
         assignin('base', fns{k}, base_vars.(fns{k}));
+    end
+    bus_fns = fieldnames(unified_buses);
+    for k = 1:numel(bus_fns)
+        assignin('base', bus_fns{k}, unified_buses.(bus_fns{k}));
     end
 
     % --- Build cfg struct ----------------------------------------------------
