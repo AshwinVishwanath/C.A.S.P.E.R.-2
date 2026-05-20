@@ -91,6 +91,14 @@ function cfg = casper_sim_config(varargin)
     % TruthBus directly via Bus Selector.
     unified_buses = casper_build_unified_buses();
 
+    % Load T03-local supplemental IMU params (bias init, cross-axis, etc.)
+    % so the legacy block's Constant references AND the new visual block's
+    % evalin('base', 'IMU_T03') both resolve.
+    if exist('casper_imu_local_params', 'file') == 2
+        IMU_T03_local = casper_imu_local_params();
+        assignin('base', 'IMU_T03', IMU_T03_local);
+    end
+
     base_vars = struct( ...
         'Sim',         Sim, ...
         'IMU',         IMU, ...
