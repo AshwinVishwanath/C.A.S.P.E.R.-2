@@ -61,6 +61,12 @@ Software/build/
 Software/Debug/
 Software/Release/
 
+# Simulink dev build artifacts that exceed GitHub's 100MB push limit or are
+# trivially regeneratable from checked-in build scripts. Source-of-truth is
+# the .m build script; .mat files are caches.
+Matlab Code/Simulink Development/build/**/*.mat
+Matlab Code/Simulink Development/build/**/*.slxc
+
 
 # STM32CubeMX project file
 *.ioc
