@@ -66,6 +66,8 @@ Software/Release/
 # the .m build script; .mat files are caches.
 Matlab Code/Simulink Development/build/**/*.mat
 Matlab Code/Simulink Development/build/**/*.slxc
+# Simulink JIT cache (per-run, machine-specific)
+Matlab Code/Simulink Development/build/**/slprj/
 
 
 # STM32CubeMX project file
