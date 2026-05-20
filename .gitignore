@@ -56,8 +56,10 @@ dkms.conf
 .vscode/settings.json
 .vscode/tasks.json
 
-# Build output
-build/
+# Build output (firmware only — Simulink dev build/ under Matlab Code/ is NOT firmware build)
+Software/build/
+Software/Debug/
+Software/Release/
 
 
 # STM32CubeMX project file
