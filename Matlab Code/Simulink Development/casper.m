@@ -117,8 +117,9 @@ function cfg = casper(varargin)
     fprintf('  StopTime : %.1f s\n', cfg.StopTime_s);
     fprintf('  Solver dt: %.0e s\n', cfg.SolverDt_s);
     fprintf('Next steps:\n');
+    fprintf('  build_casper_sim_phase0                                %% (re)build .slx; saves StopTime=%.1f\n', stop_time_s);
     fprintf('  open_system(''casper_sim_phase0'')                      %% visual inspection\n');
-    fprintf('  sim(''casper_sim_phase0'', ''StopTime'', ''%.1f'')          %% run the simulation\n', stop_time_s);
+    fprintf('  sim(''casper_sim_phase0'')                              %% run the simulation (saved StopTime)\n');
     fprintf('  test_visual_model_compile                              %% automated 5 s smoke\n');
     fprintf('  run_phase0_trustgate                                   %% canonical byte-exact regression\n');
     fprintf('\n');

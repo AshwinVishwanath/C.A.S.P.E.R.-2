@@ -109,7 +109,22 @@ function model_path = build_casper_sim_phase0(varargin)
 
     % Populate Sim/IMU/ADXL/Baro/Mag/GPS/Estimator/Attitude/TruthBus + the
     % six unified Simulink.Bus objects (SensorInputBus/IMUOutputBus/etc.).
-    casper_sim_config('Seed', 20260519, 'StopTime', 5.0);
+    % If the user already ran casper() (which populates SimCfg with their
+    % chosen profile's StopTime), preserve that so the rebuilt .slx has
+    % a saved StopTime matching the profile — otherwise `sim(model)`
+    % without an explicit override uses a 5 s default and the EKFs barely
+    % finish initializing.
+    if evalin('base', 'exist(''SimCfg'', ''var'')')
+        prior_cfg = evalin('base', 'SimCfg');
+        if isstruct(prior_cfg) && isfield(prior_cfg, 'StopTime_s')
+            casper_sim_config('Seed', double(prior_cfg.Seed), ...
+                              'StopTime', prior_cfg.StopTime_s);
+        else
+            casper_sim_config('Seed', 20260519, 'StopTime', 5.0);
+        end
+    else
+        casper_sim_config('Seed', 20260519, 'StopTime', 5.0);
+    end
 
     % Augment GPS struct (mirrors T06's build_gps_block_visual augment).
     augment_gps_struct_();
@@ -194,12 +209,21 @@ function model_path = build_casper_sim_phase0(varargin)
     %   3. Solver runs from t=-5 (pad) through t=StopTime+5 (post-pad flight)
     %      and the attitude estimator gets the same byte-exact init window
     %      the legacy MATLAB driver gets via its PreLaunchPad_s=5 option.
+    % Pull the user's chosen StopTime from SimCfg if available — falls back
+    % to 85 s (apogee profile) which is the sensible default for a flight
+    % long enough that the EKFs converge.
+    if evalin('base', 'exist(''SimCfg'', ''var'')')
+        stoptime_str = sprintf('%.6g', evalin('base', 'SimCfg.StopTime_s'));
+    else
+        stoptime_str = '85';
+    end
+
     set_param(model_name, ...
         'Solver',                  'FixedStepDiscrete', ...
         'SolverType',              'Fixed-step', ...
         'FixedStep',               '1e-3', ...
         'StartTime',               '-5', ...
-        'StopTime',                '5', ...
+        'StopTime',                stoptime_str, ...
         'SaveOutput',              'on', ...
         'SaveFormat',              'Dataset', ...
         'SaveTime',                'on', ...
