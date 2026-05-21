@@ -33,6 +33,8 @@ function results = test_baro_model()
     t02_dir = char(java.io.File(t02_dir).getCanonicalPath());
     addpath(t01_dir);
     addpath(t02_dir);
+    % Shared plot-style helper lives one level up under build/.
+    addpath(fullfile(here, '..'));
 
     plots_dir = fullfile(here, 'plots');
     if ~exist(plots_dir, 'dir'); mkdir(plots_dir); end
@@ -483,23 +485,28 @@ end
 % ---------------------------------------------------------------------------
 
 function plot_pad_5s_(t, p, ground_p, png_path)
-    f = figure('Visible', 'off', 'Position', [100 100 1000 600]);
-    subplot(2, 1, 1);
-    plot(t, p, '-');
-    hold on;
-    yline(ground_p, '--r', 'truth ground');
-    xlabel('time [s]'); ylabel('pressure [Pa]');
-    title('Baro pad pressure, 5 s sample (pinned truth)');
-    grid on; legend('baro measurement', 'truth ground', 'Location', 'best');
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
 
-    subplot(2, 1, 2);
+    nexttile;
+    plot(t, p, '-', 'DisplayName', 'baro measurement');
+    hold on;
+    yline(ground_p, '--r', 'DisplayName', 'truth ground');
+    xlabel('Time [s]'); ylabel('Pressure [Pa]');
+    title('Baro pad pressure, 5 s (pinned truth)');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
     plot(t, p - mean(p), '-');
-    xlabel('time [s]'); ylabel('pressure - mean [Pa]');
+    xlabel('Time [s]'); ylabel('Pressure residual [Pa]');
     title(sprintf('Residual about mean (mean=%.2f Pa, std=%.3f Pa)', ...
         mean(p), std(p)));
-    grid on;
-    exportgraphics(f, png_path, 'Resolution', 120);
-    close(f);
+
+    title(tcl, 'Baro pad-pressure snapshot', 'Interpreter', 'none');
+
+    apply_style_(fig, 12, 8);
+    exportgraphics(fig, png_path, 'Resolution', 300);
+    close(fig);
 end
 
 function plot_mach_window_(truth, Baro, seed, png_path)
@@ -516,48 +523,69 @@ function plot_mach_window_(truth, Baro, seed, png_path)
 
     M_at_t = interp1(truth.time_s, truth.mach, t, 'linear', 0);
 
-    f = figure('Visible', 'off', 'Position', [100 100 1100 700]);
-    subplot(2, 1, 1);
-    plot(t, p_clean, '-b', 'DisplayName', 'no shock'); hold on;
-    plot(t, p_with_shock, '-r', 'DisplayName', 'with shock');
-    xlabel('time [s]'); ylabel('pressure [Pa]');
-    title('Baro pressure: clean vs Mach-shock through transonic window');
-    grid on; legend('Location', 'best');
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
 
-    subplot(2, 1, 2);
+    nexttile;
+    plot(t, p_clean,      '-', 'DisplayName', 'no shock'); hold on;
+    plot(t, p_with_shock, '-', 'DisplayName', 'with shock');
+    xlabel('Time [s]'); ylabel('Pressure [Pa]');
+    title('Baro pressure: clean vs Mach-shock');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
     yyaxis left;
     plot(t, M_at_t, '-k', 'DisplayName', 'truth Mach'); hold on;
-    yline(0.40, '--g', 'gate ON 0.40');
-    yline(0.35, '--m', 'gate OFF 0.35');
-    ylabel('Mach');
+    yline(0.40, '--g', 'DisplayName', 'gate ON 0.40');
+    yline(0.35, '--m', 'DisplayName', 'gate OFF 0.35');
+    ylabel('Mach [-]');
     yyaxis right;
-    plot(t, p_clean - p_with_shock, '-r', 'DisplayName', 'shock error [Pa]');
-    ylabel('clean - shocked [Pa]');
-    xlabel('time [s]');
-    title('Mach gate window + induced static-pressure error');
-    grid on; legend('Location', 'best');
+    plot(t, p_clean - p_with_shock, '-r', 'DisplayName', 'shock error');
+    ylabel('Pressure error [Pa]');
+    xlabel('Time [s]');
+    title('Mach-gate window and induced static-pressure error');
+    legend('Location', 'best', 'Box', 'off');
 
-    exportgraphics(f, png_path, 'Resolution', 120);
-    close(f);
+    title(tcl, 'Baro Mach-shock transonic window', 'Interpreter', 'none');
+
+    apply_style_(fig, 12, 8);
+    exportgraphics(fig, png_path, 'Resolution', 300);
+    close(fig);
 end
 
 function plot_psd_(fxx, pxx, png_path)
-    f = figure('Visible', 'off', 'Position', [100 100 1000 600]);
+    fig = figure('Visible', 'off');
+    tiledlayout(1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    nexttile;
     semilogx(fxx, 10*log10(pxx + eps), '-');
-    xlabel('frequency [Hz]'); ylabel('PSD [dB Pa^2/Hz]');
-    title('Baro pad noise PSD');
-    grid on;
+    xlabel('Frequency [Hz]'); ylabel('PSD [dB Pa^{2}/Hz]');
+    title('Baro pad-noise PSD');
     hold on;
-    xline(0.05, '--', '0.05 Hz drift boundary');
-    xline(0.1,  '--', '0.1 Hz flat-band start');
+    xline(0.05, '--', 'DisplayName', '0.05 Hz drift boundary');
+    xline(0.1,  '--', 'DisplayName', '0.1 Hz flat-band start');
     pa_per_m = 8.4;
     sigma_white = pa_per_m * sqrt(0.5);
     fs = 100;
     pwn = sigma_white^2 / (fs/2);
-    yline(10*log10(pwn), '--r', sprintf('analytical white floor (sigma=%.2f Pa)', ...
-        sigma_white));
-    exportgraphics(f, png_path, 'Resolution', 120);
-    close(f);
+    yline(10*log10(pwn), '--r', ...
+        'DisplayName', sprintf('analytical white floor (\\sigma=%.2f Pa)', sigma_white));
+    legend('Location', 'best', 'Box', 'off');
+
+    apply_style_(fig, 10, 6);
+    exportgraphics(fig, png_path, 'Resolution', 300);
+    close(fig);
+end
+
+function apply_style_(fig, width_in, height_in)
+%APPLY_STYLE_ Apply the shared casper_plot_style if available; fall back
+% to a minimal white-background figure sizing.
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(fig, struct('WidthIn', width_in, 'HeightIn', height_in));
+    else
+        set(fig, 'Color', 'w', 'Units', 'inches', ...
+                 'Position', [1 1 width_in height_in], ...
+                 'PaperPositionMode', 'auto');
+    end
 end
 
 % ---------------------------------------------------------------------------

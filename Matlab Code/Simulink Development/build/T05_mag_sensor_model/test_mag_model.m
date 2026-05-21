@@ -28,6 +28,8 @@ function results = test_mag_model()
     t02_script = fullfile(t02_dir, 'casper_sensor_params.m');
     addpath(t02_dir);
     addpath(here);
+    % Shared plot-style helper lives one level up under build/.
+    addpath(fileparts(here));
     evalin('base', sprintf('run(''%s'')', strrep(t02_script, '''', '''''')));
 
     Sim = evalin('base', 'Sim');
@@ -123,11 +125,13 @@ function results = test_mag_model()
 
     % Save PSD plot.
     fig = figure('Visible', 'off');
+    tiledlayout(1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    nexttile;
     semilogx(f_hz, 10*log10(max(psd, eps)));
-    grid on;
-    xlabel('Frequency (Hz)'); ylabel('PSD (dB µT^2/Hz)');
+    xlabel('Frequency [Hz]'); ylabel('PSD [dB \muT^{2}/Hz]');
     title('Mag AR(1) noise PSD (axis X, zero-input)');
-    saveas(fig, fullfile(plot_dir, 'mag_noise_psd.png'));
+    apply_style_(fig, 10, 6);
+    exportgraphics(fig, fullfile(plot_dir, 'mag_noise_psd.png'), 'Resolution', 300);
     close(fig);
 
     % ===================================================================
@@ -278,52 +282,66 @@ function results = test_mag_model()
     % mag_pad_1s_no_tx.png
     clear casper_mag_noise casper_mag_radio_interference;
     [t_no, mag_no, ~, ~] = run_chain_pad(1.0, Mag, Sim, false);
-    fig = figure('Visible','off','Position',[100 100 900 500]);
-    plot(t_no, mag_no(:,1), 'r', t_no, mag_no(:,2), 'g', t_no, mag_no(:,3), 'b');
-    grid on;
-    legend('m_x','m_y','m_z','Location','best');
-    xlabel('time (s)'); ylabel('mag (µT)');
+    fig = figure('Visible', 'off');
+    tiledlayout(1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    nexttile;
+    plot(t_no, mag_no(:,1), 'DisplayName', 'm_x'); hold on;
+    plot(t_no, mag_no(:,2), 'DisplayName', 'm_y');
+    plot(t_no, mag_no(:,3), 'DisplayName', 'm_z');
+    xlabel('Time [s]'); ylabel('Magnetic field [\muT]');
     title('Pad mag, 1 s, RadioInterfActive = false');
-    saveas(fig, fullfile(plot_dir, 'mag_pad_1s_no_tx.png'));
+    legend('Location', 'best', 'Box', 'off');
+    apply_style_(fig, 10, 6);
+    exportgraphics(fig, fullfile(plot_dir, 'mag_pad_1s_no_tx.png'), 'Resolution', 300);
     close(fig);
     pass_p1 = isfile(fullfile(plot_dir, 'mag_pad_1s_no_tx.png'));
 
     % mag_pad_1s_with_tx.png
     clear casper_mag_noise casper_mag_radio_interference;
     [t_yes, mag_yes, ~, tx_yes] = run_chain_pad(1.0, Mag, Sim, true);
-    fig = figure('Visible','off','Position',[100 100 900 500]);
-    subplot(2,1,1);
-    plot(t_yes, mag_yes(:,1), 'r', t_yes, mag_yes(:,2), 'g', t_yes, mag_yes(:,3), 'b');
-    grid on;
-    legend('m_x','m_y','m_z','Location','best');
-    ylabel('mag (µT)');
-    title('Pad mag, 1 s, RadioInterfActive = true (spikes every 100 ms)');
-    subplot(2,1,2);
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile;
+    plot(t_yes, mag_yes(:,1), 'DisplayName', 'm_x'); hold on;
+    plot(t_yes, mag_yes(:,2), 'DisplayName', 'm_y');
+    plot(t_yes, mag_yes(:,3), 'DisplayName', 'm_z');
+    xlabel('Time [s]'); ylabel('Magnetic field [\muT]');
+    title('Mag samples (spikes every 100 ms)');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
     stairs(t_yes, double(tx_yes), 'k', 'LineWidth', 1.1);
-    grid on;
-    xlabel('time (s)'); ylabel('tx\_active');
+    xlabel('Time [s]'); ylabel('tx_active [-]');
+    title('Radio TX schedule');
     ylim([-0.1, 1.1]);
-    saveas(fig, fullfile(plot_dir, 'mag_pad_1s_with_tx.png'));
+
+    title(tcl, 'Pad mag, 1 s, RadioInterfActive = true', 'Interpreter', 'none');
+    apply_style_(fig, 12, 8);
+    exportgraphics(fig, fullfile(plot_dir, 'mag_pad_1s_with_tx.png'), 'Resolution', 300);
     close(fig);
     pass_p2 = isfile(fullfile(plot_dir, 'mag_pad_1s_with_tx.png'));
 
     % mag_tx_event_zoom.png  --  100 ms zoom on first TX
-    fig = figure('Visible','off','Position',[100 100 900 500]);
+    fig = figure('Visible', 'off');
+    tiledlayout(1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    nexttile;
     zoom_idx = t_yes <= 0.1 + 1e-9;
     yyaxis left;
-    plot(t_yes(zoom_idx)*1000, mag_yes(zoom_idx,1), 'r-o', ...
-         t_yes(zoom_idx)*1000, mag_yes(zoom_idx,2), 'g-s', ...
-         t_yes(zoom_idx)*1000, mag_yes(zoom_idx,3), 'b-^');
-    ylabel('mag (µT)');
+    plot(t_yes(zoom_idx)*1000, mag_yes(zoom_idx,1), '-o', 'DisplayName', 'm_x'); hold on;
+    plot(t_yes(zoom_idx)*1000, mag_yes(zoom_idx,2), '-s', 'DisplayName', 'm_y');
+    plot(t_yes(zoom_idx)*1000, mag_yes(zoom_idx,3), '-^', 'DisplayName', 'm_z');
+    ylabel('Magnetic field [\muT]');
     yyaxis right;
-    stairs(t_yes(zoom_idx)*1000, double(tx_yes(zoom_idx)), 'k', 'LineWidth', 1.2);
+    stairs(t_yes(zoom_idx)*1000, double(tx_yes(zoom_idx)), 'k', 'LineWidth', 1.2, ...
+        'DisplayName', 'tx_active');
     ylim([-0.1, 1.1]);
-    ylabel('tx\_active');
-    grid on;
-    xlabel('time (ms)');
+    ylabel('tx_active [-]');
+    xlabel('Time [ms]');
     title('Single TX event zoom (0-100 ms)');
-    legend('m_x','m_y','m_z','tx\_active','Location','best');
-    saveas(fig, fullfile(plot_dir, 'mag_tx_event_zoom.png'));
+    legend('Location', 'best', 'Box', 'off');
+    apply_style_(fig, 10, 6);
+    exportgraphics(fig, fullfile(plot_dir, 'mag_tx_event_zoom.png'), 'Resolution', 300);
     close(fig);
     pass_p3 = isfile(fullfile(plot_dir, 'mag_tx_event_zoom.png'));
 
@@ -520,4 +538,16 @@ end
 function s = md_escape(s)
     s = strrep(s, '|', '\|');
     s = strrep(s, newline, ' ');
+end
+
+function apply_style_(fig, width_in, height_in)
+%APPLY_STYLE_ Apply the shared casper_plot_style if available; fall back
+% to a minimal white-background figure sizing.
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(fig, struct('WidthIn', width_in, 'HeightIn', height_in));
+    else
+        set(fig, 'Color', 'w', 'Units', 'inches', ...
+                 'Position', [1 1 width_in height_in], ...
+                 'PaperPositionMode', 'auto');
+    end
 end

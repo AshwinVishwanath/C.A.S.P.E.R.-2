@@ -23,6 +23,8 @@ function results = test_eskf_port()
 
     here = fileparts(mfilename('fullpath'));
     addpath(here);
+    % Shared plot-style helper lives one level up under build/.
+    addpath(fullfile(here, '..'));
 
     % Load sensor params (provides Estimator, Sim, etc. in caller workspace).
     sp_dir = fullfile(here, '..', 'T02_sensor_params');
@@ -618,57 +620,92 @@ function make_plots(out_dir, t)
     if ~exist(plot_dir, 'dir'), mkdir(plot_dir); end
 
     % --- States vs truth ---
-    fig = figure('Visible', 'off', 'Position', [100, 100, 1200, 800]);
-    subplot(4,1,1); plot(t.t_s, t.x(:,1), 'b-', t.t_s, t.truth_alt, 'k--');
-    ylabel('alt (m)'); legend('est', 'truth'); grid on;
-    title('ESKF states vs truth (full trajectory)');
-    subplot(4,1,2); plot(t.t_s, t.x(:,2), 'b-', t.t_s, t.truth_vel, 'k--');
-    ylabel('vel (m/s)'); legend('est', 'truth'); grid on;
-    subplot(4,1,3); plot(t.t_s, t.x(:,3));
-    ylabel('accel bias (m/s^2)'); grid on;
-    subplot(4,1,4); plot(t.t_s, t.x(:,4));
-    ylabel('baro bias (m)'); xlabel('time (s)'); grid on;
-    saveas(fig, fullfile(plot_dir, 'eskf_states.png'));
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(4, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile;
+    plot(t.t_s, t.x(:,1), '-', 'DisplayName', 'estimate'); hold on;
+    plot(t.t_s, t.truth_alt, '--', 'DisplayName', 'truth');
+    xlabel('Time [s]'); ylabel('Altitude [m]');
+    title('Altitude');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
+    plot(t.t_s, t.x(:,2), '-', 'DisplayName', 'estimate'); hold on;
+    plot(t.t_s, t.truth_vel, '--', 'DisplayName', 'truth');
+    xlabel('Time [s]'); ylabel('Vertical velocity [m/s]');
+    title('Vertical velocity');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
+    plot(t.t_s, t.x(:,3));
+    xlabel('Time [s]'); ylabel('Accel bias [m/s^{2}]');
+    title('Accel bias');
+
+    nexttile;
+    plot(t.t_s, t.x(:,4));
+    xlabel('Time [s]'); ylabel('Baro bias [m]');
+    title('Baro bias');
+
+    title(tcl, 'ESKF states vs truth (full trajectory)', 'Interpreter', 'none');
+    apply_style_(fig, 12, 10);
+    exportgraphics(fig, fullfile(plot_dir, 'eskf_states.png'), 'Resolution', 300);
     close(fig);
 
     % --- Innovations ---
-    fig = figure('Visible', 'off', 'Position', [100, 100, 1200, 600]);
-    subplot(2,1,1);
-    plot(t.t_s, t.baro_innov, 'b.', 'MarkerSize', 4);
-    hold on;
-    grid on;
-    ylabel('baro innov (m)');
-    title('Baro innovation with 5-sigma gate boundary');
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile;
+    plot(t.t_s, t.baro_innov, '.', 'MarkerSize', 4, 'DisplayName', 'innov'); hold on;
     sigma_band = 5 * sqrt(t.baro_innov_var);
-    plot(t.t_s,  sigma_band, 'r-');
-    plot(t.t_s, -sigma_band, 'r-');
-    % Shade mach-gated region
+    plot(t.t_s,  sigma_band, '-', 'DisplayName', '+5\sigma');
+    plot(t.t_s, -sigma_band, '-', 'DisplayName', '-5\sigma');
     gated_idx = find(t.mach_gate);
     if ~isempty(gated_idx)
-        yl = ylim;
-        for ii = 1:numel(gated_idx)
-            ti = t.t_s(gated_idx(ii));
-        end
-        % Just annotate with a rug
-        plot(t.t_s(gated_idx), zeros(numel(gated_idx),1), 'g.', 'MarkerSize', 2);
+        plot(t.t_s(gated_idx), zeros(numel(gated_idx), 1), '.', ...
+            'MarkerSize', 2, 'DisplayName', 'mach-gated');
     end
-    legend('innov','+5\sigma','-5\sigma','mach-gated');
+    xlabel('Time [s]'); ylabel('Baro innovation [m]');
+    title('Baro innovation with 5-\sigma gate boundary');
+    legend('Location', 'best', 'Box', 'off');
 
-    subplot(2,1,2);
-    plot(t.t_s, t.zupt_innov, 'b.', 'MarkerSize', 4);
-    ylabel('ZUPT innov (m/s)'); xlabel('time (s)'); grid on;
-    title('ZUPT innovation (NO gate)');
-    saveas(fig, fullfile(plot_dir, 'eskf_innovations.png'));
+    nexttile;
+    plot(t.t_s, t.zupt_innov, '.', 'MarkerSize', 4);
+    xlabel('Time [s]'); ylabel('ZUPT innovation [m/s]');
+    title('ZUPT innovation (no gate)');
+
+    title(tcl, 'ESKF innovations', 'Interpreter', 'none');
+    apply_style_(fig, 12, 8);
+    exportgraphics(fig, fullfile(plot_dir, 'eskf_innovations.png'), 'Resolution', 300);
     close(fig);
 
     % --- Covariance diagonals ---
-    fig = figure('Visible', 'off', 'Position', [100, 100, 1200, 600]);
-    semilogy(t.t_s, t.P_diag);
-    legend('P(1,1) alt', 'P(2,2) vel', 'P(3,3) ab', 'P(4,4) bb');
-    xlabel('time (s)'); ylabel('variance');
-    title('Covariance diagonals'); grid on;
-    saveas(fig, fullfile(plot_dir, 'eskf_covariance.png'));
+    fig = figure('Visible', 'off');
+    tiledlayout(1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    nexttile;
+    semilogy(t.t_s, t.P_diag(:,1), 'DisplayName', 'P(1,1) alt'); hold on;
+    semilogy(t.t_s, t.P_diag(:,2), 'DisplayName', 'P(2,2) vel');
+    semilogy(t.t_s, t.P_diag(:,3), 'DisplayName', 'P(3,3) ab');
+    semilogy(t.t_s, t.P_diag(:,4), 'DisplayName', 'P(4,4) bb');
+    xlabel('Time [s]'); ylabel('Variance (log scale)');
+    title('ESKF covariance diagonals');
+    legend('Location', 'best', 'Box', 'off');
+    apply_style_(fig, 12, 6);
+    exportgraphics(fig, fullfile(plot_dir, 'eskf_covariance.png'), 'Resolution', 300);
     close(fig);
+end
+
+function apply_style_(fig, width_in, height_in)
+%APPLY_STYLE_ Apply the shared casper_plot_style if available; fall back
+% to a minimal white-background figure sizing.
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(fig, struct('WidthIn', width_in, 'HeightIn', height_in));
+    else
+        set(fig, 'Color', 'w', 'Units', 'inches', ...
+                 'Position', [1 1 width_in height_in], ...
+                 'PaperPositionMode', 'auto');
+    end
 end
 
 % =====================================================================

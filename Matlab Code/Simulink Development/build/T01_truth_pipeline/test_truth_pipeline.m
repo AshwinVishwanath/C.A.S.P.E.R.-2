@@ -26,6 +26,8 @@ function results = test_truth_pipeline()
     if ~exist(plots_dir, 'dir'); mkdir(plots_dir); end
 
     addpath(here);
+    % Shared plot-style helper lives one level up under build/.
+    addpath(fullfile(here, '..'));
 
     criteria   = cell(0, 3);  % each row: {label, status, detail}
     deviations = {};
@@ -304,46 +306,75 @@ end
 % ---------------------------------------------------------------------------
 
 function plot_raw_vs_resampled(raw, truth, png_path)
-    f = figure('Visible', 'off', 'Position', [100 100 1100 800]);
-    subplot(3, 1, 1);
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile;
     plot(raw.t_s, raw.alt_m, 'o', 'MarkerSize', 2, 'DisplayName', 'raw');
     hold on;
     plot(truth.time_s, truth.alt_m, '-', 'DisplayName', 'pchip');
-    xlabel('time [s]'); ylabel('alt [m]'); title('Altitude: raw vs resampled');
-    legend('Location', 'best'); grid on;
+    xlabel('Time [s]'); ylabel('Altitude [m]');
+    title('Altitude');
+    legend('Location', 'best', 'Box', 'off');
 
-    subplot(3, 1, 2);
+    nexttile;
     plot(raw.t_s, raw.vel_v_mps, 'o', 'MarkerSize', 2, 'DisplayName', 'raw');
     hold on;
     plot(truth.time_s, truth.vel_v_mps, '-', 'DisplayName', 'pchip');
-    xlabel('time [s]'); ylabel('vel-V [m/s]'); title('Vertical velocity');
-    legend('Location', 'best'); grid on;
+    xlabel('Time [s]'); ylabel('Vertical velocity [m/s]');
+    title('Vertical velocity');
+    legend('Location', 'best', 'Box', 'off');
 
-    subplot(3, 1, 3);
+    nexttile;
     plot(raw.t_s, raw.accel_v_mps2, 'o', 'MarkerSize', 2, 'DisplayName', 'raw');
     hold on;
     plot(truth.time_s, truth.accel_v_mps2, '-', 'DisplayName', 'pchip');
-    xlabel('time [s]'); ylabel('accel-V [m/s^2]'); title('Vertical accel');
-    legend('Location', 'best'); grid on;
+    xlabel('Time [s]'); ylabel('Vertical acceleration [m/s^{2}]');
+    title('Vertical acceleration');
+    legend('Location', 'best', 'Box', 'off');
 
-    exportgraphics(f, png_path, 'Resolution', 120);
-    close(f);
+    title(tcl, 'Truth pipeline: raw vs pchip-resampled', ...
+        'Interpreter', 'none');
+
+    apply_style_(fig, 12, 10);
+    exportgraphics(fig, png_path, 'Resolution', 300);
+    close(fig);
 end
 
 function plot_full_trajectory(truth, png_path)
-    f = figure('Visible', 'off', 'Position', [100 100 1100 1000]);
-    subplot(5, 1, 1); plot(truth.time_s, truth.alt_m);
-        ylabel('alt [m]'); title('Truth resampled (full flight)'); grid on;
-    subplot(5, 1, 2); plot(truth.time_s, truth.vel_v_mps);
-        ylabel('vel-V [m/s]'); grid on;
-    subplot(5, 1, 3); plot(truth.time_s, truth.accel_v_mps2);
-        ylabel('accel-V [m/s^2]'); grid on;
-    subplot(5, 1, 4); plot(truth.time_s, truth.mach);
-        ylabel('Mach'); grid on;
-    subplot(5, 1, 5); plot(truth.time_s, truth.pitch_deg);
-        ylabel('pitch [deg]'); xlabel('time [s]'); grid on;
-    exportgraphics(f, png_path, 'Resolution', 120);
-    close(f);
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(5, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile; plot(truth.time_s, truth.alt_m);
+        ylabel('Altitude [m]'); title('Altitude');
+    nexttile; plot(truth.time_s, truth.vel_v_mps);
+        ylabel('Vertical velocity [m/s]'); title('Vertical velocity');
+    nexttile; plot(truth.time_s, truth.accel_v_mps2);
+        ylabel('Vertical acceleration [m/s^{2}]'); title('Vertical acceleration');
+    nexttile; plot(truth.time_s, truth.mach);
+        ylabel('Mach [-]'); title('Mach');
+    nexttile; plot(truth.time_s, truth.pitch_deg);
+        ylabel('Pitch [deg]'); xlabel('Time [s]'); title('Pitch');
+
+    title(tcl, 'Truth resampled trajectory (full flight)', ...
+        'Interpreter', 'none');
+
+    apply_style_(fig, 12, 12);
+    exportgraphics(fig, png_path, 'Resolution', 300);
+    close(fig);
+end
+
+function apply_style_(fig, width_in, height_in)
+%APPLY_STYLE_ Apply the shared casper_plot_style if available; otherwise
+% fall back to a minimal white-background figure sizing so the script
+% still works in isolation.
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(fig, struct('WidthIn', width_in, 'HeightIn', height_in));
+    else
+        set(fig, 'Color', 'w', 'Units', 'inches', ...
+                 'Position', [1 1 width_in height_in], ...
+                 'PaperPositionMode', 'auto');
+    end
 end
 
 % ---------------------------------------------------------------------------

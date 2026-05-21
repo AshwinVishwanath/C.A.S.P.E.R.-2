@@ -13,6 +13,8 @@ function results = test_attitude_port()
     % ── Load T02 sensor params into this function's workspace ───────────
     t02_dir = fullfile(this_dir, '..', 'T02_sensor_params');
     addpath(t02_dir);
+    % Shared plot-style helper lives one level up under build/.
+    addpath(fullfile(this_dir, '..'));
     run(fullfile(t02_dir, 'casper_sensor_params.m'));
     %#ok<*NODEF>  Sim/Attitude come from the script above
 
@@ -137,18 +139,25 @@ function r = ac1_static_init(Att, Sim, plots_dir)
 
     % Plot
     try
-        f = figure('Visible', 'off');
+        fig = figure('Visible', 'off');
+        tiledlayout(1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+        nexttile;
         t = (1:N) * dt_s;
         eul_deg = zeros(3, N);
         for k = 1:N
             eul_deg(:,k) = ops.to_euler(quat_hist(:,k));
         end
-        plot(t, eul_deg.'); grid on; xlabel('t (s)'); ylabel('Euler (deg)');
-        legend('bodyZ (yaw)','bodyY (roll)','bodyX (pitch)','Location','best');
+        plot(t, eul_deg(1,:), 'DisplayName', 'bodyZ (yaw)'); hold on;
+        plot(t, eul_deg(2,:), 'DisplayName', 'bodyY (roll)');
+        plot(t, eul_deg(3,:), 'DisplayName', 'bodyX (pitch)');
+        xlabel('Time [s]'); ylabel('Euler angle [deg]');
         title(sprintf('AC1 pad-init: final err = %.3f deg, init done at %.2f s', ...
             angle_err_deg, init_t_s));
-        saveas(f, fullfile(plots_dir, 'attitude_pad_initialization.png'));
-        close(f);
+        legend('Location', 'best', 'Box', 'off');
+        apply_style_(fig, 10, 6);
+        exportgraphics(fig, fullfile(plots_dir, 'attitude_pad_initialization.png'), ...
+            'Resolution', 300);
+        close(fig);
     catch ME
         warning('AC1 plot failed: %s', ME.message);
     end
@@ -491,31 +500,55 @@ function r = ac7_full_trajectory(Att, Sim, plots_dir)
 
     % Plots
     try
-        f1 = figure('Visible','off');
+        fig1 = figure('Visible', 'off');
+        tcl = tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
         eul_truth = zeros(3,N); eul_est = zeros(3,N);
         for k = 1:N
             eul_truth(:,k) = ops.to_euler(q_truth_hist(:,k));
             eul_est(:,k)   = ops.to_euler(q_est_hist(:,k));
         end
-        subplot(3,1,1); plot(t, eul_truth(1,:), 'k-', t, eul_est(1,:), 'r--');
-            grid on; ylabel('yaw (deg)'); legend('truth','est');
-            title('AC7 attitude tracking');
-        subplot(3,1,2); plot(t, eul_truth(2,:), 'k-', t, eul_est(2,:), 'r--');
-            grid on; ylabel('roll (deg)');
-        subplot(3,1,3); plot(t, eul_truth(3,:), 'k-', t, eul_est(3,:), 'r--');
-            grid on; ylabel('pitch (deg)'); xlabel('t (s)');
-        saveas(f1, fullfile(plots_dir, 'attitude_flight_tracking.png'));
-        close(f1);
 
-        f2 = figure('Visible','off');
-        plot(t, err_deg); grid on; hold on;
-        yline(1.0, 'g--', 'powered limit (1 deg)');
-        yline(2.0, 'r--', 'coast limit (2 deg)');
-        xlabel('t (s)'); ylabel('angle error (deg)');
+        nexttile;
+        plot(t, eul_truth(1,:), '-', 'DisplayName', 'truth'); hold on;
+        plot(t, eul_est(1,:),   '--', 'DisplayName', 'estimate');
+        xlabel('Time [s]'); ylabel('Yaw [deg]');
+        title('Yaw');
+        legend('Location', 'best', 'Box', 'off');
+
+        nexttile;
+        plot(t, eul_truth(2,:), '-', 'DisplayName', 'truth'); hold on;
+        plot(t, eul_est(2,:),   '--', 'DisplayName', 'estimate');
+        xlabel('Time [s]'); ylabel('Roll [deg]');
+        title('Roll');
+        legend('Location', 'best', 'Box', 'off');
+
+        nexttile;
+        plot(t, eul_truth(3,:), '-', 'DisplayName', 'truth'); hold on;
+        plot(t, eul_est(3,:),   '--', 'DisplayName', 'estimate');
+        xlabel('Time [s]'); ylabel('Pitch [deg]');
+        title('Pitch');
+        legend('Location', 'best', 'Box', 'off');
+
+        title(tcl, 'AC7 attitude tracking (truth vs estimate)', 'Interpreter', 'none');
+        apply_style_(fig1, 12, 10);
+        exportgraphics(fig1, fullfile(plots_dir, 'attitude_flight_tracking.png'), ...
+            'Resolution', 300);
+        close(fig1);
+
+        fig2 = figure('Visible', 'off');
+        tiledlayout(1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+        nexttile;
+        plot(t, err_deg, 'DisplayName', 'angle error'); hold on;
+        yline(1.0, '--', 'DisplayName', 'powered limit (1 deg)');
+        yline(2.0, '--', 'DisplayName', 'coast limit (2 deg)');
+        xlabel('Time [s]'); ylabel('Angle error [deg]');
         title(sprintf('AC7 angle error: RMS powered = %.3f, coast = %.3f', ...
             rms_powered, rms_coast));
-        saveas(f2, fullfile(plots_dir, 'attitude_error_euler.png'));
-        close(f2);
+        legend('Location', 'best', 'Box', 'off');
+        apply_style_(fig2, 10, 6);
+        exportgraphics(fig2, fullfile(plots_dir, 'attitude_error_euler.png'), ...
+            'Resolution', 300);
+        close(fig2);
     catch ME
         warning('AC7 plot failed: %s', ME.message);
     end
@@ -614,6 +647,18 @@ end
 function q = ops_normalize_4(q)
     n = sqrt(q(1)^2 + q(2)^2 + q(3)^2 + q(4)^2);
     q = q / n;
+end
+
+function apply_style_(fig, width_in, height_in)
+%APPLY_STYLE_ Apply the shared casper_plot_style if available; fall back
+% to a minimal white-background figure sizing.
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(fig, struct('WidthIn', width_in, 'HeightIn', height_in));
+    else
+        set(fig, 'Color', 'w', 'Units', 'inches', ...
+                 'Position', [1 1 width_in height_in], ...
+                 'PaperPositionMode', 'auto');
+    end
 end
 
 function write_status_md(this_dir, results, n_pass, n_fail)

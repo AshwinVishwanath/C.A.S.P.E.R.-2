@@ -28,7 +28,7 @@
 | 7 | Tilt RMS <1 deg (powered), <2 deg (coast) | PASS | RMS powered 0.132 deg (lim 1.0), RMS coast 0.135 deg (lim 2.0) |
 | 8 | Determinism (same seed → byte-identical quats) | PASS | max |Δq| between runs = 0.000e+00 (must be 0) |
 | 9 | No NaN/Inf | PASS | all finite = 1 |
-| 10 | Performance (<30s wall for 549s sim) | PASS | measured 1.19s for 30s sim → projected 21.82s for 549s (lim 30s) |
+| 10 | Performance (<30s wall for 549s sim) | PASS | measured 1.33s for 30s sim → projected 24.39s for 549s (lim 30s) |
 
 **Summary**: 10 PASS, 0 FAIL
 

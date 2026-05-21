@@ -31,6 +31,8 @@ function results = test_gps_model()
     addpath(t02_dir);
     addpath(t01_dir);
     addpath(here);
+    % Shared plot-style helper lives one level up under build/.
+    addpath(fileparts(here));
     evalin('base', sprintf('run(''%s'')', strrep(t02_script, '''', '''''')));
 
     Sim = evalin('base', 'Sim');
@@ -343,49 +345,74 @@ function results = test_gps_model()
     % Plots
     % ===================================================================
     % gps_pad_30s.png
-    fig = figure('Visible','off','Position',[100 100 1000 700]);
-    subplot(3,1,1);
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile;
     plot(t_pad, double(gps_pad.lat_deg7) / 1e7, '.-');
-    grid on;
-    ylabel('lat (deg)'); title('GPS pad output, 30 s');
-    subplot(3,1,2);
+    xlabel('Time [s]'); ylabel('Latitude [deg]');
+    title('Latitude');
+
+    nexttile;
     plot(t_pad, double(gps_pad.lon_deg7) / 1e7, '.-');
-    grid on;
-    ylabel('lon (deg)');
-    subplot(3,1,3);
+    xlabel('Time [s]'); ylabel('Longitude [deg]');
+    title('Longitude');
+
+    nexttile;
     plot(t_pad, double(gps_pad.alt_msl_mm) / 1000, '.-');
-    grid on;
-    ylabel('alt MSL (m)'); xlabel('time (s)');
-    saveas(fig, fullfile(plot_dir, 'gps_pad_30s.png'));
+    xlabel('Time [s]'); ylabel('Altitude MSL [m]');
+    title('Altitude MSL');
+
+    title(tcl, 'GPS pad output, 30 s', 'Interpreter', 'none');
+    apply_style_(fig, 12, 10);
+    exportgraphics(fig, fullfile(plot_dir, 'gps_pad_30s.png'), 'Resolution', 300);
     close(fig);
     pass_p1 = isfile(fullfile(plot_dir, 'gps_pad_30s.png'));
 
     % gps_cocom_window.png
-    fig = figure('Visible','off','Position',[100 100 1000 800]);
-    subplot(3,1,1);
-    plot(truth_sub.time_s, v_total_truth, 'b-', 'LineWidth', 1.1);
-    hold on;
-    yline(GPS_local.COCOMVelThreshold_mps, 'r--', 'LineWidth', 1.0);
-    grid on; ylabel('|v_{NED}| (m/s)'); title('COCOM window (truth) vs GPS fix_type');
-    subplot(3,1,2);
-    plot(truth_sub.time_s, alt_truth, 'b-', 'LineWidth', 1.1);
-    hold on;
-    yline(GPS_local.COCOMAltThreshold_m, 'r--', 'LineWidth', 1.0);
-    grid on; ylabel('alt (m)');
-    subplot(3,1,3);
-    stairs(t_full, double(gps_full.fix_type), 'k-', 'LineWidth', 1.2);
-    grid on; ylabel('fix_type'); xlabel('time (s)'); ylim([-0.5 3.5]);
-    % Shade truth COCOM window across all subplots.
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    ax1 = nexttile;
+    plot(truth_sub.time_s, v_total_truth, '-', 'LineWidth', 1.1, ...
+        'DisplayName', '|v_{NED}| truth'); hold on;
+    yline(GPS_local.COCOMVelThreshold_mps, '--', 'LineWidth', 1.0, ...
+        'DisplayName', 'COCOM vel threshold');
+    xlabel('Time [s]'); ylabel('|v_{NED}| [m/s]');
+    title('Velocity magnitude (truth)');
+    legend('Location', 'best', 'Box', 'off');
+
+    ax2 = nexttile;
+    plot(truth_sub.time_s, alt_truth, '-', 'LineWidth', 1.1, ...
+        'DisplayName', 'altitude truth'); hold on;
+    yline(GPS_local.COCOMAltThreshold_m, '--', 'LineWidth', 1.0, ...
+        'DisplayName', 'COCOM alt threshold');
+    xlabel('Time [s]'); ylabel('Altitude [m]');
+    title('Altitude (truth)');
+    legend('Location', 'best', 'Box', 'off');
+
+    ax3 = nexttile;
+    stairs(t_full, double(gps_full.fix_type), '-', 'LineWidth', 1.2);
+    xlabel('Time [s]'); ylabel('fix_type [-]');
+    title('GPS fix type');
+    ylim([-0.5 3.5]);
+
+    % Shade truth COCOM window across all tiles.
     if any(cocom_truth)
-        for sub = 1:3
-            subplot(3,1,sub);
-            yl = ylim();
-            patch([t_on_truth t_off_truth t_off_truth t_on_truth], ...
+        ax_list = [ax1, ax2, ax3];
+        for sub = 1:numel(ax_list)
+            ax = ax_list(sub);
+            yl = ax.YLim;
+            patch(ax, [t_on_truth t_off_truth t_off_truth t_on_truth], ...
                   [yl(1) yl(1) yl(2) yl(2)], [1 0.85 0.85], ...
-                  'FaceAlpha', 0.3, 'EdgeColor', 'none');
+                  'FaceAlpha', 0.3, 'EdgeColor', 'none', ...
+                  'HandleVisibility', 'off');
         end
     end
-    saveas(fig, fullfile(plot_dir, 'gps_cocom_window.png'));
+
+    title(tcl, 'COCOM window: truth vs GPS fix_type', 'Interpreter', 'none');
+    apply_style_(fig, 12, 10);
+    exportgraphics(fig, fullfile(plot_dir, 'gps_cocom_window.png'), 'Resolution', 300);
     close(fig);
     pass_p2 = isfile(fullfile(plot_dir, 'gps_cocom_window.png'));
 
@@ -677,4 +704,16 @@ end
 function s = md_escape(s)
     s = strrep(s, '|', '\|');
     s = strrep(s, newline, ' ');
+end
+
+function apply_style_(fig, width_in, height_in)
+%APPLY_STYLE_ Apply the shared casper_plot_style if available; fall back
+% to a minimal white-background figure sizing.
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(fig, struct('WidthIn', width_in, 'HeightIn', height_in));
+    else
+        set(fig, 'Color', 'w', 'Units', 'inches', ...
+                 'Position', [1 1 width_in height_in], ...
+                 'PaperPositionMode', 'auto');
+    end
 end

@@ -14,6 +14,8 @@ function test_imu_model()
     t02_dir = fullfile(here, '..', 'T02_sensor_params');
     addpath(t01_dir);
     addpath(t02_dir);
+    % Shared plot-style helper lives one level up under build/.
+    addpath(fullfile(here, '..'));
 
     % --- Load parameters into local scope ---
     run(fullfile(t02_dir, 'casper_sensor_params.m'));
@@ -352,25 +354,36 @@ function make_pad_plot(truth, Sim, IMU, Attitude, Estimator, IMU_T03, plot_path)
         rst = false;
     end
 
-    fig = figure('Visible', 'off', 'Position', [100 100 900 700]);
-    subplot(3,1,1);
-    plot(t, a_n(:,1), 'r', t, a_n(:,2), 'g', t, a_n(:,3), 'b');
-    grid on; ylabel('accel (g)');
-    title('LSM6DSO32 pad 1 s -- accel (sim body, X-fwd=up)');
-    legend({'a_x','a_y','a_z'}, 'Location', 'eastoutside');
-    subplot(3,1,2);
-    plot(t, g_n(:,1), 'r', t, g_n(:,2), 'g', t, g_n(:,3), 'b');
-    grid on; ylabel('gyro (dps)');
-    title('gyro');
-    legend({'w_x','w_y','w_z'}, 'Location', 'eastoutside');
-    subplot(3,1,3);
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile;
+    plot(t, a_n(:,1), 'DisplayName', 'a_x'); hold on;
+    plot(t, a_n(:,2), 'DisplayName', 'a_y');
+    plot(t, a_n(:,3), 'DisplayName', 'a_z');
+    xlabel('Time [s]'); ylabel('Acceleration [g]');
+    title('LSM6DSO32 pad 1 s — accel (sim body, X-fwd = up)');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
+    plot(t, g_n(:,1), 'DisplayName', '\omega_x'); hold on;
+    plot(t, g_n(:,2), 'DisplayName', '\omega_y');
+    plot(t, g_n(:,3), 'DisplayName', '\omega_z');
+    xlabel('Time [s]'); ylabel('Angular rate [dps]');
+    title('Gyro');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
     plot(t, sqrt(sum(a_n.^2, 2)));
-    grid on; ylabel('|a| (g)'); xlabel('time (s)');
-    title('accel magnitude');
+    xlabel('Time [s]'); ylabel('|a| [g]');
+    title('Accel magnitude');
+
+    title(tcl, 'LSM6DSO32 pad 1 s', 'Interpreter', 'none');
 
     try
         ensure_dir(fileparts(plot_path));
-        exportgraphics(fig, plot_path, 'Resolution', 120);
+        apply_style_(fig, 12, 10);
+        exportgraphics(fig, plot_path, 'Resolution', 300);
     catch
         saveas(fig, plot_path);
     end
@@ -421,23 +434,45 @@ function make_peak_mach_plot(truth, Sim, IMU, Attitude, Estimator, IMU_T03, plot
         rst = false;
     end
 
-    fig = figure('Visible', 'off', 'Position', [100 100 900 700]);
-    subplot(2,1,1);
-    plot(t, a_n(:,1), 'r', t, a_n(:,2), 'g', t, a_n(:,3), 'b');
-    grid on; ylabel('accel (g)'); title('LSM6DSO32 peak-Mach window -- accel');
-    legend({'a_x','a_y','a_z'}, 'Location', 'eastoutside');
-    subplot(2,1,2);
+    fig = figure('Visible', 'off');
+    tcl = tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+    nexttile;
+    plot(t, a_n(:,1), 'DisplayName', 'a_x'); hold on;
+    plot(t, a_n(:,2), 'DisplayName', 'a_y');
+    plot(t, a_n(:,3), 'DisplayName', 'a_z');
+    xlabel('Time [s]'); ylabel('Acceleration [g]');
+    title('Accel (sim body)');
+    legend('Location', 'best', 'Box', 'off');
+
+    nexttile;
     plot(t, sqrt(sum(a_n.^2, 2)));
-    grid on; ylabel('|a| (g)'); xlabel('time (s)');
-    title('accel magnitude');
+    xlabel('Time [s]'); ylabel('|a| [g]');
+    title('Accel magnitude');
+
+    title(tcl, 'LSM6DSO32 peak-Mach 1 s window', 'Interpreter', 'none');
 
     try
         ensure_dir(fileparts(plot_path));
-        exportgraphics(fig, plot_path, 'Resolution', 120);
+        apply_style_(fig, 12, 8);
+        exportgraphics(fig, plot_path, 'Resolution', 300);
     catch
         saveas(fig, plot_path);
     end
     close(fig);
+end
+
+
+function apply_style_(fig, width_in, height_in)
+%APPLY_STYLE_ Apply the shared casper_plot_style if available; otherwise
+% fall back to a minimal white-background figure sizing.
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(fig, struct('WidthIn', width_in, 'HeightIn', height_in));
+    else
+        set(fig, 'Color', 'w', 'Units', 'inches', ...
+                 'Position', [1 1 width_in height_in], ...
+                 'PaperPositionMode', 'auto');
+    end
 end
 
 
