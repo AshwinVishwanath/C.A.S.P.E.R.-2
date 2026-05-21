@@ -2,8 +2,11 @@ function cfg = casper(varargin)
 %CASPER  Top-level entry point for the C.A.S.P.E.R.-2 Simulink simulator.
 %
 % Usage:
-%   casper()                          % default seed + 5 s smoke
-%   casper('StopTime', 549.0)         % full trajectory
+%   casper()                          % default = 'apogee' profile (85 s)
+%   casper('Profile', 'smoke')        % 5 s pad smoke
+%   casper('Profile', 'apogee')       % 85 s ascent past apogee (default)
+%   casper('Profile', 'full')         % 549 s full trajectory
+%   casper('StopTime', 60.0)          % manual override of profile StopTime
 %   casper('Seed', 20260520)
 %   casper('Regenerate', true)        % force truth re-run from CSV
 %   cfg = casper(...);                % returns the config struct
@@ -49,19 +52,44 @@ function cfg = casper(varargin)
 
     p = inputParser();
     addParameter(p, 'Seed',       20260519, @(x) isnumeric(x) && isscalar(x));
-    addParameter(p, 'StopTime',   5.0,      @(x) isnumeric(x) && isscalar(x) && x > 0);
+    addParameter(p, 'Profile',    'apogee', @(x) ischar(x) || isstring(x));   % 'smoke' | 'apogee' | 'full'
+    addParameter(p, 'StopTime',   [],       @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
     addParameter(p, 'Regenerate', false,    @(x) islogical(x) || isnumeric(x));
     addParameter(p, 'Tuning',     '',       @(x) ischar(x) || isstring(x));   % preset hook ('', 'pad', 'flight')
     parse(p, varargin{:});
 
     fprintf('=== casper() top-level setup ===\n');
 
+    % --- Resolve StopTime from Profile (with manual override) ------------
+    profile_str = lower(strtrim(char(p.Results.Profile)));
+    switch profile_str
+        case 'smoke'
+            profile_stop = 5.0;
+        case 'apogee'
+            profile_stop = 85.0;
+        case 'full'
+            profile_stop = 549.0;
+        otherwise
+            warning('casper:UnknownProfile', ...
+                'Unknown profile "%s" (use "smoke", "apogee", or "full"). Falling back to apogee.', ...
+                profile_str);
+            profile_str = 'apogee';
+            profile_stop = 85.0;
+    end
+    if ~isempty(p.Results.StopTime)
+        stop_time_s = p.Results.StopTime;
+        fprintf('[casper] profile=%s, StopTime override = %.1f s\n', profile_str, stop_time_s);
+    else
+        stop_time_s = profile_stop;
+        fprintf('[casper] profile=%s, StopTime = %.1f s\n', profile_str, stop_time_s);
+    end
+
     % --- 1. Paths --------------------------------------------------------
     simroot = fileparts(mfilename('fullpath'));
     add_simroot_paths_(simroot);
 
     % --- 2. Sensor params + buses (casper_sim_config) --------------------
-    cfg = casper_sim_config('Seed', p.Results.Seed, 'StopTime', p.Results.StopTime);
+    cfg = casper_sim_config('Seed', p.Results.Seed, 'StopTime', stop_time_s);
 
     % --- 3. Visual-model overrides (parallel to casper_setup_visual) -----
     % These are intentionally limited to the visual model path. The legacy
@@ -72,7 +100,7 @@ function cfg = casper(varargin)
 
     % --- 4. Truth timeseries ---------------------------------------------
     casper_load_truth_ts('Regenerate', p.Results.Regenerate, ...
-                         'StopTime',   p.Results.StopTime);
+                         'StopTime',   stop_time_s);
 
     % --- 5. Tuning overrides (single source of truth, edit in place) -----
     tuning = build_tuning_struct_();
@@ -84,14 +112,15 @@ function cfg = casper(varargin)
 
     % --- 6. Summary ------------------------------------------------------
     fprintf('\n=== ready to simulate ===\n');
+    fprintf('  Profile  : %s\n', profile_str);
     fprintf('  Seed     : %u\n', cfg.Seed);
     fprintf('  StopTime : %.1f s\n', cfg.StopTime_s);
     fprintf('  Solver dt: %.0e s\n', cfg.SolverDt_s);
     fprintf('Next steps:\n');
-    fprintf('  open_system(''casper_sim_phase0'')     %% visual inspection\n');
-    fprintf('  sim(''casper_sim_phase0'')             %% run the simulation\n');
-    fprintf('  test_visual_model_compile             %% automated 5 s smoke\n');
-    fprintf('  run_phase0_trustgate                  %% canonical byte-exact regression\n');
+    fprintf('  open_system(''casper_sim_phase0'')                      %% visual inspection\n');
+    fprintf('  sim(''casper_sim_phase0'', ''StopTime'', ''%.1f'')          %% run the simulation\n', stop_time_s);
+    fprintf('  test_visual_model_compile                              %% automated 5 s smoke\n');
+    fprintf('  run_phase0_trustgate                                   %% canonical byte-exact regression\n');
 end
 
 
