@@ -295,7 +295,7 @@ end
 % =========================================================================
 function [t, alt, vel] = pull_e4_()
 % 4-state ESKF logs: x = [alt_m; vel_mps; ab; bb]
-    v = evalin('base', 'log_est_state_x');
+    v = fetch_log_('log_est_state_x');
     [t, data] = unpack_swt_(v);
     if isempty(data)
         t = []; alt = []; vel = [];
@@ -309,15 +309,15 @@ end
 % =========================================================================
 function [t, alt, vel, bg, ba, bb, att, sigma_pos, sigma_vel, ...
           baro_gate, baro_innov_e4] = pull_e16_()
-    alt_v  = evalin('base', 'log_est16_alt_up_m');
-    vel_v  = evalin('base', 'log_est16_vel_up_mps');
-    bg_v   = evalin('base', 'log_est16_bg');
-    ba_v   = evalin('base', 'log_est16_ba');
-    bb_v   = evalin('base', 'log_est16_bb');
-    att_v  = evalin('base', 'log_est16_att_quat');
-    sp_v   = evalin('base', 'log_est16_sigma_pos');
-    sv_v   = evalin('base', 'log_est16_sigma_vel');
-    bg_on_v= evalin('base', 'log_est16_baro_gate_on');
+    alt_v  = fetch_log_('log_est16_alt_up_m');
+    vel_v  = fetch_log_('log_est16_vel_up_mps');
+    bg_v   = fetch_log_('log_est16_bg');
+    ba_v   = fetch_log_('log_est16_ba');
+    bb_v   = fetch_log_('log_est16_bb');
+    att_v  = fetch_log_('log_est16_att_quat');
+    sp_v   = fetch_log_('log_est16_sigma_pos');
+    sv_v   = fetch_log_('log_est16_sigma_vel');
+    bg_on_v= fetch_log_('log_est16_baro_gate_on');
 
     [t, alt_data] = unpack_swt_(alt_v);
     [~, vel_data] = unpack_swt_(vel_v);
@@ -338,12 +338,58 @@ function [t, alt, vel, bg, ba, bb, att, sigma_pos, sigma_vel, ...
 
     % 4-state baro innov for the gate plot
     try
-        bi = evalin('base', 'log_est_baro_innov');
+        bi = fetch_log_('log_est_baro_innov');
         [~, bi_data] = unpack_swt_(bi);
         baro_innov_e4 = bi_data(:);
     catch
         baro_innov_e4 = nan(size(t));
     end
+end
+
+
+% =========================================================================
+function v = fetch_log_(name)
+% FETCH_LOG_ Resolve a logged signal by name. Looks in:
+%   1. Base workspace directly (set when model has ReturnWorkspaceOutputs='off').
+%   2. The most-recent Simulink.SimulationOutput in base workspace
+%      (default modern Simulink behavior — sim() returns simOut/ans).
+% Errors with a helpful message if not found anywhere.
+
+    % Path 1: base workspace
+    if evalin('base', sprintf('exist(''%s'', ''var'')', name))
+        v = evalin('base', name);
+        if ~isempty(v)
+            return;
+        end
+    end
+
+    % Path 2: SimulationOutput candidates
+    candidates = {'simOut', 'sim_out', 'out', 'ans'};
+    for k = 1:numel(candidates)
+        c = candidates{k};
+        if ~evalin('base', sprintf('exist(''%s'', ''var'')', c))
+            continue;
+        end
+        obj = evalin('base', c);
+        if isa(obj, 'Simulink.SimulationOutput')
+            members = obj.who;
+            if any(strcmp(members, name))
+                v = obj.(name);
+                return;
+            end
+        end
+    end
+
+    error('fetch_log_:NotFound', ...
+        ['Logged signal ''%s'' not found in base workspace nor in any\n' ...
+         'Simulink.SimulationOutput (looked for: simOut, sim_out, out, ans).\n' ...
+         'Run `sim(''casper_sim_phase0'')` first. If sim() returned a\n' ...
+         'SimulationOutput object, unpack it via:\n' ...
+         '  simOut = sim(''casper_sim_phase0'');\n' ...
+         '  fns = simOut.who;\n' ...
+         '  for k=1:numel(fns), assignin(''base'', fns{k}, simOut.(fns{k})); end\n' ...
+         'OR re-run `build_casper_sim_phase0` after this fix (sets\n' ...
+         'ReturnWorkspaceOutputs=off so sim() writes directly to base WS).'], name);
 end
 
 
