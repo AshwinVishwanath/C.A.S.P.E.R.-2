@@ -103,6 +103,7 @@ function model_path = build_casper_sim_phase0(varargin)
     addpath(fullfile(simroot, 'sensors', 'gps'));
     addpath(fullfile(simroot, 'nav', 'frame_switch'));
     addpath(fullfile(simroot, 'nav', 'eskf'));
+    addpath(fullfile(simroot, 'nav', 'eskf16'));
     addpath(fullfile(simroot, 'nav', 'attitude'));
     addpath(fullfile(simroot, 'validation'));
 
@@ -153,6 +154,25 @@ function model_path = build_casper_sim_phase0(varargin)
         if ~bdIsLoaded(lib_name)
             load_system(lib_path);
         end
+    end
+
+    % Ensure the eskf16_block.slx library exists; build it on demand so the
+    % top-level integration model can hard-link to it.
+    eskf16_lib_path = fullfile(simroot, 'nav', 'eskf16', 'eskf16_block.slx');
+    if ~isfile(eskf16_lib_path)
+        build_eskf16_block(fullfile(simroot, 'nav', 'eskf16'));
+    end
+    if ~bdIsLoaded('eskf16_block')
+        load_system(eskf16_lib_path);
+    end
+
+    % Pre-cache the EKF16 symbolic F/Q/H handles in the base workspace so the
+    % first persistent-state call inside the helper does not stall the sim.
+    try
+        casper_eskf16_load_symbolic();
+    catch ME
+        warning('build_casper_sim_phase0:EKF16SymbolicLoadFailed', ...
+            'Failed to pre-load EKF16 symbolic handles: %s', ME.message);
     end
 
     % --- Close & delete prior model -----------------------------------------
@@ -232,6 +252,12 @@ function model_path = build_casper_sim_phase0(varargin)
     % can dynamically compare truth vs estimate during simulation. Taps off
     % existing signal lines without breaking any existing connections.
     build_scope_panels_(model_name);
+
+    % --- Row 8: Parallel 16-state EKF + comparison scopes -------------------
+    % Adds the new ESKF16 visual block in parallel with the existing 4-state
+    % ESKF subsystem. Both estimators share the same sensor inputs and run
+    % side-by-side; comparison scopes auto-open at sim start.
+    build_eskf16_subsystem_(model_name);
 
     % --- Note + final save --------------------------------------------------
     add_top_level_note_(model_name);
@@ -865,6 +891,12 @@ function add_top_level_note_(model_name)
         'Rate snap: LSM/ADXL 833/800 -> 1000 Hz; EKF 416 -> 500 Hz.\n' ...
         'Canonical byte-exact regression remains casper_phase0_run.m.\n' ...
         '\n' ...
+        'EKF parallel comparison:\n' ...
+        '  - ESKF subsystem    : 4-state vertical EKF (original)\n' ...
+        '  - ESKF16 subsystem  : 16-state error-state EKF (new)\n' ...
+        '  - 4 compare scopes  : Altitude / VerticalVelocity / AttitudeError / Biases\n' ...
+        '  - After sim: cd integration; generate_ekf_comparison_report\n' ...
+        '\n' ...
         'See STATUS_VISUAL.md for the construction notes.']);
     set_param([model_name '/topnote'], ...
         'Text',     note_text, ...
@@ -1298,4 +1330,278 @@ function set_matlab_fn_script_(block_path, src)
             'Could not find MATLAB Function chart at %s', block_path);
     end
     chart.Script = src;
+end
+
+
+% =========================================================================
+function build_eskf16_subsystem_(model_name)
+%BUILD_ESKF16_SUBSYSTEM_ Wire a parallel 16-state ESKF onto the visual model.
+%
+% This function:
+%   1. Drops eskf16_block.slx/eskf16_visual_block as a library-linked block.
+%   2. Wires the same body-fw gyro/accel/mag the 4-state ESKF receives.
+%   3. Rate-transitions all inputs to the 2 ms EKF domain.
+%   4. Adds To-Workspace logging blocks for the 16-state outputs.
+%   5. Adds 4 NEW comparison scopes (Altitude, VerticalVelocity, AttitudeError, Biases).
+%
+% Lives at the top level so the existing ESKF subsystem and validation
+% logger remain untouched. Outputs of the 16-state are logged separately
+% under log_est16_* names so the report generator can pull them.
+
+    % --- 1) Drop the library-linked block --------------------------------
+    sub = [model_name '/ESKF16'];
+    add_block('eskf16_block/eskf16_visual_block', sub);
+    set_param(sub, 'Position', [1540 720 1780 1000]);
+
+    % --- 2) Rate-transition all inputs to the 2 ms (500 Hz) EKF rate -----
+    % Gyro at 1 ms -> 2 ms
+    rt_gyro = [model_name '/RT_e16_gyro'];
+    add_block('simulink/Signal Attributes/Rate Transition', rt_gyro);
+    set_param(rt_gyro, 'OutPortSampleTime', '2e-3', ...
+        'Position', [1460 720 1510 750]);
+    add_line(model_name, 'FrameSwitch_Gyro/1', 'RT_e16_gyro/1', 'autorouting', 'on');
+
+    % Accel at 1 ms -> 2 ms (re-use the existing FrameSwitch_Accel output;
+    % rate-transition independently so we don't fight RT_eskf_accel).
+    rt_accel = [model_name '/RT_e16_accel'];
+    add_block('simulink/Signal Attributes/Rate Transition', rt_accel);
+    set_param(rt_accel, 'OutPortSampleTime', '2e-3', ...
+        'Position', [1460 760 1510 790]);
+    add_line(model_name, 'FrameSwitch_Accel/1', 'RT_e16_accel/1', 'autorouting', 'on');
+
+    % Mag (100 Hz native) -> 2 ms (the helper handles its own sample-decimation
+    % via the mag_new flag, but the chart needs a properly rate-matched input)
+    rt_mag = [model_name '/RT_e16_mag'];
+    add_block('simulink/Signal Attributes/Rate Transition', rt_mag);
+    set_param(rt_mag, 'OutPortSampleTime', '2e-3', ...
+        'Position', [1460 800 1510 830]);
+    add_line(model_name, 'FrameSwitch_Mag/1', 'RT_e16_mag/1', 'autorouting', 'on');
+
+    rt_magdr = [model_name '/RT_e16_magdr'];
+    add_block('simulink/Signal Attributes/Rate Transition', rt_magdr);
+    set_param(rt_magdr, 'OutPortSampleTime', '2e-3', ...
+        'Position', [1460 840 1510 870]);
+    add_line(model_name, 'MAG/4', 'RT_e16_magdr/1', 'autorouting', 'on');
+
+    % Baro alt + data-ready are already 100 Hz; rate-transition to 2 ms.
+    rt_baroalt = [model_name '/RT_e16_baroalt'];
+    add_block('simulink/Signal Attributes/Rate Transition', rt_baroalt);
+    set_param(rt_baroalt, 'OutPortSampleTime', '2e-3', ...
+        'Position', [1460 880 1510 910]);
+    add_line(model_name, 'BARO/2', 'RT_e16_baroalt/1', 'autorouting', 'on');
+
+    rt_baronew = [model_name '/RT_e16_baronew'];
+    add_block('simulink/Signal Attributes/Rate Transition', rt_baronew);
+    set_param(rt_baronew, 'OutPortSampleTime', '2e-3', ...
+        'Position', [1460 920 1510 950]);
+    add_line(model_name, 'BARO/4', 'RT_e16_baronew/1', 'autorouting', 'on');
+
+    % Init done from attitude (1 ms -> 2 ms): re-use the existing rate
+    % transition rt_eskf_init if you want shared timing, but it's safer to
+    % use an independent RT so library-link timing is self-contained.
+    rt_initdone = [model_name '/RT_e16_init'];
+    add_block('simulink/Signal Attributes/Rate Transition', rt_initdone);
+    set_param(rt_initdone, 'OutPortSampleTime', '2e-3', ...
+        'Position', [1460 960 1510 990]);
+    add_line(model_name, 'ATTITUDE/4', 'RT_e16_init/1', 'autorouting', 'on');
+
+    % Quat init seed: canonical EKF16 pad quat [0;0;1;0]. The EKF16 algorithm
+    % from EKF16Verify.m §7 always seeds with the body-Zup -> NED pad quat
+    % (body +Z up, 180 deg about Y). Threading the attitude block's q_fw
+    % through here would require a frame conversion (fw -> Zup); for the
+    % visual model's 1-DOF vertical truth, the canonical pad quat is byte-
+    % identical to what the attitude block would produce after conversion.
+    c_qinit = [model_name '/C_e16_qinit'];
+    add_block('simulink/Sources/Constant', c_qinit);
+    set_param(c_qinit, 'Value', '[0;0;1;0]', 'SampleTime', '-1', ...
+        'Position', [1460 1000 1510 1030]);
+
+    % --- 3) Wire ESKF16 inports (8 ports) --------------------------------
+    add_line(model_name, 'RT_e16_gyro/1',    'ESKF16/1', 'autorouting', 'on');
+    add_line(model_name, 'RT_e16_accel/1',   'ESKF16/2', 'autorouting', 'on');
+    add_line(model_name, 'RT_e16_baroalt/1', 'ESKF16/3', 'autorouting', 'on');
+    add_line(model_name, 'RT_e16_baronew/1', 'ESKF16/4', 'autorouting', 'on');
+    add_line(model_name, 'RT_e16_mag/1',     'ESKF16/5', 'autorouting', 'on');
+    add_line(model_name, 'RT_e16_magdr/1',   'ESKF16/6', 'autorouting', 'on');
+    add_line(model_name, 'C_e16_qinit/1',    'ESKF16/7', 'autorouting', 'on');
+    add_line(model_name, 'RT_e16_init/1',    'ESKF16/8', 'autorouting', 'on');
+
+    % --- 4) To-Workspace logging for the 16-state outputs ----------------
+    % These names live alongside log_est_* used by the existing validation
+    % subsystem. The report generator pulls log_est16_*.
+    %
+    % Outport order (from build_eskf16_block):
+    %   1=pos_NED, 2=vel_NED, 3=att_quat, 4=bg, 5=ba, 6=bb,
+    %   7=sigma_pos, 8=sigma_vel, 9=sigma_att,
+    %   10=alt_up_m, 11=vel_up_mps, 12=baro_gate_on
+    logs_e16 = { ...
+        1,  'log_est16_pos_NED'; ...
+        2,  'log_est16_vel_NED'; ...
+        3,  'log_est16_att_quat'; ...
+        4,  'log_est16_bg'; ...
+        5,  'log_est16_ba'; ...
+        6,  'log_est16_bb'; ...
+        7,  'log_est16_sigma_pos'; ...
+        8,  'log_est16_sigma_vel'; ...
+        9,  'log_est16_sigma_att'; ...
+        10, 'log_est16_alt_up_m'; ...
+        11, 'log_est16_vel_up_mps'; ...
+        12, 'log_est16_baro_gate_on'};
+
+    for k = 1:size(logs_e16, 1)
+        port = logs_e16{k, 1};
+        name = logs_e16{k, 2};
+        tw = [model_name '/' name];
+        add_block('simulink/Sinks/To Workspace', tw);
+        set_param(tw, ...
+            'VariableName', name, ...
+            'SaveFormat',   'StructureWithTime', ...
+            'SampleTime',   '-1', ...
+            'Position', [1820 (730 + (k-1)*25) 1920 (750 + (k-1)*25)]);
+        add_line(model_name, ['ESKF16/' num2str(port)], [name '/1'], ...
+                 'autorouting', 'on');
+    end
+
+    % --- 5) Comparison scopes (4 new) ------------------------------------
+    build_eskf16_compare_scopes_(model_name);
+end
+
+
+% =========================================================================
+function build_eskf16_compare_scopes_(model_name)
+%BUILD_ESKF16_COMPARE_SCOPES_ Add 4 NEW auto-opening scopes for side-by-side
+% comparison of the 4-state vs 16-state EKFs.
+%
+% Scopes:
+%   Scope_Compare_Altitude         (3 ch: truth, 4-state, 16-state) [m]
+%   Scope_Compare_VerticalVelocity (3 ch: truth, 4-state, 16-state) [m/s]
+%   Scope_Compare_AttitudeError    (2 ch: 4-state att err, 16-state att err) [deg]
+%   Scope_Compare_Biases           (6 ch: 16-state gyro/accel biases x/y/z) [SI]
+
+    % --- Scope_Compare_Altitude: tap GainAltFlip (truth), SelEstAlt (4-state),
+    %     ESKF16/10 (16-state) ------------------------------------------------
+    sc_alt = [model_name '/Scope_Compare_Altitude'];
+    add_block('simulink/Sinks/Scope', sc_alt);
+    set_param(sc_alt, 'NumInputPorts', '3', 'OpenAtSimulationStart', 'on', ...
+        'Position', [1960 720 2020 790]);
+    set_scope_title_(sc_alt, 'Altitude compare - truth vs 4-state vs 16-state [m]');
+    add_line(model_name, 'GainAltFlip/1', 'Scope_Compare_Altitude/1', 'autorouting', 'on');
+    add_line(model_name, 'SelEstAlt/1',   'Scope_Compare_Altitude/2', 'autorouting', 'on');
+    add_line(model_name, 'ESKF16/10',     'Scope_Compare_Altitude/3', 'autorouting', 'on');
+
+    % --- Scope_Compare_VerticalVelocity ---------------------------------------
+    sc_vel = [model_name '/Scope_Compare_VerticalVelocity'];
+    add_block('simulink/Sinks/Scope', sc_vel);
+    set_param(sc_vel, 'NumInputPorts', '3', 'OpenAtSimulationStart', 'on', ...
+        'Position', [1960 800 2020 870]);
+    set_scope_title_(sc_vel, 'Vertical velocity compare - truth vs 4-state vs 16-state [m/s]');
+    add_line(model_name, 'GainVelFlip/1', 'Scope_Compare_VerticalVelocity/1', 'autorouting', 'on');
+    add_line(model_name, 'SelEstVel/1',   'Scope_Compare_VerticalVelocity/2', 'autorouting', 'on');
+    add_line(model_name, 'ESKF16/11',     'Scope_Compare_VerticalVelocity/3', 'autorouting', 'on');
+
+    % --- Scope_Compare_AttitudeError ------------------------------------------
+    % 4-state att error: EulerConvert/9 (already exists)
+    % 16-state att error: build a small chart that computes quat-error magnitude
+    %   between truth_quat and the 16-state att_quat after converting to firmware
+    %   frame for fair comparison. For 1-DOF vertical truth this stays near 0
+    %   if the 16-state stays aligned.
+    fb_e16err = [model_name '/E16_AttErrCompute'];
+    add_block('simulink/User-Defined Functions/MATLAB Function', fb_e16err);
+    set_param(fb_e16err, 'Position', [1820 1050 1980 1110]);
+    set_matlab_fn_script_(fb_e16err, e16_atterr_script_());
+
+    add_line(model_name, 'BS_QuatForScope/1', 'E16_AttErrCompute/1', 'autorouting', 'on');
+    add_line(model_name, 'ESKF16/3',          'E16_AttErrCompute/2', 'autorouting', 'on');
+
+    sc_aerr = [model_name '/Scope_Compare_AttitudeError'];
+    add_block('simulink/Sinks/Scope', sc_aerr);
+    set_param(sc_aerr, 'NumInputPorts', '2', 'OpenAtSimulationStart', 'on', ...
+        'Position', [2040 1050 2100 1110]);
+    set_scope_title_(sc_aerr, 'Attitude error compare - 4-state vs 16-state [deg]');
+    add_line(model_name, 'EulerConvert/9',     'Scope_Compare_AttitudeError/1', 'autorouting', 'on');
+    add_line(model_name, 'E16_AttErrCompute/1','Scope_Compare_AttitudeError/2', 'autorouting', 'on');
+
+    % --- Scope_Compare_Biases (6 channels: gyro xyz, accel xyz from 16-state) ---
+    % Split bg (port 4) and ba (port 5) into scalars.
+    sel_bgx = [model_name '/SelE16_BgX'];
+    add_block('simulink/Signal Routing/Selector', sel_bgx);
+    set_param(sel_bgx, 'NumberOfDimensions', '1', ...
+        'IndexOptions', 'Index vector (dialog)', 'Indices', '1', ...
+        'InputPortWidth', '3', 'Position', [1820 1130 1860 1150]);
+    add_line(model_name, 'ESKF16/4', 'SelE16_BgX/1', 'autorouting', 'on');
+
+    sel_bgy = [model_name '/SelE16_BgY'];
+    add_block('simulink/Signal Routing/Selector', sel_bgy);
+    set_param(sel_bgy, 'NumberOfDimensions', '1', ...
+        'IndexOptions', 'Index vector (dialog)', 'Indices', '2', ...
+        'InputPortWidth', '3', 'Position', [1820 1160 1860 1180]);
+    add_line(model_name, 'ESKF16/4', 'SelE16_BgY/1', 'autorouting', 'on');
+
+    sel_bgz = [model_name '/SelE16_BgZ'];
+    add_block('simulink/Signal Routing/Selector', sel_bgz);
+    set_param(sel_bgz, 'NumberOfDimensions', '1', ...
+        'IndexOptions', 'Index vector (dialog)', 'Indices', '3', ...
+        'InputPortWidth', '3', 'Position', [1820 1190 1860 1210]);
+    add_line(model_name, 'ESKF16/4', 'SelE16_BgZ/1', 'autorouting', 'on');
+
+    sel_bax = [model_name '/SelE16_BaX'];
+    add_block('simulink/Signal Routing/Selector', sel_bax);
+    set_param(sel_bax, 'NumberOfDimensions', '1', ...
+        'IndexOptions', 'Index vector (dialog)', 'Indices', '1', ...
+        'InputPortWidth', '3', 'Position', [1820 1220 1860 1240]);
+    add_line(model_name, 'ESKF16/5', 'SelE16_BaX/1', 'autorouting', 'on');
+
+    sel_bay = [model_name '/SelE16_BaY'];
+    add_block('simulink/Signal Routing/Selector', sel_bay);
+    set_param(sel_bay, 'NumberOfDimensions', '1', ...
+        'IndexOptions', 'Index vector (dialog)', 'Indices', '2', ...
+        'InputPortWidth', '3', 'Position', [1820 1250 1860 1270]);
+    add_line(model_name, 'ESKF16/5', 'SelE16_BaY/1', 'autorouting', 'on');
+
+    sel_baz = [model_name '/SelE16_BaZ'];
+    add_block('simulink/Signal Routing/Selector', sel_baz);
+    set_param(sel_baz, 'NumberOfDimensions', '1', ...
+        'IndexOptions', 'Index vector (dialog)', 'Indices', '3', ...
+        'InputPortWidth', '3', 'Position', [1820 1280 1860 1300]);
+    add_line(model_name, 'ESKF16/5', 'SelE16_BaZ/1', 'autorouting', 'on');
+
+    sc_bias = [model_name '/Scope_Compare_Biases'];
+    add_block('simulink/Sinks/Scope', sc_bias);
+    set_param(sc_bias, 'NumInputPorts', '6', 'OpenAtSimulationStart', 'on', ...
+        'Position', [1960 1170 2020 1260]);
+    set_scope_title_(sc_bias, '16-state biases - gyro xyz (rad/s) + accel xyz (m/s^2)');
+    add_line(model_name, 'SelE16_BgX/1', 'Scope_Compare_Biases/1', 'autorouting', 'on');
+    add_line(model_name, 'SelE16_BgY/1', 'Scope_Compare_Biases/2', 'autorouting', 'on');
+    add_line(model_name, 'SelE16_BgZ/1', 'Scope_Compare_Biases/3', 'autorouting', 'on');
+    add_line(model_name, 'SelE16_BaX/1', 'Scope_Compare_Biases/4', 'autorouting', 'on');
+    add_line(model_name, 'SelE16_BaY/1', 'Scope_Compare_Biases/5', 'autorouting', 'on');
+    add_line(model_name, 'SelE16_BaZ/1', 'Scope_Compare_Biases/6', 'autorouting', 'on');
+end
+
+
+% =========================================================================
+function src = e16_atterr_script_()
+% Compute attitude error (deg) between truth_quat (std-body -> NED-down) and
+% the 16-state att_quat (body-Zup -> NED). Both quats are normalized.
+% For 1-DOF vertical truth the error stays small (boresight rotation
+% indistinguishable from yaw drift). Returns att_err_deg (scalar).
+    src = [ ...
+        'function att_err_deg = fcn(qt_std, qe_zup_ned)' newline ...
+        '%#codegen' newline ...
+        'qt = double(qt_std(:));' newline ...
+        'qe = double(qe_zup_ned(:));' newline ...
+        'nt = sqrt(qt(1)^2+qt(2)^2+qt(3)^2+qt(4)^2);' newline ...
+        'ne = sqrt(qe(1)^2+qe(2)^2+qe(3)^2+qe(4)^2);' newline ...
+        'if nt < 1e-12; nt = 1; end' newline ...
+        'if ne < 1e-12; ne = 1; end' newline ...
+        'qt = qt / nt;' newline ...
+        'qe = qe / ne;' newline ...
+        '% q_err = qt^-1 * qe  -> angle = 2*acos(|w|)' newline ...
+        'qt_inv = [qt(1); -qt(2); -qt(3); -qt(4)];' newline ...
+        'aw = qt_inv(1); ax = qt_inv(2); ay = qt_inv(3); az = qt_inv(4);' newline ...
+        'bw = qe(1);     bx = qe(2);     by = qe(3);     bz = qe(4);' newline ...
+        'w  = aw*bw - ax*bx - ay*by - az*bz;' newline ...
+        'w_abs = min(1.0, abs(w));' newline ...
+        'att_err_deg = 2 * acos(w_abs) * (180/pi);' newline ...
+        'end' newline];
 end

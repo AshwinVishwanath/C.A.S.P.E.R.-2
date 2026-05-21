@@ -121,6 +121,12 @@ function cfg = casper(varargin)
     fprintf('  sim(''casper_sim_phase0'', ''StopTime'', ''%.1f'')          %% run the simulation\n', stop_time_s);
     fprintf('  test_visual_model_compile                              %% automated 5 s smoke\n');
     fprintf('  run_phase0_trustgate                                   %% canonical byte-exact regression\n');
+    fprintf('\n');
+    fprintf('After sim() completes, 8 scopes auto-open:\n');
+    fprintf('  4 existing      : Altitude, VerticalVelocity, Euler, AttitudeError\n');
+    fprintf('  4 NEW compare   : Compare_Altitude, Compare_VerticalVelocity,\n');
+    fprintf('                    Compare_AttitudeError, Compare_Biases\n');
+    fprintf('  cd integration; generate_ekf_comparison_report          %% side-by-side report\n');
 end
 
 
@@ -133,6 +139,7 @@ function add_simroot_paths_(simroot)
         fullfile('sensors', 'imu'),  fullfile('sensors', 'baro'), ...
         fullfile('sensors', 'mag'),  fullfile('sensors', 'gps'), ...
         fullfile('nav', 'frame_switch'), fullfile('nav', 'eskf'), ...
+        fullfile('nav', 'eskf16'), ...
         fullfile('nav', 'attitude'), ...
         'validation', 'integration'};
     for k = 1:numel(subdirs)
