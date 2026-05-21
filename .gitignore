@@ -64,10 +64,10 @@ Software/Release/
 # Simulink dev build artifacts that exceed GitHub's 100MB push limit or are
 # trivially regeneratable from checked-in build scripts. Source-of-truth is
 # the .m build script; .mat files are caches.
-Matlab Code/Simulink Development/build/**/*.mat
-Matlab Code/Simulink Development/build/**/*.slxc
+Matlab Code/Simulink Development/**/*.mat
+Matlab Code/Simulink Development/**/*.slxc
 # Simulink JIT cache (per-run, machine-specific)
-Matlab Code/Simulink Development/build/**/slprj/
+Matlab Code/Simulink Development/**/slprj/
 
 
 # STM32CubeMX project file
@@ -88,14 +88,18 @@ nul
 # CSV data files
 CSVs/
 *.csv
+# Exception: Simulink simulator input trajectories live under inputs/ and are
+# checked in (the reorg moved them out of CSVs/).
+!Matlab Code/Simulink Development/inputs/*.CSV
+!Matlab Code/Simulink Development/inputs/*.csv
 
 # Build log
 Software/build_out.txt
 
 # Flight data images
 *.png
-# But keep Simulink dev build plots (each task's plots/ subdir is part of the deliverable)
-!Matlab Code/Simulink Development/build/**/*.png
+# But keep Simulink dev plots (each task's plots/ subdir is part of the deliverable)
+!Matlab Code/Simulink Development/**/*.png
 
 # Python cache
 __pycache__/
