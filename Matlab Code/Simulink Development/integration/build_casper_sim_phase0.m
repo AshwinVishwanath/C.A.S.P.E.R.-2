@@ -198,17 +198,29 @@ function model_path = build_casper_sim_phase0(varargin)
     load_system(model_name);
 
     % Solver: fixed-step discrete, base step 1 ms (1 kHz). Snaps documented.
-    % StartTime is -5 s so the prepended pre-launch pad (added by the
+    % StartTime is -PAD_S s so the prepended pre-launch pad (added by the
     % InitFcn callback below via casper_prelaunch_pad_truth_ts) is actually
     % swept by the solver -- otherwise From Workspace blocks would never
     % read the pad samples and attitude static-init would still run during
     % boost. The fix-it sequence is:
     %   1. casper.m / test scripts populate truth_ts in base WS starting at t=0
-    %   2. InitFcn calls casper_prelaunch_pad_truth_ts which prepends 5 s of
-    %      stationary pad data at t=-5..0, and bumps StopTime by 5 s.
-    %   3. Solver runs from t=-5 (pad) through t=StopTime+5 (post-pad flight)
-    %      and the attitude estimator gets the same byte-exact init window
-    %      the legacy MATLAB driver gets via its PreLaunchPad_s=5 option.
+    %   2. InitFcn calls casper_prelaunch_pad_truth_ts which prepends PAD_S
+    %      seconds of stationary pad data at t=-PAD_S..0.
+    %   3. Solver runs from t=-PAD_S (pad) through t=StopTime (post-pad
+    %      flight) and the attitude estimator gets a clean init window
+    %      that completes BEFORE the rocket starts moving.
+    %
+    % PAD_S must be >= Attitude.StaticInitTimeout_s (currently 10 s) PLUS
+    % a small margin, because static_init's mag-sample completion path is
+    % suppressed during init (see attitude_step_helper line 103: mag_new
+    % is forced false while init_complete is false) -- so static_init
+    % always completes via the TIMEOUT branch, never the mag-count branch.
+    % If PAD_S < 10 s, init slips into the boost window and both EKFs
+    % miss the entire ascent (observed apogee under-shoot ~50-89%).
+    %
+    % The canonical run_phase0_trustgate uses PreLaunchPad_s=11.0 for the
+    % same reason. We use 11 s here for byte-for-byte parity.
+    PAD_S = 11.0;
     % Pull the user's chosen StopTime from SimCfg if available — falls back
     % to 85 s (apogee profile) which is the sensible default for a flight
     % long enough that the EKFs converge.
@@ -222,14 +234,14 @@ function model_path = build_casper_sim_phase0(varargin)
         'Solver',                  'FixedStepDiscrete', ...
         'SolverType',              'Fixed-step', ...
         'FixedStep',               '1e-3', ...
-        'StartTime',               '-5', ...
+        'StartTime',               sprintf('%.6g', -PAD_S), ...
         'StopTime',                stoptime_str, ...
         'SaveOutput',              'on', ...
         'SaveFormat',              'Dataset', ...
         'SaveTime',                'on', ...
         'TimeSaveName',            'tout', ...
         'ReturnWorkspaceOutputs',  'off', ...
-        'InitFcn',                 'casper_prelaunch_pad_truth_ts(5.0);');
+        'InitFcn',                 sprintf('casper_prelaunch_pad_truth_ts(%.6g);', PAD_S));
     % ReturnWorkspaceOutputs='off' makes To-Workspace blocks write the
     % log_* variables directly into the base workspace at sim end (the
     % classic R2019b- behavior). With it 'on' (the modern default), sim()
