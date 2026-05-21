@@ -251,15 +251,21 @@ end
 % ===================================================================
 
 function f = new_fig()
-    f = figure('Visible','off','Units','inches','Position',[0,0,8,5], ...
-               'Color','w', 'PaperPositionMode','auto');
+%NEW_FIG Single-panel figure with the shared casper plot style applied.
+    f = figure('Visible','off');
 end
 
 function path = save_fig(f, dir, fname)
+%SAVE_FIG Apply unified style, export at 300 DPI via exportgraphics, close.
     path = fullfile(dir, fname);
-    set(f, 'PaperPosition', [0 0 8 5]);
-    set(f, 'PaperSize', [8 5]);
-    print(f, path, '-dpng', '-r300');
+    % Apply unified style if helper is on the path (graceful fallback).
+    if exist('casper_plot_style', 'file') == 2
+        casper_plot_style(f, struct('WidthIn', 10, 'HeightIn', 6));
+    else
+        set(f, 'Color','w', 'Units','inches', 'Position',[0,0,10,6], ...
+               'PaperPositionMode','auto');
+    end
+    exportgraphics(f, path, 'Resolution', 300);
     close(f);
 end
 
@@ -310,40 +316,49 @@ function tilt_deg = compute_tilt_deg(Truth, Estimate)
 end
 
 function path = sensor_snapshot(Sensors, twin, OutDir, fname, ttl)
+%SENSOR_SNAPSHOT Multi-panel sensor view using tiledlayout (proper spacing).
     f = new_fig();
-    BLUE   = [0.00, 0.45, 0.74];
     ORANGE = [0.85, 0.33, 0.10];
-    GREEN  = [0.10, 0.65, 0.30];
     plotted = false;
+
+    tl = tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
 
     if isfield(Sensors,'imu') && ~isempty(fieldnames(Sensors.imu))
         idx = Sensors.imu.time_s >= twin(1) & Sensors.imu.time_s <= twin(2);
         if any(idx)
-            subplot(3,1,1);
-            plot(Sensors.imu.time_s(idx), Sensors.imu.accel_mps2(idx,:));
-            xlabel('time (s)'); ylabel('accel (m/s^2)');
-            title('IMU accel'); grid on;
-            subplot(3,1,2);
-            plot(Sensors.imu.time_s(idx), Sensors.imu.gyro_radps(idx,:));
-            xlabel('time (s)'); ylabel('gyro (rad/s)');
-            title('IMU gyro'); grid on;
+            nexttile(tl, 1);
+            plot(Sensors.imu.time_s(idx), Sensors.imu.accel_mps2(idx,:), ...
+                'LineWidth', 1.1);
+            xlabel('Time [s]'); ylabel('Acceleration [m/s^{2}]');
+            title('IMU accel');
+            legend({'X','Y','Z'}, 'Location', 'best');
+
+            nexttile(tl, 2);
+            plot(Sensors.imu.time_s(idx), Sensors.imu.gyro_radps(idx,:), ...
+                'LineWidth', 1.1);
+            xlabel('Time [s]'); ylabel('Angular rate [rad/s]');
+            title('IMU gyro');
+            legend({'X','Y','Z'}, 'Location', 'best');
             plotted = true;
         end
     end
     if isfield(Sensors,'baro') && ~isempty(fieldnames(Sensors.baro))
         idx = Sensors.baro.time_s >= twin(1) & Sensors.baro.time_s <= twin(2);
         if any(idx)
-            subplot(3,1,3);
-            plot(Sensors.baro.time_s(idx), Sensors.baro.alt_m(idx), 'Color', ORANGE);
-            xlabel('time (s)'); ylabel('baro alt (m)');
-            title('Baro altitude'); grid on;
+            nexttile(tl, 3);
+            plot(Sensors.baro.time_s(idx), Sensors.baro.alt_m(idx), ...
+                'Color', ORANGE, 'LineWidth', 1.2);
+            xlabel('Time [s]'); ylabel('Altitude [m]');
+            title('Baro altitude');
             plotted = true;
         end
     end
     if ~plotted
+        nexttile(tl, [3 1]);
         text(0.5, 0.5, sprintf('No sensor data in [%g, %g] s', twin(1), twin(2)), ...
              'HorizontalAlignment','center', 'Units','normalized');
+        axis off;
     end
-    sgtitle(ttl, 'Interpreter','none');  %#ok<TITLE>
+    title(tl, ttl, 'Interpreter','none');
     path = save_fig(f, OutDir, fname);
 end
