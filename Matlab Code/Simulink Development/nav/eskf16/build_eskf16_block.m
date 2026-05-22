@@ -182,14 +182,37 @@ end
 
 % =========================================================================
 function src = body_fw_to_zup_script_(label) %#ok<INUSD>
-% Body-fw -> body-Zup identity. The visual model's FrameSwitch_Accel
-% already produces "+g on Z" on the pad (see casper_eskf16_body_fw_to_zup.m
-% for the trace through imu_unit_convert + casper_frame_switch_body).
-% Same convention as EKF16 -> no swap needed.
+% Body-fw -> body-Zup rotation (90 deg about +X).
+%
+% The visual model's FrameSwitch_Accel produces "+g on +Y" on the pad
+% (legacy firmware Y-nose convention -- verified by diag_visual_accel.m
+% and matches casper_frame_constants.pad_accel_fw = [0; +g; 0]).
+%
+% The EKF16 algorithm (per EKF_Symbolic_Dev.m / EKF16Verify.m) expects
+% body-Zup convention: pad accel = [0; 0; +g]. The rotation that takes
+% Y-up to Z-up is +90 deg about +X:
+%
+%     R_x(pi/2) = [ 1   0   0;
+%                   0   0  -1;
+%                   0   1   0 ]
+%
+% So:  [0; +g; 0]_fw  ->  R_x(pi/2) * [0; +g; 0]  =  [0; 0; +g]_zup  OK
+%      [0; 0; +g]_fw  ->  R_x(pi/2) * [0; 0; +g]  =  [0; -g; 0]_zup
+%      [+a; 0; 0]_fw  ->  R_x(pi/2) * [+a; 0; 0]  =  [+a; 0; 0]_zup
+%
+% This rotation is applied identically to gyro, accel, and mag because
+% the EKF16 body-Zup -> NED predict + body-frame mag measurement need
+% a consistent body-axis convention.
+%
+% Previously this was identity (assumed visual a_fw was already Z-up),
+% which made the EKF integrate the gravity component on the wrong NED
+% axis -- net effect was the 16-state apogee error of ~5 percent after
+% the pad-window fix in Round 1.
     src = [ ...
         'function v_zup = fcn(v_fw)' newline ...
         '%#codegen' newline ...
-        'v_zup = double(v_fw(:));' newline ...
+        'v = double(v_fw(:));' newline ...
+        'v_zup = [ v(1);  -v(3);  v(2) ];' newline ...
         'end' newline];
 end
 

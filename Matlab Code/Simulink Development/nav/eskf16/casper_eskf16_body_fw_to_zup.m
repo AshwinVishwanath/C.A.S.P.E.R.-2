@@ -2,32 +2,30 @@ function vec_zup = casper_eskf16_body_fw_to_zup(vec_fw)
 %CASPER_ESKF16_BODY_FW_TO_ZUP Rotate a body-fw vector into EKF16's body-Zup
 % convention.
 %
-% Convention map (verified by tracing the visual-model accel chain):
-%   - imuSensor outputs accel_g with the industry-standard "+g on the
-%     axis pointing UP against gravity" on the pad.
-%   - imu_unit_convert in build_casper_sim_phase0 flips that sign
-%     (`a_std = -accel_g * 9.80665`) and converts to m/s^2.
-%   - FrameSwitch_Accel runs casper_frame_switch_body, which gives
-%     `vec_fw = [v(2); v(1); -v(3)]`.
+% Rotation: 90 deg about +X (R_x(pi/2)).
+%   R = [ 1   0   0;
+%         0   0  -1;
+%         0   1   0 ]
+%   so v_zup = [v(1); -v(3); v(2)].
 %
-%   Combined: imuSensor pad +g on body Z  ->  std accel = [0, 0, -g]
-%             after frame_switch_body     ->  fw accel  = [0, 0, +g]
+% Frame definitions:
+%   body-fw (legacy firmware Y-nose convention):
+%       Pad accel = [0; +g; 0]   (Y-up = nose up against gravity)
+%       Verified by run_pad_only_test ('pad accel ~ [0, +g, 0] body-FW').
 %
-%   So at the FrameSwitch_Accel output the convention is "+g on Z" on
-%   the pad — which is the SAME convention as EKF16. The mapping is
-%   identity.
+%   body-zup (EKF16 / EKF_Symbolic_Dev.m / EKF16Verify.m):
+%       Pad accel = [0; 0; +g]   (Z-up)
+%       Verified by EKF16Verify line 318-336 initial state container.
 %
-% On-pad sanity:
-%   fw accel  = [0, 0, +g]
-%   zup accel = [0, 0, +g]
+% Sanity check:
+%   v_zup = R * v_fw
+%   v_fw  = [0; +g; 0]   =>   v_zup = [0; 0; +g]   OK
 %
-% NOTE: This contradicts the legacy MATLAB driver's pad assertion
-% `expect_a = [0, +g, 0]` (Y = nose = up). That assertion is derived
-% from casper_imu_lsm_model which does NOT sign-flip — i.e., it returns
-% raw specific force. The visual model deliberately re-engineers the
-% chain to apply the +g-up-on-Z convention via the negation in
-% imu_unit_convert, so the EKF16 sees +g on Z just like the symbolic
-% derivation expects.
+% NOTE: This used to return the identity (an earlier mis-trace of the
+% visual model's accel chain concluded the visual already produced Z-up;
+% diag_visual_accel.m proved that wrong -- the visual chain produces
+% Y-up just like the legacy driver). Identity convention was responsible
+% for ~5 percent 16-state apogee error after the Round 1 pad-window fix.
 %
 % Inputs:
 %   vec_fw  : 3x1 (any units)
@@ -36,5 +34,5 @@ function vec_zup = casper_eskf16_body_fw_to_zup(vec_fw)
 %   vec_zup : 3x1 (same units)
 
     v = double(vec_fw(:));
-    vec_zup = v;
+    vec_zup = [ v(1); -v(3); v(2) ];
 end

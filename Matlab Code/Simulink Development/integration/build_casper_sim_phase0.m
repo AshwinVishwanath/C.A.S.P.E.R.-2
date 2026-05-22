@@ -171,15 +171,19 @@ function model_path = build_casper_sim_phase0(varargin)
         end
     end
 
-    % Ensure the eskf16_block.slx library exists; build it on demand so the
-    % top-level integration model can hard-link to it.
+    % ALWAYS rebuild eskf16_block.slx so any changes to the body-fw->Zup
+    % rotation, helper script body, or block topology in build_eskf16_block.m
+    % propagate without requiring the user to delete the .slx by hand.
+    % Rebuild is fast (~1 s) and idempotent.
     eskf16_lib_path = fullfile(simroot, 'nav', 'eskf16', 'eskf16_block.slx');
-    if ~isfile(eskf16_lib_path)
-        build_eskf16_block(fullfile(simroot, 'nav', 'eskf16'));
+    if bdIsLoaded('eskf16_block')
+        close_system('eskf16_block', 0);
     end
-    if ~bdIsLoaded('eskf16_block')
-        load_system(eskf16_lib_path);
+    if isfile(eskf16_lib_path)
+        delete(eskf16_lib_path);
     end
+    build_eskf16_block(fullfile(simroot, 'nav', 'eskf16'));
+    load_system(eskf16_lib_path);
 
     % Pre-cache the EKF16 symbolic F/Q/H handles in the base workspace so the
     % first persistent-state call inside the helper does not stall the sim.
