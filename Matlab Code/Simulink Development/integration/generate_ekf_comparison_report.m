@@ -43,10 +43,19 @@ function out = generate_ekf_comparison_report(varargin)
 
     fprintf('==== generate_ekf_comparison_report ====\n');
 
-    % MATLAB -batch mode can hang on graphics rendering with the default
-    % opengl renderer. Force painters (vector renderer) for speed/reliability.
-    set(0, 'DefaultFigureRenderer', 'painters');
-    set(0, 'DefaultFigureVisible', 'off');
+    % Renderer + visibility: detect interactive (GUI) vs -batch.
+    %   In -batch (no desktop): painters + invisible avoids OpenGL hangs.
+    %   In GUI: opengl + visible works; painters + invisible can deadlock
+    %   on certain MATLAB releases when many figures are created in a row.
+    if usejava('desktop')
+        % Interactive — let the user see plots as they're built.
+        set(0, 'DefaultFigureRenderer', 'opengl');
+        set(0, 'DefaultFigureVisible',  'on');
+    else
+        % -batch — keep the safe workaround for headless renders.
+        set(0, 'DefaultFigureRenderer', 'painters');
+        set(0, 'DefaultFigureVisible',  'off');
+    end
 
     % --- Pull data from base WS ----------------------------------------------
     [t_truth, alt_truth, vel_truth] = pull_truth_();
