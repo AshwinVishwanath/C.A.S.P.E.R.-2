@@ -63,8 +63,20 @@ function [pos_NED, vel_NED, att_quat, bg, ba, bb, ...
     if isempty(st) || logical(reset_flag)
         params = build_default_params_();
 
-        % Mag reference (London NED, uT) — matches EKF16Verify line 202.
-        mag_ref_ned = [20.0; 0.5; 43.0];
+        % Mag reference in NED, uT. Prefer the visual model's truth field
+        % (casper_mag_field_world) so the mag update sees the same NED-frame
+        % reference it would in flight. Fall back to the canonical
+        % EKF16Verify [20, 0.5, 43] uT if the helper isn't on the path.
+        if exist('casper_mag_field_world', 'file')
+            try
+                mag_ref_ned = casper_mag_field_world([0;0;0]);
+                mag_ref_ned = mag_ref_ned(:);
+            catch
+                mag_ref_ned = [20.0; 0.5; 43.0];
+            end
+        else
+            mag_ref_ned = [20.0; 0.5; 43.0];
+        end
 
         I16 = eye(16);
 
@@ -102,7 +114,10 @@ function [pos_NED, vel_NED, att_quat, bg, ba, bb, ...
         q_seed = double(q_init_fw(:));
         nq = norm(q_seed);
         if nq < 1e-6 || ~all(isfinite(q_seed))
-            q_seed = [0; 0; 1; 0];   % fallback to canonical pad quat
+            % Fallback: visual-model body-Zup pad quat (body+X=East,
+            % body+Y=North, body+Z=Up). See build_casper_sim_phase0.m
+            % C_e16_qinit block comment for the derivation.
+            q_seed = [0; sqrt(2)/2; sqrt(2)/2; 0];
         else
             q_seed = q_seed / nq;
         end
@@ -276,8 +291,14 @@ end
 % =========================================================================
 function st = make_init_state_()
 % Build the EKF16 initial state container. Mirrors EKF16Verify lines 318-336.
+% q_ref seed is the visual-model body-Zup pad quat
+%   [0; sqrt(2)/2; sqrt(2)/2; 0]
+% (body+X=East, body+Y=North, body+Z=Up at pad with nose pointing up
+% north). The caller's `q_init_fw` argument overrides this on the first
+% armed tick, so this default only matters before the first attitude
+% init_complete edge.
     st = struct();
-    st.q_ref  = [0; 0; 1; 0];      % canonical pad quat (body +Z = up)
+    st.q_ref  = [0; sqrt(2)/2; sqrt(2)/2; 0];
     st.v_ref  = zeros(3, 1);       % NED
     st.p_ref  = zeros(3, 1);       % NED
     st.bg_ref = zeros(3, 1);       % gyro bias estimate

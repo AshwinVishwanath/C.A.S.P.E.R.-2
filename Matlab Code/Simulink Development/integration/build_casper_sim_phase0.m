@@ -1454,16 +1454,37 @@ function build_eskf16_subsystem_(model_name)
         'Position', [1460 960 1510 990]);
     add_line(model_name, 'ATTITUDE/4', 'RT_e16_init/1', 'autorouting', 'on');
 
-    % Quat init seed: canonical EKF16 pad quat [0;0;1;0]. The EKF16 algorithm
-    % from EKF16Verify.m §7 always seeds with the body-Zup -> NED pad quat
-    % (body +Z up, 180 deg about Y). Threading the attitude block's q_fw
-    % through here would require a frame conversion (fw -> Zup); for the
-    % visual model's 1-DOF vertical truth, the canonical pad quat is byte-
-    % identical to what the attitude block would produce after conversion.
+    % Quat init seed for the actual visual-model body-Zup axis convention.
+    %
+    % The visual chain (imuSensor -> imu_unit_convert sign-flip ->
+    % FrameSwitch_Accel -> R_x(pi/2) inside ESKF16's RotAccelBodyZup) maps
+    % body axes as follows ON THE PAD WITH THE NOSE POINTING UP NORTH:
+    %    body+X = East,  body+Y = North,  body+Z = Up
+    % (see diag_visual_accel.m and the round-2 commit log for the trace.)
+    %
+    % The body-to-NED DCM at pad is therefore:
+    %    R_b2n = [ 0 1  0;
+    %              1 0  0;
+    %              0 0 -1 ]
+    % which corresponds to a Hamilton quaternion (proper rotation, det = +1)
+    % of  q_pad = [0; 1/sqrt(2); 1/sqrt(2); 0]  (180 deg about [1,1,0]/sqrt(2)).
+    %
+    % Verify (quat2Tbn with q = [0, sqrt(2)/2, sqrt(2)/2, 0]):
+    %    (1,1) = 0, (1,2) = 1, (1,3) = 0
+    %    (2,1) = 1, (2,2) = 0, (2,3) = 0
+    %    (3,1) = 0, (3,2) = 0, (3,3) = -1   PASS
+    %
+    % Earlier the seed was the canonical EKF16Verify pad quat [0;0;1;0],
+    % which assumes body+X = South, body+Y = East, body+Z = Up. The yaw
+    % mismatch (90 deg about Z) produced large mag-update innovations that
+    % the EKF absorbed into the accel/gyro bias states (the X-Zup ba
+    % estimate stabilised around +1.7 m/s^2 after the round-2 rotation
+    % fix; with the matching q_pad it should settle near the truth ~0.1
+    % m/s^2 injection).
     c_qinit = [model_name '/C_e16_qinit'];
     add_block('simulink/Sources/Constant', c_qinit);
-    set_param(c_qinit, 'Value', '[0;0;1;0]', 'SampleTime', '-1', ...
-        'Position', [1460 1000 1510 1030]);
+    set_param(c_qinit, 'Value', '[0; sqrt(2)/2; sqrt(2)/2; 0]', ...
+        'SampleTime', '-1', 'Position', [1460 1000 1510 1030]);
 
     % --- 3) Wire ESKF16 inports (8 ports) --------------------------------
     add_line(model_name, 'RT_e16_gyro/1',    'ESKF16/1', 'autorouting', 'on');
