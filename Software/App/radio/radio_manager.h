@@ -14,6 +14,7 @@
 #include "tlm_types.h"
 #include "casper_ekf.h"
 #include "radio_config.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Initialize radio: reset SX1276, configure LoRa, apply Profile A */
@@ -37,6 +38,9 @@ int radio_send_response(const uint8_t *buf, uint8_t len);
 
 /* Check if radio initialized OK */
 int radio_is_active(void);
+
+/* True while the radio is mid-TX (PA energized). Sampled for EMI logging. */
+bool radio_is_tx_active(void);
 
 /* Get radio stats for data logging */
 void radio_get_stats(int8_t *rssi, int8_t *snr,

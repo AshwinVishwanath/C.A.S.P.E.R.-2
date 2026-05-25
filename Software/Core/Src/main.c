@@ -48,6 +48,9 @@
 #ifdef GYRO_TEMP_CAL
 #include "temp_cal.h"
 #endif
+#ifdef MAG_NOISE
+#include "mag_noise.h"
+#endif
 /* ── MC Testing / Telemetry modules ── */
 #include "tlm_manager.h"
 #include "cmd_router.h"
@@ -79,7 +82,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#if defined(MAG_CAL) + defined(MAG_VAL) + defined(GYRO_TEMP_CAL) + defined(GPS_TEST) > 1
+#if defined(MAG_CAL) + defined(MAG_VAL) + defined(GYRO_TEMP_CAL) + defined(GPS_TEST) + defined(MAG_NOISE) > 1
 #error "Only one calibration/test mode may be defined at a time"
 #endif
 
@@ -678,6 +681,18 @@ int main(void)
     }
   }
 #endif
+#ifdef MAG_NOISE
+  mag_noise_t mnoise;
+  if (!mag_noise_init(&mnoise)) {
+    while (1) {
+      HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(100);
+    }
+  }
+#endif
 #ifdef MAG_VAL
   mag_val_t mval;
   if (!mag_val_init(&mval)) {
@@ -752,6 +767,93 @@ int main(void)
         char done_buf[64];
         int done_len = snprintf(done_buf, sizeof(done_buf),
             ">mag_cal: DONE (%lu samples)\r\n", mcal.sample_count);
+        for (int i = 0; i < 5; i++) {
+          CDC_Transmit_FS((uint8_t *)done_buf, done_len);
+          HAL_Delay(200);
+        }
+        while (1) { HAL_Delay(1000); }
+      }
+    }
+#elif defined(MAG_NOISE)
+    {
+      static uint32_t last_imu_tick = 0;
+      static uint32_t last_mag_tick = 0;
+      static bool     att_init_done = false;
+      uint32_t now = HAL_GetTick();
+
+      /* ── IMU at native ODR via DRDY EXTI, STATUS_REG fallback ─────── */
+      if (!imu.data_ready && (now - last_imu_tick) >= 1) {
+        uint8_t st = lsm6dso32_read_reg_ext(&imu, LSM6DSO32_STATUS_REG);
+        if (st & 0x03) imu.data_ready = true;
+      }
+      if (imu.data_ready) {
+        imu.data_ready = false;
+        lsm6dso32_read(&imu);
+        float dt = (last_imu_tick == 0) ? 0.0012f
+                 : (float)(now - last_imu_tick) * 0.001f;
+        if (dt <= 0.0f) dt = 0.0012f;
+        last_imu_tick = now;
+
+        float accel_mps2[3] = { imu.accel_g[0]  * 9.80665f,
+                                imu.accel_g[1]  * 9.80665f,
+                                imu.accel_g[2]  * 9.80665f };
+        float gyro_rps[3]   = { imu.gyro_dps[0] * 0.017453292f,
+                                imu.gyro_dps[1] * 0.017453292f,
+                                imu.gyro_dps[2] * 0.017453292f };
+
+        /* mag=NULL: accel+gyro-only reference attitude */
+        if (!att_init_done) {
+          att_init_done = casper_att_static_init(&att, accel_mps2, NULL);
+        } else {
+          casper_att_update(&att, gyro_rps, accel_mps2, NULL, dt);
+        }
+      }
+
+      /* ── Radio drive (Runs B and C) ──────────────────────────────── */
+#if defined(MAG_NOISE_RUN_B) || defined(MAG_NOISE_RUN_C)
+      {
+        static casper_ekf_t      fake_ekf;     /* zero-initialised */
+        static fc_telem_state_t  fake_tstate;
+        static pyro_state_t      fake_pstate;
+#ifdef MAG_NOISE_RUN_C
+        fake_ekf.x[0] = 30000.0f;  /* spoof high altitude → Profile B */
+#endif
+        radio_manager_tick(&fake_ekf, &fake_tstate, &fake_pstate, FSM_STATE_PAD);
+      }
+#endif
+
+      /* ── Mag sample + log at 100 Hz ──────────────────────────────── */
+      if (now - last_mag_tick >= 10) {
+        mmc5983ma_read(&mag);
+
+        bool     tx_active = false;
+        uint16_t tx_count  = 0;
+#if defined(MAG_NOISE_RUN_B) || defined(MAG_NOISE_RUN_C)
+        tx_active = radio_is_tx_active();
+        int8_t _r, _s; uint16_t _rxc, _fc;
+        radio_get_stats(&_r, &_s, &tx_count, &_rxc, &_fc);
+#endif
+        bool qspi_busy = (hqspi.State != HAL_QSPI_STATE_READY);
+
+        mag_noise_tick(&mnoise, &mag, &imu, &att,
+                       tx_active, qspi_busy, tx_count, now);
+        last_mag_tick = now;
+      }
+
+      /* ── Forced flash flush (Run D only) ─────────────────────────── */
+#ifdef MAG_NOISE_RUN_D
+      mag_noise_force_flush(&mnoise, now);
+#endif
+
+      /* ── Done: solid LEDs, idle forever ──────────────────────────── */
+      if (mag_noise_is_done(&mnoise)) {
+        HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+        char done_buf[80];
+        int done_len = snprintf(done_buf, sizeof(done_buf),
+            ">mag_noise: DONE (%lu samples)\r\n", mnoise.sample_count);
         for (int i = 0; i < 5; i++) {
           CDC_Transmit_FS((uint8_t *)done_buf, done_len);
           HAL_Delay(200);

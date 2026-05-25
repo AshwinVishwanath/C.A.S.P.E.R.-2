@@ -627,6 +627,11 @@ int radio_is_active(void)
     return (s_radio_state != RADIO_STATE_DISABLED) ? 1 : 0;
 }
 
+bool radio_is_tx_active(void)
+{
+    return s_radio_state == RADIO_STATE_TX;
+}
+
 void radio_get_stats(int8_t *rssi, int8_t *snr,
                      uint16_t *tx_count, uint16_t *rx_count,
                      uint16_t *fail_count)

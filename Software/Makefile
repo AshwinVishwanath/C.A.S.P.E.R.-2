@@ -124,6 +124,7 @@ App/nav/casper_ekf.c \
 App/nav/casper_gyro_int.c \
 App/cal/mag_cal.c \
 App/cal/mag_val.c \
+App/cal/mag_noise.c \
 App/cal/temp_cal.c \
 App/pyro/casper_pyro.c \
 Drivers/CMSIS/DSP/Source/MatrixFunctions/arm_mat_init_f32.c \
@@ -249,6 +250,15 @@ endif
 # Extra defines from command line: make -j8 EXTRA_DEFS="-DSOMETHING"
 ifdef EXTRA_DEFS
 C_DEFS += $(EXTRA_DEFS)
+endif
+
+# ── Magnetometer noise characterization build  ──────────────
+# Usage:   make MAG_NOISE_RUN=A   (or B, C, D)
+# Selects: A=baseline, B=radio SF7, C=radio SF8 high-power, D=flash burst
+ifdef MAG_NOISE_RUN
+C_DEFS += -DMAG_NOISE -DMAG_NOISE_RUN_$(MAG_NOISE_RUN)
+# The bench logger sanity harness expects flight loop; suppress it here.
+SUPPRESS_LOGGER_SANITY := 1
 endif
 
 # AS includes
