@@ -25,11 +25,17 @@ clear; clc; close all;
 %                         USER CONFIGURATION
 %  ========================================================================
 
-% Run file paths (rename your CSVs to match, or change here)
-runs(1).id    = 'A'; runs(1).file = 'run_A.csv'; runs(1).label = 'baseline (radio OFF)';
-runs(2).id    = 'B'; runs(2).file = 'run_B.csv'; runs(2).label = 'radio Profile A (SF7)';
-runs(3).id    = 'C'; runs(3).file = 'run_C.csv'; runs(3).label = 'radio Profile B (SF8, +20 dBm)';
-runs(4).id    = 'D'; runs(4).file = 'run_D.csv'; runs(4).label = 'flash burst (radio OFF)';
+% Per-run files (rename after each MSC pull).
+%   .file  : mag samples (MAG_NOISE.CSV)
+%   .evt   : radio TX events (RADIO_EVT.CSV)  — only populated for B/C
+runs(1).id  = 'A'; runs(1).file = 'run_A.csv';     runs(1).evt = '';
+runs(1).label = 'baseline (radio OFF)';
+runs(2).id  = 'B'; runs(2).file = 'run_B.csv';     runs(2).evt = 'run_B_evt.csv';
+runs(2).label = 'radio Profile A (SF7)';
+runs(3).id  = 'C'; runs(3).file = 'run_C.csv';     runs(3).evt = 'run_C_evt.csv';
+runs(3).label = 'radio Profile B (SF8, +20 dBm)';
+runs(4).id  = 'D'; runs(4).file = 'run_D.csv';     runs(4).evt = '';
+runs(4).label = 'flash burst (radio OFF)';
 
 % Sensor nominal sample rate (MMC5983MA continuous mode)
 MAG_FS_HZ = 100;
@@ -73,6 +79,17 @@ for k = 1:numel(runs)
     dt_std  = std(diff(t));
     fprintf('%d samples, %.1f s, dt = %.4f +/- %.4f s\n', ...
             n, t(end), dt_mean, dt_std);
+
+    % Radio event file (sub-ms accurate TX start/end timestamps)
+    runs(k).evt_data = [];
+    if ~isempty(runs(k).evt) && exist(runs(k).evt, 'file')
+        E = readtable(runs(k).evt, 'CommentStyle', '#');
+        runs(k).evt_data = E;
+        durs = E.duration_ms;
+        fprintf('  + RADIO_EVT: %d TX events, mean duration = %.1f ms ' ...
+                '(min %.1f, max %.1f), %d failed\n', ...
+                height(E), mean(durs), min(durs), max(durs), sum(E.ok==0));
+    end
 end
 
 %% ========================================================================
@@ -170,64 +187,120 @@ fprintf('  Saved %s\n', fullfile(plot_dir, 'psd_overlay.png'));
 %% ========================================================================
 %             SECTION 5: RADIO-TX EMI DELTA (Runs B & C)
 %  ========================================================================
-% For each TX-active window (radio_tx==1), compare local mean/sigma against
-% the surrounding quiet samples. This produces the bias and sigma deltas
-% used by casper_mag_radio_interference.m.
+% Use the RADIO_EVT.CSV event timestamps (sub-ms accurate) when available,
+% otherwise fall back to the sample-flagged radio_tx column (10 ms grid).
+% For each TX burst, compare mag samples inside [start_ms, end_ms] against
+% an equal-length quiet window straddling the burst. Output feeds
+% casper_mag_radio_interference.m.
 
 fprintf('\n--- Radio TX EMI delta (per axis) ---\n');
 
-WINDOW_PAD = 5;  % samples of "quiet" before and after each TX run to compare against
+QUIET_PAD_MS = 200;  % gap on each side of the burst that must stay quiet
 
 emi_results = struct();
 for k = 1:numel(runs)
     if isempty(runs(k).data), continue; end
     T = runs(k).data;
-    if ~any(T.radio_tx > 0)
-        continue;
+    t_ms = T.t_ms;
+
+    % Build (start_ms, end_ms) list either from events or sample flag
+    have_events = ~isempty(runs(k).evt_data);
+    if have_events
+        E = runs(k).evt_data;
+        ev_start = E.start_ms;
+        ev_end   = E.end_ms;
+    else
+        if ~any(T.radio_tx > 0), continue; end
+        tx = T.radio_tx > 0;
+        d = diff([0; tx(:); 0]);
+        s_idx = find(d > 0);
+        e_idx = find(d < 0) - 1;
+        ev_start = t_ms(s_idx);
+        ev_end   = t_ms(e_idx);
     end
-    fprintf('  Run %s:\n', runs(k).id);
+
+    if isempty(ev_start), continue; end
+    fprintf('  Run %s: %d TX events (%s)\n', runs(k).id, numel(ev_start), ...
+            ternary(have_events, 'event timestamps', 'sample flag'));
+
     for ax_i = 1:3
         x = T.(axes_names{ax_i});
-        tx = T.radio_tx > 0;
 
-        % Identify TX run starts/ends
-        d = diff([0; tx(:); 0]);
-        starts = find(d > 0);
-        ends   = find(d < 0) - 1;
+        tx_means    = nan(numel(ev_start),1);
+        tx_stds     = nan(numel(ev_start),1);
+        quiet_means = nan(numel(ev_start),1);
+        quiet_stds  = nan(numel(ev_start),1);
+        tx_lens_ms  = zeros(numel(ev_start),1);
 
-        tx_means   = zeros(numel(starts),1);
-        quiet_means = zeros(numel(starts),1);
-        tx_stds    = zeros(numel(starts),1);
-        quiet_stds = zeros(numel(starts),1);
-
-        for j = 1:numel(starts)
-            s = starts(j); e = ends(j);
-            i_quiet_lo = max(1, s - WINDOW_PAD - (e-s));
-            i_quiet_hi = max(1, s - 1);
-            i_quiet_lo2 = min(numel(x), e + 1);
-            i_quiet_hi2 = min(numel(x), e + WINDOW_PAD + (e-s));
-
-            tx_seg    = x(s:e);
-            quiet_seg = [x(i_quiet_lo:i_quiet_hi); x(i_quiet_lo2:i_quiet_hi2)];
-
-            if isempty(tx_seg) || isempty(quiet_seg), continue; end
-
-            tx_means(j)    = mean(tx_seg);
-            quiet_means(j) = mean(quiet_seg);
-            tx_stds(j)     = std(tx_seg);
-            quiet_stds(j)  = std(quiet_seg);
+        for j = 1:numel(ev_start)
+            s = ev_start(j); e = ev_end(j); dur = e - s;
+            tx_mask    = (t_ms >= s) & (t_ms <= e);
+            quiet_mask = ((t_ms >= s - QUIET_PAD_MS - dur) & (t_ms < s)) | ...
+                         ((t_ms > e) & (t_ms <= e + QUIET_PAD_MS + dur));
+            if any(tx_mask) && any(quiet_mask)
+                tx_means(j)    = mean(x(tx_mask));
+                tx_stds(j)     = std(x(tx_mask));
+                quiet_means(j) = mean(x(quiet_mask));
+                quiet_stds(j)  = std(x(quiet_mask));
+                tx_lens_ms(j)  = dur;
+            end
         end
 
-        delta_bias = mean(tx_means - quiet_means);
-        delta_sigma = mean(tx_stds  - quiet_stds);
+        delta_bias  = mean(tx_means  - quiet_means, 'omitnan');
+        delta_sigma = mean(tx_stds   - quiet_stds,  'omitnan');
 
         emi_results(k).(axes_names{ax_i}).delta_bias_ut  = delta_bias;
         emi_results(k).(axes_names{ax_i}).delta_sigma_ut = delta_sigma;
-        emi_results(k).(axes_names{ax_i}).n_events       = numel(starts);
+        emi_results(k).(axes_names{ax_i}).n_events       = numel(ev_start);
+        emi_results(k).(axes_names{ax_i}).mean_burst_ms  = mean(tx_lens_ms);
 
-        fprintf('    %s: %d TX events, dBias=%+.4f uT, dSigma=%+.4f uT\n', ...
-                axes_names{ax_i}, numel(starts), delta_bias, delta_sigma);
+        fprintf('    %s: dBias=%+0.4f uT, dSigma=%+0.4f uT, ' ...
+                'mean burst=%.1f ms\n', ...
+                axes_names{ax_i}, delta_bias, delta_sigma, mean(tx_lens_ms));
     end
+end
+
+%% ========================================================================
+%        SECTION 5b: TIME-DOMAIN PLOT WITH TX WINDOWS OVERLAID
+%  ========================================================================
+% Zoomed-in (first 10 s) view of the mag signal with TX bursts shown as
+% shaded vertical patches. This is the visual you want to confirm that
+% radio TX is the EMI source (or that it isn't).
+
+for k = 1:numel(runs)
+    if isempty(runs(k).data) || isempty(runs(k).evt_data), continue; end
+    T = runs(k).data;
+    E = runs(k).evt_data;
+    t_s = T.t_ms / 1000;
+
+    % Plot the first 10 seconds (or full record if shorter)
+    t_max = min(10, t_s(end));
+    sel = t_s <= t_max;
+
+    fig = figure('Name', sprintf('Run %s TX overlay', runs(k).id), ...
+                 'Position', [100 100 1200 600]);
+    for ax_i = 1:3
+        subplot(3,1,ax_i); hold on; grid on; box on;
+        % TX window patches BEHIND the signal
+        evt_mask = E.start_ms <= t_max*1000;
+        for j = find(evt_mask).'
+            xs = E.start_ms(j) / 1000;
+            xe = E.end_ms(j) / 1000;
+            patch([xs xe xe xs], ...
+                  [min(T.(axes_names{ax_i})) min(T.(axes_names{ax_i})) ...
+                   max(T.(axes_names{ax_i})) max(T.(axes_names{ax_i}))], ...
+                  [1 0.85 0.85], 'EdgeColor', 'none', ...
+                  'FaceAlpha', 0.4, 'HandleVisibility', 'off');
+        end
+        plot(t_s(sel), T.(axes_names{ax_i})(sel), 'b-', 'LineWidth', 1.0);
+        xlabel('t (s)');
+        ylabel(sprintf('%s [\\muT]', strrep(axes_names{ax_i},'_','\_')));
+        title(sprintf('Run %s — %s (red = radio TX active)', ...
+                      runs(k).id, runs(k).label));
+        xlim([0 t_max]);
+    end
+    saveas(fig, fullfile(plot_dir, sprintf('tx_overlay_run_%s.png', runs(k).id)));
+    fprintf('  Saved tx_overlay_run_%s.png\n', runs(k).id);
 end
 
 %% ========================================================================
@@ -311,6 +384,21 @@ if ~isempty(emi_runs)
 end
 mag_noise_params.tx_delta_runs_used = tally;
 
+% TX burst statistics (from RADIO_EVT.csv) — feed casper_radio_tx_schedule.m
+tx_durations_ms = [];
+for k = 1:numel(runs)
+    if ~isempty(runs(k).evt_data)
+        tx_durations_ms = [tx_durations_ms; runs(k).evt_data.duration_ms]; %#ok<AGROW>
+    end
+end
+if ~isempty(tx_durations_ms)
+    mag_noise_params.tx_burst_ms_mean   = mean(tx_durations_ms);
+    mag_noise_params.tx_burst_ms_std    = std(tx_durations_ms);
+    mag_noise_params.tx_burst_ms_min    = min(tx_durations_ms);
+    mag_noise_params.tx_burst_ms_max    = max(tx_durations_ms);
+    mag_noise_params.tx_burst_count     = numel(tx_durations_ms);
+end
+
 % Sample rate so the Simulink block knows what dt the params correspond to
 mag_noise_params.sample_rate_hz = MAG_FS_HZ;
 
@@ -323,6 +411,10 @@ fprintf('\nDone.\n');
 %% ========================================================================
 %                          LOCAL FUNCTIONS
 %  ========================================================================
+
+function out = ternary(cond, a, b)
+    if cond, out = a; else, out = b; end
+end
 
 function [tau, sigma] = allan_deviation(x, dt, m_min, max_frac, n_taus)
     % Overlapping Allan deviation via the bin-averaging method.

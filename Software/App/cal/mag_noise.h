@@ -52,11 +52,18 @@ typedef enum {
 typedef struct {
     mag_noise_state_t state;
 
-    /* FATFS */
+    /* FATFS — mag samples */
     FIL      file;
     bool     file_open;
 
-    /* Write buffer (sized so a single line never straddles the flush) */
+    /* FATFS — radio TX events (one row per TX burst, sub-ms accurate) */
+    FIL      evt_file;
+    bool     evt_file_open;
+    char     evt_wbuf[512];
+    uint16_t evt_wbuf_pos;
+    uint32_t evt_count;
+
+    /* Write buffer for mag samples (line never straddles the flush) */
     char     wbuf[2048];
     uint16_t wbuf_pos;
 
@@ -92,6 +99,13 @@ void mag_noise_tick(mag_noise_t *cap,
  *         Run D to drive realistic flash-write EMI cadence.
  */
 void mag_noise_force_flush(mag_noise_t *cap, uint32_t now_ms);
+
+/**
+ * @brief  Drain pending radio TX events from radio_manager and append
+ *         them to RADIO_EVT.CSV. Call every superloop iteration so the
+ *         ring never overflows. Cheap when the ring is empty.
+ */
+void mag_noise_drain_tx_events(mag_noise_t *cap);
 
 /**
  * @brief  True once the capture window has elapsed and the file is closed.

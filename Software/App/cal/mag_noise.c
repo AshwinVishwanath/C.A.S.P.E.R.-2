@@ -5,6 +5,7 @@
 #include "mag_noise.h"
 #include "mag_cal.h"
 #include "casper_quat.h"
+#include "radio_manager.h"
 #include "usbd_cdc_if.h"
 #include "main.h"
 #include <string.h>
@@ -33,6 +34,15 @@ static void mag_noise_flush(mag_noise_t *cap)
         UINT bw;
         f_write(&cap->file, cap->wbuf, cap->wbuf_pos, &bw);
         cap->wbuf_pos = 0;
+    }
+}
+
+static void mag_noise_evt_flush(mag_noise_t *cap)
+{
+    if (cap->evt_wbuf_pos > 0 && cap->evt_file_open) {
+        UINT bw;
+        f_write(&cap->evt_file, cap->evt_wbuf, cap->evt_wbuf_pos, &bw);
+        cap->evt_wbuf_pos = 0;
     }
 }
 
@@ -92,6 +102,22 @@ bool mag_noise_init(mag_noise_t *cap)
     UINT bw;
     f_write(&cap->file, hdr, (UINT)n, &bw);
 
+    /* ── RADIO_EVT.CSV: one row per TX burst, sub-ms timestamps ──── */
+    fr = f_open(&cap->evt_file, "RADIO_EVT.CSV",
+                FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr == FR_OK) {
+        cap->evt_file_open = true;
+        const char *ehdr =
+            "# C.A.S.P.E.R.-2 radio TX events (matched to MAG_NOISE.CSV)\r\n"
+            "evt_idx,tx_index,start_ms,end_ms,duration_ms,ok\r\n";
+        f_write(&cap->evt_file, ehdr, (UINT)strlen(ehdr), &bw);
+    }
+    /* Drain any events captured before init (e.g. from earlier in boot) */
+    uint32_t st, en; uint16_t tix; bool ok;
+    while (radio_drain_tx_event(&st, &en, &tix, &ok)) {
+        (void)st; (void)en; (void)tix; (void)ok;
+    }
+
     cap->state    = MAG_NOISE_COLLECTING;
     cap->start_ms = HAL_GetTick();
     return true;
@@ -116,6 +142,11 @@ void mag_noise_tick(mag_noise_t *cap,
         mag_noise_flush(cap);
         f_close(&cap->file);
         cap->file_open = false;
+        mag_noise_evt_flush(cap);
+        if (cap->evt_file_open) {
+            f_close(&cap->evt_file);
+            cap->evt_file_open = false;
+        }
         cap->state = MAG_NOISE_DONE;
         return;
     }
@@ -191,6 +222,39 @@ void mag_noise_force_flush(mag_noise_t *cap, uint32_t now_ms)
         return;
     mag_noise_flush(cap);
     cap->last_burst_flush_ms = now_ms;
+}
+
+/* ── TX event drain (one row per TX burst, sub-ms timestamps) ───────────── */
+
+void mag_noise_drain_tx_events(mag_noise_t *cap)
+{
+    if (cap->state != MAG_NOISE_COLLECTING || !cap->evt_file_open)
+        return;
+
+    uint32_t st_abs, en_abs;
+    uint16_t tix;
+    bool     ok;
+    while (radio_drain_tx_event(&st_abs, &en_abs, &tix, &ok)) {
+        /* Re-base timestamps to start of capture so they line up with
+         * the t_ms column in MAG_NOISE.CSV. */
+        uint32_t st = st_abs - cap->start_ms;
+        uint32_t en = en_abs - cap->start_ms;
+        int n = snprintf(cap->evt_wbuf + cap->evt_wbuf_pos,
+                         sizeof(cap->evt_wbuf) - cap->evt_wbuf_pos,
+                         "%lu,%u,%lu,%lu,%lu,%u\r\n",
+                         (unsigned long)cap->evt_count,
+                         (unsigned)tix,
+                         (unsigned long)st,
+                         (unsigned long)en,
+                         (unsigned long)(en_abs - st_abs),
+                         (unsigned)(ok ? 1 : 0));
+        if (n > 0) cap->evt_wbuf_pos += (uint16_t)n;
+        cap->evt_count++;
+
+        /* Flush when getting full; one row is ~40 bytes so cap is ~12 rows */
+        if (cap->evt_wbuf_pos > (uint16_t)(sizeof(cap->evt_wbuf) - 80))
+            mag_noise_evt_flush(cap);
+    }
 }
 
 /* ── Done check ──────────────────────────────────────────────────────────── */

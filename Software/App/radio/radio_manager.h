@@ -42,6 +42,16 @@ int radio_is_active(void);
 /* True while the radio is mid-TX (PA energized). Sampled for EMI logging. */
 bool radio_is_tx_active(void);
 
+/* Drain one TX event from the per-edge ring. Each TxDone (or TX timeout)
+ * pushes one entry holding the millisecond start + end timestamps and the
+ * TX index (== s_total_tx_count at the start of that TX). Returns false
+ * when the ring is empty. Used by mag_noise.c to write RADIO_EVT.CSV.
+ *
+ * Resolution: ~1 ms (HAL_GetTick) on both edges; transitions are detected
+ * within one superloop iteration of the actual radio state change. */
+bool radio_drain_tx_event(uint32_t *start_ms, uint32_t *end_ms,
+                          uint16_t *idx, bool *ok);
+
 /* Get radio stats for data logging */
 void radio_get_stats(int8_t *rssi, int8_t *snr,
                      uint16_t *tx_count, uint16_t *rx_count,

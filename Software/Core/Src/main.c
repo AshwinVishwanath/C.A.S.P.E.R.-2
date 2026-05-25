@@ -822,6 +822,9 @@ int main(void)
       }
 #endif
 
+      /* ── Drain radio TX events into RADIO_EVT.CSV every loop ────── */
+      mag_noise_drain_tx_events(&mnoise);
+
       /* ── Mag sample + log at 100 Hz ──────────────────────────────── */
       if (now - last_mag_tick >= 10) {
         mmc5983ma_read(&mag);
