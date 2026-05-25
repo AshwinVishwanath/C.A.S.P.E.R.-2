@@ -1,5 +1,5 @@
 Pad-only smoke test
-Seed=20260519, runtime=0.52 s
+Seed=20260519, runtime=0.51 s
 
 [PASS] pad accel ~ [0, +g, 0] body-FW -- a_fw_mean=[-0.152 10.001 0.120] m/s^2, delta=[-0.152 0.194 0.120]
 [PASS] pad gyro ~ [0,0,0] body-FW -- g_fw_mean=[-0.0079 -0.0085 0.0177] rad/s

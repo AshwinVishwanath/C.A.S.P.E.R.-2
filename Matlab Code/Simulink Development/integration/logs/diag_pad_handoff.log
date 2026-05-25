@@ -1,0 +1,106 @@
+==== diag_pad_handoff ====
+=== casper() top-level setup ===
+[casper] profile=apogee, StopTime override = 12.0 s
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=12.0 s
+[load_truth_ts] loading cached E:\C.A.S.P.E.R\C.A.S.P.E.R Flight Software V2\Casper 2 flight firmware\C.A.S.P.E.R.-2\Matlab Code\Simulink Development\truth\truth_trajectory.mat
+[load_truth_ts] truncating to first 120001 samples (12.00 s)
+[load_truth_ts] truth_ts populated in base WS (120001 samples, 12.00 s span)
+
+=== ready to simulate ===
+  Profile  : apogee
+  Seed     : 20260519
+  StopTime : 12.0 s
+  Solver dt: 1e-04 s
+Next steps:
+  build_casper_sim_phase0                                % (re)build .slx; saves StopTime=12.0
+  open_system('casper_sim_phase0')                      % visual inspection
+  sim('casper_sim_phase0')                              % run the simulation (saved StopTime)
+  test_visual_model_compile                              % automated 5 s smoke
+  run_phase0_trustgate                                   % canonical byte-exact regression
+
+After sim() completes, 8 scopes auto-open:
+  4 existing      : Altitude, VerticalVelocity, Euler, AttitudeError
+  4 NEW compare   : Compare_Altitude, Compare_VerticalVelocity,
+                    Compare_AttitudeError, Compare_Biases
+  cd integration; generate_ekf_comparison_report          % side-by-side report
+[pre-build] truth_ts.pos_NED Time span: [0.0000, 12.0000] s (n=120001)
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=12.0 s
+[eskf16] Loading symbolic workspace: E:\C.A.S.P.E.R\C.A.S.P.E.R Flight Software V2\Casper 2 flight firmware\C.A.S.P.E.R.-2\Flight Images and Raw Data\casper_ekf16_symbolic.mat
+[eskf16] Cached F/Q/H_MAG handles in base workspace.
+[build_casper_sim_phase0] wrote E:\C.A.S.P.E.R\C.A.S.P.E.R Flight Software V2\Casper 2 flight firmware\C.A.S.P.E.R.-2\Matlab Code\Simulink Development\integration\casper_sim_phase0.slx
+[post-build] truth_ts.pos_NED Time(1) = 0.0000 s
+[mdl] StartTime="-5"  InitFcn="casper_prelaunch_pad_truth_ts(5.0);"
+[sim] running...
+[prelaunch_pad] prepended 5.00 s (50000 samples @ dt=0.0001) to truth_ts; new t0 = -5.000 s
+[sim] done.
+[post-sim ] truth_ts.pos_NED Time(1) = -5.0000 s
+  >> pad WAS prepended in base WS by InitFcn (good).
+
+log_est_state_x time span: [-5.0000, 12.0000] s (n=8501)
+  >> log starts before t=0, so B is NOT the issue.
+
+EKF state [alt vel ab bb] at sim times:
+  t= -5.000 (idx 1): [    0.000     0.000    0.0000    0.0000]
+  t= -4.000 (idx 501): [    0.000     0.000    0.0000    0.0000]
+  t= -3.000 (idx 1001): [    0.000     0.000    0.0000    0.0000]
+  t= -2.000 (idx 1501): [    0.000     0.000    0.0000    0.0000]
+  t= -1.000 (idx 2001): [    0.000     0.000    0.0000    0.0000]
+  t= -0.500 (idx 2251): [    0.000     0.000    0.0000    0.0000]
+  t= -0.100 (idx 2451): [    0.000     0.000    0.0000    0.0000]
+  t= -0.010 (idx 2496): [    0.000     0.000    0.0000    0.0000]
+  t=  0.000 (idx 2501): [    0.000     0.000    0.0000    0.0000]
+  t=  0.012 (idx 2507): [    0.000     0.000    0.0000    0.0000]
+  t=  0.500 (idx 2751): [    0.000     0.000    0.0000    0.0000]
+  t=  1.000 (idx 3001): [    0.000     0.000    0.0000    0.0000]
+  t=  2.000 (idx 3501): [    0.000     0.000    0.0000    0.0000]
+  t=  3.000 (idx 4001): [    0.000     0.000    0.0000    0.0000]
+  t=  4.000 (idx 4501): [    0.000     0.000    0.0000    0.0000]
+  t=  5.000 (idx 5001): [    0.000     0.000    0.0000    0.0000]
+  t=  6.000 (idx 5501): [ 4915.212    23.959    0.0000    0.0000]
+  t=  8.000 (idx 6501): [ 5215.290   278.104    0.0000    0.0000]
+  t= 10.000 (idx 7501): [ 6021.386   509.276    0.0000    0.0000]
+
+log_est_quat time span: [-5.0000, 12.0000]
+Quat at key sim times:
+  t= -5.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t= -4.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t= -3.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t= -2.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t= -1.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t= -0.500: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t= -0.010: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t=  0.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t=  0.500: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t=  1.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t=  5.000: q=[ 1.0000  0.0000  0.0000  0.0000]  |q|=1.0000
+  t= 10.000: q=[ 0.7270  0.6866 -0.0008  0.0010]  |q|=1.0000
+
+log_sensor_imu time span: [-5.0000, 12.0000] (n=17001)
+IMU log at key sim times (raw std-body accel in g):
+  t= -5.000: a=[-32.0000 -32.0000 -32.0000]
+  t= -4.000: a=[-0.9848 -0.0146  0.0312]
+  t= -3.000: a=[-0.9848 -0.0205  0.0351]
+  t= -2.000: a=[-0.9838 -0.0107  0.0293]
+  t= -1.000: a=[-0.9877 -0.0146  0.0224]
+  t= -0.500: a=[-0.9848 -0.0146  0.0351]
+  t= -0.010: a=[-0.9867 -0.0166  0.0312]
+  t=  0.000: a=[-0.9828 -0.0166  0.0303]
+  t=  0.500: a=[-21.7414 -0.0195  0.4490]
+  t=  1.000: a=[-23.6680 -0.0205  1.6826]
+  t=  3.000: a=[-8.1691 -0.0215  0.5261]
+  t=  5.000: a=[ 2.8763 -0.0234 -0.1728]
+  t=  8.000: a=[-14.1520 -0.0127  1.0082]
+
+Baro at key sim times:
+  t= -5.000: 101329.0000
+  t= -4.000: 101331.0000
+  t= -1.000: 101324.0000
+  t= -0.010: 101330.0000
+  t=  0.000: 101327.0000
+  t=  1.000: 100203.0000
+  t=  5.000: 54729.0000
+  t=  8.000: 36013.0000
+
+==== diag_pad_handoff complete ====

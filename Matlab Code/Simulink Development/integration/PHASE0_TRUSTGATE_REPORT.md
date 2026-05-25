@@ -2,11 +2,11 @@
 
 **Verdict**: FAIL
 
-- **Run timestamp**: 2026-05-20T21:33:47Z UTC
+- **Run timestamp**: 2026-05-22T00:18:48Z UTC
 - **MATLAB version**: 25.2.0.2998904 (R2025b)
 - **Simulink version**: unknown
 - **Seed**: 20260519
-- **Git commit**: cfe663f
+- **Git commit**: 98dfa0c
 - **Test ID**: PHASE0_trustgate
 
 ## Headline metrics
@@ -54,13 +54,13 @@
 
 ### sanity -- PASS
 
-- Details: nan_signals={}; inf_signals={}; runtime=31.90 s (<=300)
+- Details: nan_signals={}; inf_signals={}; runtime=5.95 s (<=300)
 
 ## Sanity checks
 
 - NaN signals: 
 - Inf signals: 
-- Wall-clock runtime: 31.90 s (budget 300 s) -> PASS
+- Wall-clock runtime: 5.95 s (budget 300 s) -> PASS
 
 ## Plots
 

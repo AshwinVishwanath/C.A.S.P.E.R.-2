@@ -113,3 +113,7 @@ __pycache__/
 # Raw flash dumps (generated locally from USB MSC; can be 64+ MB)
 flight_dump*.bin
 *flash_dump*.bin
+
+# Raw bench / flight data folders (use git-lfs or external storage instead)
+Bench Test Data/
+Flight Images and Raw Data/

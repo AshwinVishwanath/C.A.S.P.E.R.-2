@@ -1,0 +1,58 @@
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=5.0 s
+[build_casper_sim_phase0] wrote E:\C.A.S.P.E.R\C.A.S.P.E.R Flight Software V2\Casper 2 flight firmware\C.A.S.P.E.R.-2\Matlab Code\Simulink Development\integration\casper_sim_phase0.slx
+
+==== diag_visual_vs_legacy ====
+
+--- Legacy driver path ---
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=30.0 s
+  truth loaded: n=5490001, t_max=549.00 s
+[T11] casper_phase0_run: wall 2.72 s (N_imu=29156, N_baro=3501, N_mag=3501)
+
+--- Visual model path ---
+=== casper() top-level setup ===
+[casper] profile=apogee, StopTime override = 30.0 s
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=30.0 s
+[load_truth_ts] loading cached E:\C.A.S.P.E.R\C.A.S.P.E.R Flight Software V2\Casper 2 flight firmware\C.A.S.P.E.R.-2\Matlab Code\Simulink Development\truth\truth_trajectory.mat
+[load_truth_ts] truncating to first 300001 samples (30.00 s)
+[load_truth_ts] truth_ts populated in base WS (300001 samples, 30.00 s span)
+
+=== ready to simulate ===
+  Profile  : apogee
+  Seed     : 20260519
+  StopTime : 30.0 s
+  Solver dt: 1e-04 s
+Next steps:
+  open_system('casper_sim_phase0')                      % visual inspection
+  sim('casper_sim_phase0', 'StopTime', '30.0')          % run the simulation
+  test_visual_model_compile                              % automated 5 s smoke
+  run_phase0_trustgate                                   % canonical byte-exact regression
+  running visual sim (StopTime=30.0 s)...
+[prelaunch_pad] prepended 5.00 s (50000 samples @ dt=0.0001) to truth_ts; new t0 = -5.000 s
+  visual sim complete.
+  vis_t_est size: [17501 1], vis_x size: [17501 4]
+  vis_t_quat size: [35001 1], vis_qfw size: [35001 4]
+
+Variable                       t=5s        t=15s        t=30s
+----------------------------------------------------------------
+TRUTH alt [m]:             2022.734    10559.413    20486.164
+LEGACY alt [m]:            4900.243     8226.821    10369.691
+VISUAL alt [m]:            4900.242     4898.788     2912.492
+TRUTH vel_up [m/s]:         522.666      847.952      534.828
+LEGACY vel [m/s]:             0.000      328.309       16.643
+VISUAL vel [m/s]:            -0.076      -14.648     -219.142
+
+Attitude error                 t=5s        t=15s        t=30s
+----------------------------------------------------------------
+LEGACY |err| [deg]:           0.659        0.700        0.791
+VISUAL |err vs truth_fw| [deg]:      179.071      165.655      144.087
+VISUAL |err vs std| [deg]:      119.470      130.134      150.925
+
+--- Init timing ---
+  LEGACY: init complete at t = 4.999 s (sample 8330)
+
+  snapshot saved to data/diag_snapshot.mat
+
+==== diag_visual_vs_legacy DONE ====
