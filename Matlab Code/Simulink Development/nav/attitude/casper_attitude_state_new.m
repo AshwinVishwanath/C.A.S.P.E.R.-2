@@ -4,6 +4,16 @@ function state = casper_attitude_state_new()
 %   Used to (re)seed casper_attitude_tick() between sim runs. Two runs that
 %   start from the same state and feed the same inputs must produce byte-
 %   identical quaternion histories (acceptance criterion #8).
+%
+%   L2 additions (MAHONY_HARDENING_PRD.md L2.4):
+%     - pad_calib_complete : latches true once mission_time_s exceeds
+%                            params.PadCalibDuration_s OR the caller
+%                            transitions out of pad mode (mode_pad=false).
+%                            Used by callers to gate launch detection so
+%                            the bias estimator has had its full window.
+%     - last_grav_gate     : weight w in [0,1] from the magnitude window
+%                            of the most recent gravity correction
+%                            (diagnostic, also forwarded into att_out).
 
     state = struct( ...
         'init_complete',          false, ...
@@ -23,5 +33,7 @@ function state = casper_attitude_state_new()
         'init_mag_count',         0, ...
         'init_elapsed_s',         0, ...
         'gyro_bias_sum_radps',    zeros(3,1), ...
-        'gyro_bias_count',        0);
+        'gyro_bias_count',        0, ...
+        'pad_calib_complete',     false, ...
+        'last_grav_gate',         1.0);
 end

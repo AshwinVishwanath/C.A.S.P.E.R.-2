@@ -243,6 +243,22 @@ function tuning = build_tuning_struct_()
     tuning.Attitude_Kp_mag_pad    = [];
     tuning.Attitude_Kp_mag_flight = [];
     tuning.Attitude_Ki            = [];
+
+    % --- Mahony L2 hardening knobs (MAHONY_HARDENING_PRD.md) ------------
+    % GravGate_WindowHalfWidth_g: half-width of the cosine magnitude window
+    %   centred at |a|=g, in multiples of g.  Default 0.15 -> active for
+    %   |a| in [0.85 g, 1.15 g], zero outside.  Set to a large number
+    %   (e.g. 100) to disable the gate and recover legacy behaviour.
+    % PadCalibDuration_s: extended pad gyro-bias accumulation window.
+    %   Bias keeps refining while mode_pad is true and mission_time_s
+    %   is below this threshold.  Default 60 s matches the L2 reference.
+    %   IMPORTANT: if the simulated prelaunch pad is shorter than this
+    %   value, the attitude module will keep launch detection disarmed
+    %   until the window elapses.  Lower this value to match the actual
+    %   pad-dwell time of the trajectory being simulated (e.g. 3 s for
+    %   the default 5 s prepended-pad in casper_phase0_run).
+    tuning.Attitude_GravGate_WindowHalfWidth_g = [];
+    tuning.Attitude_PadCalibDuration_s         = [];
 end
 
 

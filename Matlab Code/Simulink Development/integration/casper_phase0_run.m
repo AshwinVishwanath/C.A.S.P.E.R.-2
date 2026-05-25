@@ -43,6 +43,7 @@ function out = casper_phase0_run(cfg, truth, varargin)
     stop_time_s       = double(p.Results.StopTime);
     pin_truth         = logical(p.Results.PinTruth);
     pre_launch_pad_s  = double(p.Results.PreLaunchPad_s);
+    pad_was_default   = any(strcmp('PreLaunchPad_s', p.UsingDefaults));
 
     % --- Pull T02 params straight from base workspace (canonical source) ----
     Sim_       = evalin('base', 'Sim');
@@ -54,6 +55,25 @@ function out = casper_phase0_run(cfg, truth, varargin)
     Estimator_ = evalin('base', 'Estimator');
     Attitude_  = evalin('base', 'Attitude');
     Radio_p    = evalin('base', 'Radio');
+
+    % --- L2.4 auto-extend the prelaunch pad to satisfy PadCalibDuration_s ---
+    % The attitude module's launch-arm latch (pad_calib_complete) does not
+    % fire until mission_time_s >= Attitude.PadCalibDuration_s.  Any
+    % trajectory whose synthetic prelaunch pad is shorter than that will
+    % silently stay in pad mode for the entire run.  To make this safe by
+    % default we auto-extend the prepended stationary truth to cover the
+    % calibration window plus a small margin.  The caller can override by
+    % passing 'PreLaunchPad_s' explicitly (e.g. for byte-exact regressions
+    % that need a fixed historical pad length).
+    if pad_was_default && ~pin_truth && isfield(Attitude_, 'PadCalibDuration_s')
+        required_pad_s = Attitude_.PadCalibDuration_s + 2.0;   % 2 s margin
+        if required_pad_s > pre_launch_pad_s
+            fprintf(['[T11] auto-extending PreLaunchPad_s %.1f -> %.1f s ' ...
+                     'to cover Attitude.PadCalibDuration_s=%.1f (+2 s margin)\n'], ...
+                pre_launch_pad_s, required_pad_s, Attitude_.PadCalibDuration_s);
+            pre_launch_pad_s = required_pad_s;
+        end
+    end
 
     % T03 supplemental noise params
     IMU_local = casper_imu_local_params();
@@ -245,6 +265,14 @@ function out = casper_phase0_run(cfg, truth, varargin)
 
     % Stationary-pad mode flag (Mahony correction with Kp_grav=10) until
     % launch detect.  Use firmware-style threshold: |a| > LaunchAccel_g * g.
+    %
+    % L2.4 (MAHONY_HARDENING_PRD.md): launch detection is gated on the
+    % attitude module's pad_calib_complete flag (latches once
+    % mission_time_s >= Attitude.PadCalibDuration_s).  We read it off the
+    % most recent att_state at the top of each IMU loop.  If the
+    % simulated prelaunch pad is shorter than PadCalibDuration_s, the
+    % rocket will never leave pad mode -- lower PadCalibDuration_s or
+    % extend pre_launch_pad_s to match.
     mode_pad = true;
     launch_accel_thresh_mps2 = Attitude_.LaunchAccel_g * 9.80665;
 
@@ -333,7 +361,14 @@ function out = casper_phase0_run(cfg, truth, varargin)
         % Pad/flight mode latch: leave pad mode once |a| exceeds launch
         % threshold (firmware uses 3g).  Phase 0 stripped: no flight FSM,
         % so we use this simple latch and never go back to pad mode.
-        if mode_pad
+        %
+        % L2.4 (MAHONY_HARDENING_PRD.md): also gate the transition on the
+        % attitude module's pad_calib_complete flag so the bias estimator
+        % has had its full window.  att_state from the previous tick is
+        % the source (it is updated by the tick call below).
+        launch_armed = isfield(att_state, 'pad_calib_complete') && ...
+                       att_state.pad_calib_complete;
+        if mode_pad && launch_armed
             if norm(a_fw_mps2) > launch_accel_thresh_mps2
                 mode_pad = false;
             end

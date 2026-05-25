@@ -120,20 +120,31 @@ Estimator.H_Zupt            = [0, 1, 0, 0];   % casper_ekf.c update_zupt: H = [0
 % NOTE: Mahony gains are sourced from main.c casper_att_config_t {} initializer
 % (main.c lines 384-392), NOT from FIRMWARE_CONSTANTS.md typical-defaults table.
 % Per CLAUDE.md "Firmware is canonical": flight values override the doc.
+%
+% L2 hardening (MAHONY_HARDENING_PRD.md):
+%   - Ki                          : firmware = 0.1, sim default = 0.0 (L2.2)
+%   - Kp_MagPad / Kp_MagFlight    : already 0 in firmware, kept 0 (L2.3)
+%   - GravGate_WindowHalfWidth_g  : NEW, defaulted to 0.15 (L2.1)
+%   - PadCalibDuration_s          : NEW, defaulted to 60.0 (L2.4)
+% Legacy revert values (for L3 config matrix row A): Ki=0.1,
+% GravGate_WindowHalfWidth_g=100 (open window), PadCalibDuration_s=0
+% (no extended pad calibration; freezes bias at end of INIT only).
 Attitude = struct();
 Attitude.GyroArw_radSqrtS    = [6.08e-5; 4.92e-5; 6.73e-5];  % casper_attitude.c att_init()
 Attitude.GyroLpfCutoff_Hz    = 50.0;       % main.c att_cfg.gyro_lpf_cutoff_hz = 50.0f
 Attitude.MagUpdateRate_Hz    = 10.0;       % main.c att_cfg.mag_update_hz = 10.0f
 Attitude.Kp_Grav             = 10.0;       % main.c att_cfg.Kp_grav = 10.0f
-Attitude.Kp_MagPad           = 0.0;        % main.c att_cfg.Kp_mag_pad = 0.0f
-Attitude.Kp_MagFlight        = 0.0;        % main.c att_cfg.Kp_mag_flight = 0.0f
-Attitude.Ki                  = 0.1;        % main.c att_cfg.Ki = 0.1f
+Attitude.Kp_MagPad           = 0.0;        % main.c att_cfg.Kp_mag_pad = 0.0f (L2.3)
+Attitude.Kp_MagFlight        = 0.0;        % main.c att_cfg.Kp_mag_flight = 0.0f (L2.3)
+Attitude.Ki                  = 0.0;        % L2.2: was firmware 0.1; default off
 Attitude.LaunchAccel_g       = 3.0;        % main.c att_cfg.launch_accel_g = 3.0f
 Attitude.StaticInitSamples   = 500;        % casper_attitude.c STATIC_INIT_MAG_SAMPLES
 Attitude.StaticInitTimeout_s = 10.0;       % casper_attitude.c STATIC_INIT_TIMEOUT_S
 Attitude.HeadingSigmaFloor_rad = 0.01;     % casper_attitude.c HEADING_SIGMA_FLOOR
 Attitude.BiasGyroThresh_radps  = 0.035;    % casper_attitude.c BIAS_GYRO_THRESH
 Attitude.BiasEmaInvTau_perS    = 0.2;      % casper_attitude.c BIAS_EMA_INV_TAU
+Attitude.GravGate_WindowHalfWidth_g = 0.15;   % L2.1: cosine window half-width (in g)
+Attitude.PadCalibDuration_s         = 60.0;   % L2.4: extended pad gyro-bias window (s)
 
 % ===== Gyro temperature (informational, NOT applied in Phase 0) =====
 GyroTempCal = struct();

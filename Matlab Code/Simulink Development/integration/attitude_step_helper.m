@@ -89,8 +89,15 @@ function [quat_fw, gyro_bias, heading_sigma, init_complete] = ...
     % The caller's mode_pad input (now anonymous via `~`) is intentionally
     % ignored -- we own this latch internally so the visual model can't
     % hard-pin it `true` and cause boost-time attitude divergence.
+    %
+    % L2.4 (MAHONY_HARDENING_PRD.md): launch detection stays disarmed
+    % until st.pad_calib_complete latches true (mission_time_s >=
+    % params.PadCalibDuration_s).  Without this gate the bias estimator
+    % freezes prematurely and the apogee-altitude error inflates by
+    % >100 m on the L2 reference flight.
     a_fw = double(accel(:));
-    if mode_pad_latch && norm(a_fw) > launch_thresh_mps2
+    launch_armed = isfield(st, 'pad_calib_complete') && st.pad_calib_complete;
+    if mode_pad_latch && launch_armed && norm(a_fw) > launch_thresh_mps2
         mode_pad_latch = false;
     end
 
