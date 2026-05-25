@@ -27,4 +27,12 @@ void buzzer_tick(void);
 void buzzer_beep_n(uint8_t pct, uint8_t count,
                    uint16_t on_ms, uint16_t period_ms);
 
+/**
+ * True while a beep sequence is still playing (or the trailing silence
+ * between beeps). False once the sequence completes and the driver is
+ * idle. Caller polls this to gate the next action on "beeps finished".
+ */
+#include <stdbool.h>
+bool buzzer_is_busy(void);
+
 #endif /* APP_BUZZER_BUZZER_H */

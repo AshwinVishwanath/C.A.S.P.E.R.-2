@@ -25,16 +25,16 @@ clear; clc; close all;
 %                         USER CONFIGURATION
 %  ========================================================================
 
-% Per-run files (rename after each MSC pull).
-%   .file  : mag samples (MAG_NOISE.CSV)
-%   .evt   : radio TX events (RADIO_EVT.CSV)  — only populated for B/C
-runs(1).id  = 'A'; runs(1).file = 'run_A.csv';     runs(1).evt = '';
+% Per-run files (drop straight in from USB MSC pull — no rename needed).
+%   .file  : mag samples (MAG_<run>.CSV produced by mag_noise sequencer)
+%   .evt   : radio TX events (EVT_<run>.CSV)  — only created for B/C
+runs(1).id  = 'A'; runs(1).file = 'MAG_A.CSV';     runs(1).evt = '';
 runs(1).label = 'baseline (radio OFF)';
-runs(2).id  = 'B'; runs(2).file = 'run_B.csv';     runs(2).evt = 'run_B_evt.csv';
+runs(2).id  = 'B'; runs(2).file = 'MAG_B.CSV';     runs(2).evt = 'EVT_B.CSV';
 runs(2).label = 'radio Profile A (SF7)';
-runs(3).id  = 'C'; runs(3).file = 'run_C.csv';     runs(3).evt = 'run_C_evt.csv';
+runs(3).id  = 'C'; runs(3).file = 'MAG_C.CSV';     runs(3).evt = 'EVT_C.CSV';
 runs(3).label = 'radio Profile B (SF8, +20 dBm)';
-runs(4).id  = 'D'; runs(4).file = 'run_D.csv';     runs(4).evt = '';
+runs(4).id  = 'D'; runs(4).file = 'MAG_D.CSV';     runs(4).evt = '';
 runs(4).label = 'flash burst (radio OFF)';
 
 % Sensor nominal sample rate (MMC5983MA continuous mode)
@@ -86,8 +86,8 @@ for k = 1:numel(runs)
         E = readtable(runs(k).evt, 'CommentStyle', '#');
         runs(k).evt_data = E;
         durs = E.duration_ms;
-        fprintf('  + RADIO_EVT: %d TX events, mean duration = %.1f ms ' ...
-                '(min %.1f, max %.1f), %d failed\n', ...
+        fprintf(['  + RADIO_EVT: %d TX events, mean duration = %.1f ms ' ...
+                 '(min %.1f, max %.1f), %d failed\n'], ...
                 height(E), mean(durs), min(durs), max(durs), sum(E.ok==0));
     end
 end
@@ -254,8 +254,8 @@ for k = 1:numel(runs)
         emi_results(k).(axes_names{ax_i}).n_events       = numel(ev_start);
         emi_results(k).(axes_names{ax_i}).mean_burst_ms  = mean(tx_lens_ms);
 
-        fprintf('    %s: dBias=%+0.4f uT, dSigma=%+0.4f uT, ' ...
-                'mean burst=%.1f ms\n', ...
+        fprintf(['    %s: dBias=%+0.4f uT, dSigma=%+0.4f uT, ' ...
+                 'mean burst=%.1f ms\n'], ...
                 axes_names{ax_i}, delta_bias, delta_sigma, mean(tx_lens_ms));
     end
 end

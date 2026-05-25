@@ -253,10 +253,13 @@ C_DEFS += $(EXTRA_DEFS)
 endif
 
 # ── Magnetometer noise characterization build  ──────────────
-# Usage:   make MAG_NOISE_RUN=A   (or B, C, D)
-# Selects: A=baseline, B=radio SF7, C=radio SF8 high-power, D=flash burst
-ifdef MAG_NOISE_RUN
-C_DEFS += -DMAG_NOISE -DMAG_NOISE_RUN_$(MAG_NOISE_RUN)
+# Autonomous 4-run sequence (A → B → C → D, ~40 min total).
+# Usage:   make MAG_NOISE=1
+# Outputs (on QSPI flash after the sequence completes):
+#   MAG_A.CSV, MAG_B.CSV, MAG_C.CSV, MAG_D.CSV
+#   EVT_B.CSV, EVT_C.CSV      (radio TX events, sub-ms timestamps)
+ifeq ($(MAG_NOISE),1)
+C_DEFS += -DMAG_NOISE
 # The bench logger sanity harness expects flight loop; suppress it here.
 SUPPRESS_LOGGER_SANITY := 1
 endif

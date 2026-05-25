@@ -518,13 +518,17 @@ int main(void)
 
     DBG_PRINT("[INIT] all init complete\r\n");
 
-#ifndef GPS_TEST
-  /* Startup beep: 3 short = radio OK, 5 long = radio FAIL */
+#if !defined(GPS_TEST) && !defined(MAG_NOISE)
+  /* Startup beep: 3 short = radio OK, 5 long = radio FAIL.
+   * Suppressed in MAG_NOISE so the only buzzer activity is the
+   * inter-run markers driven by the mag_noise sequencer. */
   if (radio_init_ok) {
     buzzer_beep_n(50, 3, 100, 150);
   } else {
     buzzer_beep_n(50, 5, 300, 100);
   }
+#else
+  (void)radio_init_ok;
 #endif
 
   } /* end DBG_PRINT scope */
@@ -781,7 +785,15 @@ int main(void)
       static bool     att_init_done = false;
       uint32_t now = HAL_GetTick();
 
-      /* ── IMU at native ODR via DRDY EXTI, STATUS_REG fallback ─────── */
+      /* Sequencer + buzzer state machines run every loop. */
+      mag_noise_sequencer_tick(&mnoise, now);
+      buzzer_tick();
+
+      mag_noise_run_t run_now = mag_noise_current_run(&mnoise);
+      bool radio_run = (run_now == MAG_NOISE_RUN_B) ||
+                       (run_now == MAG_NOISE_RUN_C);
+
+      /* ── IMU at native ODR (DRDY EXTI, STATUS_REG fallback) ──────── */
       if (!imu.data_ready && (now - last_imu_tick) >= 1) {
         uint8_t st = lsm6dso32_read_reg_ext(&imu, LSM6DSO32_STATUS_REG);
         if (st & 0x03) imu.data_ready = true;
@@ -801,7 +813,7 @@ int main(void)
                                 imu.gyro_dps[1] * 0.017453292f,
                                 imu.gyro_dps[2] * 0.017453292f };
 
-        /* mag=NULL: accel+gyro-only reference attitude */
+        /* Accel+gyro-only reference attitude (mag=NULL) */
         if (!att_init_done) {
           att_init_done = casper_att_static_init(&att, accel_mps2, NULL);
         } else {
@@ -809,20 +821,16 @@ int main(void)
         }
       }
 
-      /* ── Radio drive (Runs B and C) ──────────────────────────────── */
-#if defined(MAG_NOISE_RUN_B) || defined(MAG_NOISE_RUN_C)
-      {
+      /* ── Radio drive (only during runs B and C) ──────────────────── */
+      if (radio_run) {
         static casper_ekf_t      fake_ekf;     /* zero-initialised */
         static fc_telem_state_t  fake_tstate;
         static pyro_state_t      fake_pstate;
-#ifdef MAG_NOISE_RUN_C
-        fake_ekf.x[0] = 30000.0f;  /* spoof high altitude → Profile B */
-#endif
+        /* Run C spoofs high altitude so the radio_manager switches to
+         * Profile B; Run B leaves altitude=0 so it stays on Profile A. */
+        fake_ekf.x[0] = (run_now == MAG_NOISE_RUN_C) ? 30000.0f : 0.0f;
         radio_manager_tick(&fake_ekf, &fake_tstate, &fake_pstate, FSM_STATE_PAD);
       }
-#endif
-
-      /* ── Drain radio TX events into RADIO_EVT.CSV every loop ────── */
       mag_noise_drain_tx_events(&mnoise);
 
       /* ── Mag sample + log at 100 Hz ──────────────────────────────── */
@@ -831,11 +839,11 @@ int main(void)
 
         bool     tx_active = false;
         uint16_t tx_count  = 0;
-#if defined(MAG_NOISE_RUN_B) || defined(MAG_NOISE_RUN_C)
-        tx_active = radio_is_tx_active();
-        int8_t _r, _s; uint16_t _rxc, _fc;
-        radio_get_stats(&_r, &_s, &tx_count, &_rxc, &_fc);
-#endif
+        if (radio_run) {
+          tx_active = radio_is_tx_active();
+          int8_t _r, _s; uint16_t _rxc, _fc;
+          radio_get_stats(&_r, &_s, &tx_count, &_rxc, &_fc);
+        }
         bool qspi_busy = (hqspi.State != HAL_QSPI_STATE_READY);
 
         mag_noise_tick(&mnoise, &mag, &imu, &att,
@@ -843,25 +851,12 @@ int main(void)
         last_mag_tick = now;
       }
 
-      /* ── Forced flash flush (Run D only) ─────────────────────────── */
-#ifdef MAG_NOISE_RUN_D
+      /* ── Forced flash flush (Run D) — sequencer no-ops other runs ─ */
       mag_noise_force_flush(&mnoise, now);
-#endif
 
-      /* ── Done: solid LEDs, idle forever ──────────────────────────── */
+      /* ── All-done: parked by sequencer; just sleep ──────────────── */
       if (mag_noise_is_done(&mnoise)) {
-        HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
-        char done_buf[80];
-        int done_len = snprintf(done_buf, sizeof(done_buf),
-            ">mag_noise: DONE (%lu samples)\r\n", mnoise.sample_count);
-        for (int i = 0; i < 5; i++) {
-          CDC_Transmit_FS((uint8_t *)done_buf, done_len);
-          HAL_Delay(200);
-        }
-        while (1) { HAL_Delay(1000); }
+        HAL_Delay(1000);
       }
     }
 #elif defined(MAG_VAL)
