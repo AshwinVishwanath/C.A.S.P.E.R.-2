@@ -63,14 +63,8 @@ int   ms5611_read(ms5611_t *dev);
 /* Temperature in degrees Celsius. */
 float ms5611_get_temperature(const ms5611_t *dev);
 
-/* Pressure in millibar (hPa). */
-float ms5611_get_pressure(const ms5611_t *dev);
-
 /* Altitude in metres (barometric formula). sea_level_hPa = e.g. 1013.25 */
 float ms5611_get_altitude(const ms5611_t *dev, float sea_level_hPa);
-
-/* Read raw D1/D2 ADC values only (no math). For data logging. */
-int   ms5611_read_raw(ms5611_t *dev);
 
 /* Set oversampling rate (default: MS5611_OSR_4096). */
 void  ms5611_set_oversampling(ms5611_t *dev, ms5611_osr_t osr);

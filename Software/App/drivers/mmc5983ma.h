@@ -121,13 +121,6 @@ bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c);
 int mmc5983ma_read(mmc5983ma_t *dev);
 
 /**
- * @brief  Read temperature register.
- *         Result: temperature_C = -75 + (raw_temp * 200.0 / 255.0)
- * @return MMC5983MA_OK on success, negative on I2C error.
- */
-int mmc5983ma_read_temp(mmc5983ma_t *dev);
-
-/**
  * @brief  Initialise MMC5983MA in single-shot mode (no continuous measurement).
  *         Same as mmc5983ma_init() but skips CTRL2 continuous mode setup.
  *         Use with mmc5983ma_trigger_oneshot() for on-demand measurements.

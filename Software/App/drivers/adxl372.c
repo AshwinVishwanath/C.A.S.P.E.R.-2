@@ -108,49 +108,6 @@ bool adxl372_init(adxl372_t *dev, SPI_HandleTypeDef *hspi,
     return true;
 }
 
-int adxl372_read(adxl372_t *dev)
-{
-#ifdef HIL_MODE
-    /* Skip the SPI burst — convert the most recent injected raw sample
-     * into the same engineering units the real driver produces (12-bit
-     * left-justified → signed 12-bit at 100 mg/LSB → g). */
-    int16_t rx = g_hil_adxl.raw_ax >> 4;
-    int16_t ry = g_hil_adxl.raw_ay >> 4;
-    int16_t rz = g_hil_adxl.raw_az >> 4;
-    dev->raw_accel[0] = rx;
-    dev->raw_accel[1] = ry;
-    dev->raw_accel[2] = rz;
-    dev->accel_g[0] = (float)rx * 0.1f;
-    dev->accel_g[1] = (float)ry * 0.1f;
-    dev->accel_g[2] = (float)rz * 0.1f;
-    dev->data_ready = false;
-    return ADXL372_READ_OK;
-#else
-    uint8_t buf[6];
-
-    /* Burst-read 6 bytes: X_DATA_H (0x08) through Z_DATA_L (0x0D) */
-    adxl372_read_burst(dev, ADXL372_X_DATA_H, buf, 6);
-
-    /*
-     * Data format: 12-bit, left-justified in 16 bits.
-     *   DATA_H = bits [11:4], DATA_L = bits [3:0] in D7:D4 (lower nibble zero).
-     *   Combine as (H << 8 | L), then arithmetic right-shift by 4 to get
-     *   signed 12-bit value.
-     * Sensitivity: 100 mg/LSB.
-     */
-    int16_t raw_x = (int16_t)((uint16_t)buf[0] << 8 | buf[1]) >> 4;
-    int16_t raw_y = (int16_t)((uint16_t)buf[2] << 8 | buf[3]) >> 4;
-    int16_t raw_z = (int16_t)((uint16_t)buf[4] << 8 | buf[5]) >> 4;
-
-    dev->accel_g[0] = (float)raw_x * 0.1f ;  /* 100 mg/LSB → g */
-    dev->accel_g[1] = (float)raw_y * 0.1f ;
-    dev->accel_g[2] = (float)raw_z * 0.1f;
-
-    dev->data_ready = false;
-    return ADXL372_READ_OK;
-#endif
-}
-
 void adxl372_fifo_init(adxl372_t *dev, uint8_t odr_bits)
 {
 #ifdef HIL_MODE
@@ -226,11 +183,6 @@ int adxl372_fifo_read(adxl372_t *dev)
 
     return 1;
 #endif
-}
-
-uint8_t adxl372_read_reg_ext(adxl372_t *dev, uint8_t reg)
-{
-    return adxl372_read_reg(dev, reg);
 }
 
 void adxl372_irq_handler(adxl372_t *dev)

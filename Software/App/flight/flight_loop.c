@@ -4,7 +4,6 @@
 #include "stm32h7xx_hal.h"
 #include "main.h"
 #include "casper_quat.h"
-#include "casper_gyro_int.h"
 #include "mag_cal.h"
 #include "pyro_manager.h"
 #include "tlm_manager.h"
@@ -41,11 +40,14 @@ diag_probe_t probe_log_tick;
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #ifndef TEST_MODE
 #define TEST_MODE 1
+#endif
+
+#if TEST_MODE == 2
+#include <stdlib.h>   /* atoi() — used only by bench_dispatch (TEST_MODE==2) */
 #endif
 
 /* ── Gyro temperature compensation (slope-only linear model) ── */
@@ -88,7 +90,6 @@ static float    last_body_accel_ms2[3] = {0};
 static float    last_baro_alt_agl = 0.0f;
 
 /* Diagnostics for EKF tuning (TEST_MODE=2) */
-static float    diag_ned_z = 0.0f;       /* latest NED-Z accel for diagnostics */
 static bool     diag_zupt_fired = false;  /* did ZUPT fire this predict cycle  */
 #endif /* TEST_MODE != 2 */
 
@@ -138,23 +139,6 @@ static void bench_dispatch(const char *cmd)
         bench_send(on ? "[BENCH] ON\r\n" : "[BENCH] OFF\r\n");
         return;
     }
-
-#if TEST_MODE != 2
-    /* Skip calibration period */
-    if (strcmp(cmd, "skip") == 0) {
-        if (cal_done) {
-            bench_send("[BENCH] cal already done\r\n");
-        } else {
-            cal_done = true;
-            if (baro_cal_count > 0)
-                baro_ref = (float)(baro_cal_sum / (double)baro_cal_count);
-            else
-                baro_ref = ms5611_get_altitude(&baro, 1013.25f);
-            bench_send("[BENCH] cal skipped\r\n");
-        }
-        return;
-    }
-#endif
 
     /* State commands — auto-enable bench mode */
     for (int i = 0; i < (int)(sizeof(state_cmds) / sizeof(state_cmds[0])); i++) {
@@ -544,7 +528,6 @@ void flight_loop_tick(void)
         ned_accel[0] = R_mat[0]*accel_ms2[0] + R_mat[1]*accel_ms2[1] + R_mat[2]*accel_ms2[2];
         ned_accel[1] = R_mat[3]*accel_ms2[0] + R_mat[4]*accel_ms2[1] + R_mat[5]*accel_ms2[2];
         ned_accel[2] = R_mat[6]*accel_ms2[0] + R_mat[7]*accel_ms2[1] + R_mat[8]*accel_ms2[2];
-        diag_ned_z = ned_accel[2];
 
         /* Trapezoidal NED-accel accumulation -> EKF predict every 2nd sample.
          * dt_predict accumulates the two adaptive sample intervals so the
@@ -619,11 +602,9 @@ void flight_loop_tick(void)
 
     /* ── Async baro: accumulate during cal, feed EKF after cal_done ── */
     static bool s_baro_fed_ekf = false;
-    static float last_baro_alt = 0.0f; (void)last_baro_alt;
     if (ms5611_tick(&baro)) {
       if (cal_done) {
         float altitude = ms5611_get_altitude(&baro, 1013.25f) - baro_ref;
-        last_baro_alt = altitude;
         last_baro_alt_agl = altitude;
         casper_ekf_update_baro(&ekf, altitude);
 

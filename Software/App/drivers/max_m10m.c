@@ -106,32 +106,6 @@ static HAL_StatusTypeDef max_m10m_send_valset(max_m10m_t *dev,
 }
 
 /**
- * Same as send_valset but writes to RAM+BBR layers (0x03) so the
- * config survives GNSS subsystem restarts.
- */
-static HAL_StatusTypeDef max_m10m_send_valset_persist(max_m10m_t *dev,
-    uint32_t key, uint32_t value, uint8_t val_size)
-{
-    uint8_t payload[12];
-    payload[0] = 0x01;   /* version */
-    payload[1] = 0x03;   /* layers: RAM + BBR */
-    payload[2] = 0x00;
-    payload[3] = 0x00;
-    payload[4] = (uint8_t)(key);
-    payload[5] = (uint8_t)(key >> 8);
-    payload[6] = (uint8_t)(key >> 16);
-    payload[7] = (uint8_t)(key >> 24);
-    payload[8]  = (uint8_t)(value);
-    if (val_size >= 2) payload[9]  = (uint8_t)(value >> 8);
-    if (val_size >= 4) {
-        payload[10] = (uint8_t)(value >> 16);
-        payload[11] = (uint8_t)(value >> 24);
-    }
-    return max_m10m_i2c_write_ubx(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID,
-                                   payload, 8 + val_size);
-}
-
-/**
  * Drain all pending data from the GPS I2C buffer (discard).
  * Used after GNSS restart to clear stale data before re-configuring.
  */

@@ -48,12 +48,6 @@ bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
 /* Read accelerometer + gyroscope data. Returns LSM6DSO32_READ_OK on success. */
 int lsm6dso32_read(lsm6dso32_t *dev);
 
-/* Read raw int16 values (no float conversion). For data logging. */
-int lsm6dso32_read_raw(lsm6dso32_t *dev);
-
-/* Write a single register (for runtime reconfiguration, e.g. ODR change). */
-void lsm6dso32_write_reg_ext(lsm6dso32_t *dev, uint8_t reg, uint8_t val);
-
 /* Read a single register (for status polling, diagnostics). */
 uint8_t lsm6dso32_read_reg_ext(lsm6dso32_t *dev, uint8_t reg);
 

@@ -3,6 +3,7 @@
 #include "crc32_hw.h"
 #include "quat_pack.h"
 #include "status_pack.h"
+#include "endian.h"
 #include "stm32h7xx_hal.h"
 #include "usbd_cdc_if.h"
 #include <string.h>
@@ -15,28 +16,6 @@ static uint32_t s_last_fast_ms;
 /* TX buffer: raw packet + COBS overhead + delimiter */
 static uint8_t s_raw_buf[32];
 static uint8_t s_cobs_buf[36];
-
-/* ── Helpers ────────────────────────────────────────────────────── */
-static void put_le16(uint8_t *dst, uint16_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-}
-
-static void put_le24(uint8_t *dst, uint32_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-    dst[2] = (uint8_t)((val >> 16) & 0xFF);
-}
-
-static void put_le32(uint8_t *dst, uint32_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-    dst[2] = (uint8_t)((val >> 16) & 0xFF);
-    dst[3] = (uint8_t)((val >> 24) & 0xFF);
-}
 
 static int cobs_encode_and_send(const uint8_t *raw, int raw_len)
 {
@@ -194,11 +173,6 @@ int tlm_queue_event(uint8_t type, uint16_t data)
     put_le32(p, crc);
 
     return cobs_encode_and_send(s_raw_buf, SIZE_FC_MSG_EVENT);
-}
-
-uint8_t tlm_get_seq(void)
-{
-    return s_seq;
 }
 
 int tlm_send_response(const uint8_t *data, int len)

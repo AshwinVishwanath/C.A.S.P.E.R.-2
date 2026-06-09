@@ -633,7 +633,7 @@ void flight_logger_qspi_complete(flight_logger_t *log)
     if (log->qspi_state == QSPI_ERASING) {
         if (log->active_stream)
             log->active_stream->erased_up_to += W25Q512JV_SECTOR_SIZE;
-    } else if (log->qspi_state == QSPI_WRITING || log->qspi_state == QSPI_POLLING) {
+    } else if (log->qspi_state == QSPI_WRITING) {
         if (log->active_stream)
             log_stream_page_done(log->active_stream);
     }
@@ -644,7 +644,7 @@ void flight_logger_qspi_complete(flight_logger_t *log)
 
 void flight_logger_qspi_error(flight_logger_t *log)
 {
-    if (log->qspi_state == QSPI_WRITING || log->qspi_state == QSPI_POLLING) {
+    if (log->qspi_state == QSPI_WRITING) {
         if (log->active_stream)
             log_stream_page_fail(log->active_stream);
     }

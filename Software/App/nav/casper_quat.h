@@ -33,14 +33,6 @@ void casper_quat_normalize(float q[4]);
 void casper_quat_to_rotmat(const float q[4], float R[9]);
 
 /**
- * Initialize quaternion from accelerometer gravity vector on pad.
- * Determines pitch and roll from gravity direction; yaw is set to zero.
- * @param accel  Accelerometer reading [ax,ay,az] in m/s^2 (body frame, measuring gravity)
- * @param q      Output quaternion [w,x,y,z] (body-to-NED)
- */
-void casper_quat_from_accel(const float accel[3], float q[4]);
-
-/**
  * Build quaternion from ZYX Euler angles (all in radians).
  * @param roll_rad   Roll  (rotation about body X) in radians
  * @param pitch_rad  Pitch (rotation about body Y) in radians

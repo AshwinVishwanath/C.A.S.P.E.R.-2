@@ -35,9 +35,16 @@ static HAL_StatusTypeDef mmc5983ma_read_burst(mmc5983ma_t *dev,
 }
 #endif
 
-/* ── Initialisation ──────────────────────────────────────────────────────── */
+/* ── Shared hardware initialisation (internal helper) ───────────────────── */
 
-bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
+/**
+ * Performs the common hardware setup shared by mmc5983ma_init() and
+ * mmc5983ma_init_oneshot(): clear device struct fields, SW reset,
+ * product-ID check, CTRL0 AUTO_SR_EN, CTRL1 BW_800HZ.
+ *
+ * @return true if the product ID matches MMC5983MA_PROD_ID_VAL, false otherwise.
+ */
+static bool mmc5983ma_hw_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
 {
     dev->hi2c = hi2c;
     dev->addr = MMC5983MA_I2C_ADDR_WRITE;  /* HAL expects left-shifted addr */
@@ -71,6 +78,16 @@ bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
     /* Bandwidth = 800 Hz (0.5 ms measurement time) */
     mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL1, MMC5983MA_BW_800HZ);
 
+    return true;
+}
+
+/* ── Initialisation ──────────────────────────────────────────────────────── */
+
+bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
+{
+    if (!mmc5983ma_hw_init(dev, hi2c))
+        return false;
+
     /* Continuous mode at 100 Hz */
     mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL2,
                         MMC5983MA_CTRL2_CMM_EN | MMC5983MA_CM_100HZ);
@@ -82,41 +99,8 @@ bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
 
 bool mmc5983ma_init_oneshot(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
 {
-    dev->hi2c = hi2c;
-    dev->addr = MMC5983MA_I2C_ADDR_WRITE;
-    dev->data_ready = false;
-    dev->product_id = 0x00;
-
-    for (int i = 0; i < 3; i++) {
-        dev->mag_gauss[i] = 0.0f;
-        dev->mag_ut[i]    = 0.0f;
-        dev->raw_mag[i]   = 0;
-    }
-    dev->raw_temp = 0;
-
-    /* Software reset */
-    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL1, MMC5983MA_CTRL1_SW_RST);
-    HAL_Delay(15);
-
-    /* Read and verify product ID */
-    uint8_t id = 0;
-    if (mmc5983ma_read_reg(dev, MMC5983MA_REG_PROD_ID, &id) != HAL_OK)
-        return false;
-    dev->product_id = id;
-
-    if (id != MMC5983MA_PROD_ID_VAL)
-        return false;
-
-    /* Enable auto SET/RESET */
-    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL0,
-                        MMC5983MA_CTRL0_AUTO_SR_EN);
-
-    /* Bandwidth = 800 Hz (0.5 ms measurement time) */
-    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL1, MMC5983MA_BW_800HZ);
-
     /* No CTRL2 write — continuous mode stays off */
-
-    return true;
+    return mmc5983ma_hw_init(dev, hi2c);
 }
 
 /* ── Single-shot trigger + poll + read ──────────────────────────────────── */
@@ -189,37 +173,6 @@ int mmc5983ma_read(mmc5983ma_t *dev)
     dev->data_ready = false;
     return MMC5983MA_OK;
 #endif
-}
-
-/* ── Temperature read ────────────────────────────────────────────────────── */
-
-int mmc5983ma_read_temp(mmc5983ma_t *dev)
-{
-    /* Request temperature measurement */
-    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL0, MMC5983MA_CTRL0_TM_T);
-
-    /* Wait for measurement complete (up to 5 ms) */
-    uint8_t status = 0;
-    uint32_t start = HAL_GetTick();
-    while (!(status & MMC5983MA_STATUS_MEAS_T_DONE)) {
-        if (HAL_GetTick() - start > 10)
-            return MMC5983MA_ERR_I2C;
-        mmc5983ma_read_reg(dev, MMC5983MA_REG_STATUS, &status);
-    }
-
-    uint8_t raw = 0;
-    if (mmc5983ma_read_reg(dev, MMC5983MA_REG_T_OUT, &raw) != HAL_OK)
-        return MMC5983MA_ERR_I2C;
-
-    dev->raw_temp = (int16_t)raw;
-    /* Temperature = -75 + raw * (200.0 / 255.0)  degrees C */
-
-    /* Re-enable auto SET/RESET + DRDY (CTRL0 is self-clearing for TM_T) */
-    mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL0,
-                        MMC5983MA_CTRL0_AUTO_SR_EN |
-                        MMC5983MA_CTRL0_INT_MEAS_DONE_EN);
-
-    return MMC5983MA_OK;
 }
 
 /* ── EXTI interrupt handler ──────────────────────────────────────────────── */

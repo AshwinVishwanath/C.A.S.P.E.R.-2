@@ -40,11 +40,6 @@ int tlm_send_gps(const fc_gps_state_t *gps_state);
 int tlm_queue_event(uint8_t type, uint16_t data);
 
 /**
- * Get current sequence counter value.
- */
-uint8_t tlm_get_seq(void);
-
-/**
  * Send a raw COBS-framed response packet over USB CDC.
  * Used by command handlers to send ACK/NACK/handshake responses.
  *

@@ -103,11 +103,6 @@ void flight_fsm_init(void)
     s_stage_count = 0;
 }
 
-void flight_fsm_reset(void)
-{
-    flight_fsm_init();
-}
-
 fsm_state_t flight_fsm_tick(const fsm_input_t *in)
 {
     /* Bench mode: hold state */

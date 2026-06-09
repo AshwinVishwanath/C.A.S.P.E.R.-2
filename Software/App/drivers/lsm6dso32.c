@@ -160,35 +160,6 @@ int lsm6dso32_read(lsm6dso32_t *dev)
 #endif
 }
 
-int lsm6dso32_read_raw(lsm6dso32_t *dev)
-{
-    uint8_t buf[14];
-
-    /* Burst-read 14 bytes: OUT_TEMP_L (0x20) through OUTZ_H_A (0x2D) */
-    lsm6dso32_read_burst(dev, LSM6DSO32_OUT_TEMP_L, buf, 14);
-
-    /* Temperature: bytes 0-1 (little-endian int16, 256 LSB/°C, 0 = 25°C) */
-    dev->raw_temp = (int16_t)((uint16_t)buf[1] << 8 | buf[0]);
-
-    /* Gyroscope: bytes 2-7 (little-endian int16) */
-    dev->raw_gyro[0] = (int16_t)((uint16_t)buf[3] << 8 | buf[2]);
-    dev->raw_gyro[1] = (int16_t)((uint16_t)buf[5] << 8 | buf[4]);
-    dev->raw_gyro[2] = (int16_t)((uint16_t)buf[7] << 8 | buf[6]);
-
-    /* Accelerometer: bytes 8-13 (little-endian int16) */
-    dev->raw_accel[0] = (int16_t)((uint16_t)buf[9]  << 8 | buf[8]);
-    dev->raw_accel[1] = (int16_t)((uint16_t)buf[11] << 8 | buf[10]);
-    dev->raw_accel[2] = (int16_t)((uint16_t)buf[13] << 8 | buf[12]);
-
-    dev->data_ready = false;
-    return LSM6DSO32_READ_OK;
-}
-
-void lsm6dso32_write_reg_ext(lsm6dso32_t *dev, uint8_t reg, uint8_t val)
-{
-    lsm6dso32_write_reg(dev, reg, val);
-}
-
 uint8_t lsm6dso32_read_reg_ext(lsm6dso32_t *dev, uint8_t reg)
 {
     return lsm6dso32_read_reg(dev, reg);

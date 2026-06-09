@@ -87,9 +87,7 @@ static void leds_set(bool l1, bool l2, bool l3, bool l4)
 
 static void emit(const char *s)
 {
-    uint16_t len = 0;
-    while (s[len] != '\0') len++;
-    CDC_Transmit_FS((uint8_t *)s, len);
+    CDC_Transmit_FS((uint8_t *)s, (uint16_t)strlen(s));
 }
 
 static void emit_hex16(const char *prefix, const uint8_t *buf)

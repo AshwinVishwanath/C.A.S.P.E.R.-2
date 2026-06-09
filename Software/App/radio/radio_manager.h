@@ -26,17 +26,11 @@ void radio_manager_tick(const casper_ekf_t *ekf,
                         const pyro_state_t *pstate,
                         fsm_state_t fsm);
 
-/* Queue a GPS packet for next available TX slot */
-void radio_send_gps(const fc_gps_state_t *gps_state);
-
 /* Queue an event packet for next available TX slot */
 void radio_queue_event(uint8_t type, uint16_t data);
 
 /* Queue a response (ACK/NACK) for immediate TX (highest priority) */
 int radio_send_response(const uint8_t *buf, uint8_t len);
-
-/* Check if radio initialized OK */
-int radio_is_active(void);
 
 /* Get radio stats for data logging */
 void radio_get_stats(int8_t *rssi, int8_t *snr,

@@ -29,10 +29,3 @@ uint32_t crc32_hw_compute(const uint8_t *data, uint32_t len)
     /* Final XOR for standard CRC-32 */
     return raw ^ 0xFFFFFFFFu;
 }
-
-int crc32_hw_validate(const uint8_t *data, uint32_t payload_len,
-                      uint32_t received_crc)
-{
-    uint32_t computed = crc32_hw_compute(data, payload_len);
-    return (computed == received_crc) ? 1 : 0;
-}

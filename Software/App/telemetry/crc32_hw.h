@@ -30,15 +30,4 @@ void crc32_hw_init(void);
  */
 uint32_t crc32_hw_compute(const uint8_t *data, uint32_t len);
 
-/**
- * Validate a received CRC-32.
- *
- * @param data         Payload bytes
- * @param payload_len  Number of payload bytes (CRC is computed over these)
- * @param received_crc CRC-32 value received in the packet
- * @return             1 if valid, 0 if mismatch
- */
-int crc32_hw_validate(const uint8_t *data, uint32_t payload_len,
-                      uint32_t received_crc);
-
 #endif /* APP_TELEMETRY_CRC32_HW_H */

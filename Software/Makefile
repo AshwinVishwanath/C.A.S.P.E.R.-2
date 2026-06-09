@@ -121,7 +121,6 @@ App/drivers/mmc5983ma.c \
 App/nav/casper_quat.c \
 App/nav/casper_attitude.c \
 App/nav/casper_ekf.c \
-App/nav/casper_gyro_int.c \
 App/cal/mag_cal.c \
 App/cal/mag_val.c \
 App/cal/temp_cal.c \

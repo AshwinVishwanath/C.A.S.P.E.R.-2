@@ -187,14 +187,6 @@ int w25q512jv_erase_sector(w25q512jv_t *dev, uint32_t addr);
  * Returns W25Q_OK on success. */
 int w25q512jv_erase_block(w25q512jv_t *dev, uint32_t addr);
 
-/* Erase entire chip. WARNING: takes up to 400 seconds!
- * Returns W25Q_OK on success. */
-int w25q512jv_erase_chip(w25q512jv_t *dev);
-
-/* Write-read-verify test on sector 0.
- * Returns true if data matches. */
-bool w25q512jv_test(w25q512jv_t *dev);
-
 /* ------------------------------------------------------------------ */
 /*  Non-blocking (IT mode) API                                         */
 /* ------------------------------------------------------------------ */

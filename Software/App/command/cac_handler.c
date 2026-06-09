@@ -103,8 +103,7 @@ void cac_tick(void)
 
     /* Confirm timeout */
     if (s_phase == CAC_AWAITING_CONFIRM) {
-        if (now - s_confirm_deadline > 0 &&
-            (int32_t)(now - s_confirm_deadline) >= 0) {
+        if ((int32_t)(now - s_confirm_deadline) >= 0) {
             s_phase = CAC_IDLE;
         }
     }
@@ -297,7 +296,7 @@ void cac_handle_config_poll(const uint8_t *data, int len)
 void cac_handle_confirm(const uint8_t *data, int len)
 {
     /* CONFIRM: [0xF0][0xCA][0x5A][nonce:2][CRC-32:4] = 9 bytes */
-    if (len < 9) return;
+    if (len < SIZE_CONFIRM) return;
 
     if (data[1] != CAC_MAGIC_1 || data[2] != CAC_MAGIC_2) return;
 
@@ -347,16 +346,3 @@ void cac_handle_abort(const uint8_t *data, int len)
     }
 }
 
-/* ── Test mode queries ────────────────────────────────────────── */
-bool cac_test_mode_active(void)
-{
-    return s_test_mode;
-}
-
-uint32_t cac_test_mode_remaining_ms(void)
-{
-    if (!s_test_mode) return 0;
-    uint32_t now = HAL_GetTick();
-    if ((int32_t)(now - s_test_mode_deadline) >= 0) return 0;
-    return s_test_mode_deadline - now;
-}

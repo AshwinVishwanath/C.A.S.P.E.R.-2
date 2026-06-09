@@ -50,12 +50,6 @@ float compute_vert_accel(const float q[4], const float accel_body_ms2[3])
 }
 
 /* ── Antenna-Up Check (FSM_TRANSITION_SPEC.md §2.3) ─────────────── */
-bool check_antenna_up(const float q[4])
-{
-    float p, y, t;
-    return check_antenna_up_tilt(q, &p, &y, &t);
-}
-
 bool check_antenna_up_tilt(const float q[4],
                            float *pitch_deg_out,
                            float *yaw_deg_out,

@@ -165,7 +165,6 @@ void sx1276_set_tx_power(int8_t dbm);
 void sx1276_set_modulation(uint8_t sf, uint32_t bw_hz, uint8_t cr);
 void sx1276_set_sync_word(uint8_t sw);
 void sx1276_set_preamble(uint16_t symbols);
-void sx1276_set_payload_length(uint8_t len);
 
 /* ── IRQ ────────────────────────────────────────────────────────── */
 

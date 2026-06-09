@@ -82,18 +82,6 @@ static void rotmat_mul(const float R[9], const float v[3], float out[3])
     out[2] = R[6]*v[0] + R[7]*v[1] + R[8]*v[2];
 }
 
-/* Check if mission_time falls within any ignition gate */
-static bool mag_gated(const casper_attitude_t *att)
-{
-    for (uint8_t i = 0; i < att->num_gates; i++) {
-        float t0 = att->gates[i].start_time_s;
-        float t1 = t0 + att->gates[i].duration_s;
-        if (att->mission_time >= t0 && att->mission_time < t1)
-            return true;
-    }
-    return false;
-}
-
 /* ── Public API ────────────────────────────────────────────────────────── */
 
 void casper_att_init(casper_attitude_t *att, const casper_att_config_t *config)
@@ -274,9 +262,7 @@ void casper_att_update(casper_attitude_t *att,
 
         if (att->mag_update_timer >= 1.0f / att->config.mag_update_hz) {
             /* Timer has fired — attempt correction */
-            bool gated = mag_gated(att);
-
-            if (mag_cal && att->mag_available && !gated) {
+            if (mag_cal && att->mag_available) {
                 float m_hat[3];
                 vec3_normalize(mag_cal, m_hat);
                 float m_pred[3];
@@ -304,7 +290,7 @@ void casper_att_update(casper_attitude_t *att,
                 /* Reset timer only on successful correction */
                 att->mag_update_timer = 0.0f;
             }
-            /* If mag_cal is NULL or gated, do NOT reset timer —
+            /* If mag_cal is NULL, do NOT reset timer —
              * correction fires next tick with valid data. */
         }
     }
@@ -360,37 +346,3 @@ void casper_att_update(casper_attitude_t *att,
     att->mission_time += dt;
 }
 
-void casper_att_add_gate(casper_attitude_t *att,
-                         float start_s, float duration_s)
-{
-    if (att->num_gates < CASPER_ATT_MAX_GATES) {
-        att->gates[att->num_gates].start_time_s = start_s;
-        att->gates[att->num_gates].duration_s   = duration_s;
-        att->num_gates++;
-    }
-}
-
-/* ── Getters ───────────────────────────────────────────────────────────── */
-
-void casper_att_get_quaternion(const casper_attitude_t *att, float q_out[4])
-{
-    q_out[0] = att->q[0];
-    q_out[1] = att->q[1];
-    q_out[2] = att->q[2];
-    q_out[3] = att->q[3];
-}
-
-void casper_att_get_euler(const casper_attitude_t *att,
-                          float *roll_deg, float *pitch_deg, float *yaw_deg)
-{
-    float euler[3];
-    casper_quat_to_euler(att->q, euler);
-    /* ZYX Euler: euler[0]=bodyZ, euler[1]=bodyY, euler[2]=bodyX.
-     * Y-nose convention: bodyY=nose, bodyX=starboard, bodyZ=operator.
-     *   Roll  = spin about nose  = body Y rotation = euler[1]
-     *   Pitch = lateral tilt     = body X rotation = euler[2]
-     *   Yaw   = heading          = body Z rotation = euler[0] */
-    *roll_deg  = euler[1];
-    *pitch_deg = euler[2];
-    *yaw_deg   = euler[0];
-}

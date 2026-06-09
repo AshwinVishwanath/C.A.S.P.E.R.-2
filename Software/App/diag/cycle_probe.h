@@ -26,16 +26,6 @@ typedef struct {
 #define DIAG_CPU_HZ        432000000UL
 #define DIAG_CYC_PER_US    432UL
 
-/* One-time DWT enable. Call after SystemClock_Config in main(). */
-static inline void diag_probe_init_dwt(void)
-{
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    /* Cortex-M7 lock register — write magic to enable CYCCNT writes. */
-    DWT->LAR = 0xC5ACCE55u;
-    DWT->CYCCNT = 0;
-    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
-}
-
 #define DIAG_PROBE_BEGIN(P)  uint32_t _t_##P = DWT->CYCCNT
 #define DIAG_PROBE_END(P)    do {                                   \
     uint32_t _d = DWT->CYCCNT - _t_##P;                              \

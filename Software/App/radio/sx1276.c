@@ -296,10 +296,6 @@ void sx1276_set_preamble(uint16_t symbols)
     sx1276_write_reg(SX1276_REG_PREAMBLE_LSB, (uint8_t)(symbols));
 }
 
-void sx1276_set_payload_length(uint8_t len)
-{
-    sx1276_write_reg(SX1276_REG_PAYLOAD_LENGTH, len);
-}
 
 /* ── IRQ ───────────────────────────────────────────────────────── */
 

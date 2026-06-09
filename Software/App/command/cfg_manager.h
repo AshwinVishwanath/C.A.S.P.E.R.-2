@@ -29,9 +29,4 @@ void cfg_handle_eraselog(const uint8_t *data, int len);
  */
 uint32_t cfg_get_active_hash(void);
 
-/**
- * Get pointer to active flight config.
- */
-const flight_config_t *cfg_get_active(void);
-
 #endif /* APP_COMMAND_CFG_MANAGER_H */

@@ -388,7 +388,6 @@ int main(void)
       .Ki                = 0.1f,
       .gyro_lpf_cutoff_hz = 50.0f,
       .mag_update_hz     = 10.0f,
-      .launch_accel_g    = 3.0f,
     };
     casper_att_init(&att, &att_cfg);
     casper_ekf_init(&ekf);
@@ -1874,9 +1873,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
   if (GPIO_Pin == RADIO_DIO1_Pin) { /* PD7  = DIO1 (RxTimeout)     */
     g_radio_dio1_flag = 1;
-  }
-  if (GPIO_Pin == RADIO_DIO3_Pin) { /* PA4  = DIO3 (ValidHeader)   */
-    g_radio_dio3_flag = 1;
   }
 
   /* ---- GPS data ready (both builds) ---- */

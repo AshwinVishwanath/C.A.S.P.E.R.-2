@@ -7,7 +7,6 @@
 
 #define PYRO_NUM_CHANNELS          4
 #define PYRO_CONTINUITY_THRESHOLD  8000   /* 16-bit ADC; tune empirically */
-#define PYRO_DEFAULT_FIRE_MS       1000   /* 1 second default fire pulse  */
 
 typedef struct {
     /* State */

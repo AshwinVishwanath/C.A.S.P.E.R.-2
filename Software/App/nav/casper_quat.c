@@ -51,39 +51,6 @@ void casper_quat_to_rotmat(const float q[4], float R[9])
     R[8] = 1.0f - 2.0f*(xx + yy);
 }
 
-void casper_quat_from_accel(const float accel[3], float q[4])
-{
-    float ax = accel[0], ay = accel[1], az = accel[2];
-
-    /*
-     * Standard ZYX gravity-to-Euler extraction.  Works for any body frame.
-     *
-     * Y-nose convention (body = sensor native):
-     *   +Y = nose (up on pad), +X = starboard, +Z = toward operator.
-     *   On pad: accel ≈ [0, +g, 0] → roll = π/2, pitch = 0.
-     *   Quaternion maps body +Y to reference +Z ("up" axis).
-     *
-     * pitch = atan2(-ax, sqrt(ay² + az²))   (body Y rotation)
-     * roll  = atan2( ay, az)                 (body X rotation)
-     * yaw   = 0                              (no magnetometer)
-     */
-    float pitch = atan2f(-ax, sqrtf(ay * ay + az * az));
-    float roll  = atan2f( ay, az);
-
-    float cp = cosf(pitch * 0.5f);
-    float sp = sinf(pitch * 0.5f);
-    float cr = cosf(roll  * 0.5f);
-    float sr = sinf(roll  * 0.5f);
-    /* yaw = 0  →  cy = 1, sy = 0 */
-
-    q[0] = cp * cr;           /* w */
-    q[1] = cp * sr;           /* x */
-    q[2] = sp * cr;           /* y */
-    q[3] = -sp * sr;          /* z */
-
-    casper_quat_normalize(q);
-}
-
 void casper_quat_from_euler(float roll, float pitch, float yaw, float q[4])
 {
     float cr = cosf(roll  * 0.5f), sr = sinf(roll  * 0.5f);

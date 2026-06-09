@@ -11,6 +11,13 @@ static inline void put_le16(uint8_t *dst, uint16_t val)
     dst[1] = (uint8_t)((val >> 8) & 0xFF);
 }
 
+static inline void put_le24(uint8_t *dst, uint32_t val)
+{
+    dst[0] = (uint8_t)(val & 0xFF);
+    dst[1] = (uint8_t)((val >> 8) & 0xFF);
+    dst[2] = (uint8_t)((val >> 16) & 0xFF);
+}
+
 static inline void put_le32(uint8_t *dst, uint32_t val)
 {
     dst[0] = (uint8_t)(val & 0xFF);

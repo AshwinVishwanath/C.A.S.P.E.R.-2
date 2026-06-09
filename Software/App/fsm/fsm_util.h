@@ -60,11 +60,6 @@ float compute_vert_accel(const float q[4], const float accel_body_ms2[3]);
 /* ── Antenna-Up Check (FSM_TRANSITION_SPEC.md §2.3) ─────────────── */
 
 /**
- * Check if rocket nose (body Y) is within 10° of vertical (Z-up frame).
- */
-bool check_antenna_up(const float q[4]);
-
-/**
  * Same check, also returns tilt decomposition in degrees.
  * @param pitch_deg_out  Nose tilt in nav-X direction (starboard/port)
  * @param yaw_deg_out    Nose tilt in nav-Y direction (fwd/aft)

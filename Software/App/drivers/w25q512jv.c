@@ -289,43 +289,6 @@ int w25q512jv_erase_block(w25q512jv_t *dev, uint32_t addr)
     return w25q_wait_busy(dev, W25Q_TIMEOUT_BLOCK_ERASE);
 }
 
-int w25q512jv_erase_chip(w25q512jv_t *dev)
-{
-    if (w25q_write_enable(dev) != W25Q_OK)
-        return W25Q_ERROR;
-
-    if (w25q_cmd_only(dev, W25Q_CMD_CHIP_ERASE) != W25Q_OK)
-        return W25Q_ERROR;
-
-    return w25q_wait_busy(dev, W25Q_TIMEOUT_CHIP_ERASE);
-}
-
-bool w25q512jv_test(w25q512jv_t *dev)
-{
-    /* Test pattern: 256 bytes of incrementing values */
-    uint8_t tx_buf[256];
-    uint8_t rx_buf[256];
-
-    for (int i = 0; i < 256; i++)
-        tx_buf[i] = (uint8_t)i;
-
-    /* Erase sector 0 */
-    if (w25q512jv_erase_sector(dev, 0x00000000) != W25Q_OK)
-        return false;
-
-    /* Write 256 bytes at address 0 */
-    if (w25q512jv_write(dev, 0x00000000, tx_buf, 256) != W25Q_OK)
-        return false;
-
-    /* Read back */
-    memset(rx_buf, 0, sizeof(rx_buf));
-    if (w25q512jv_read(dev, 0x00000000, rx_buf, 256) != W25Q_OK)
-        return false;
-
-    /* Compare */
-    return (memcmp(tx_buf, rx_buf, 256) == 0);
-}
-
 /* ------------------------------------------------------------------ */
 /*  Non-blocking (IT mode) API                                         */
 /* ------------------------------------------------------------------ */

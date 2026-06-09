@@ -189,30 +189,12 @@ float ms5611_get_temperature(const ms5611_t *dev)
     return (float)dev->temperature * 0.01f;
 }
 
-float ms5611_get_pressure(const ms5611_t *dev)
-{
-    return (float)dev->pressure * 0.01f;
-}
-
 float ms5611_get_altitude(const ms5611_t *dev, float sea_level_hPa)
 {
     float pressure_hPa = (float)dev->pressure * 0.01f;
     if (pressure_hPa <= 0.0f) pressure_hPa = 0.01f;  /* Guard: negative/zero → NaN from powf */
     float ratio = pressure_hPa / sea_level_hPa;
     return 44307.694f * (1.0f - powf(ratio, 0.190284f));
-}
-
-int ms5611_read_raw(ms5611_t *dev)
-{
-    /* D1: pressure */
-    ms5611_convert(dev, MS5611_CMD_CONVERT_D1);
-    dev->raw_pressure = ms5611_read_adc(dev);
-
-    /* D2: temperature */
-    ms5611_convert(dev, MS5611_CMD_CONVERT_D2);
-    dev->raw_temperature = ms5611_read_adc(dev);
-
-    return MS5611_READ_OK;
 }
 
 void ms5611_set_oversampling(ms5611_t *dev, ms5611_osr_t osr)
