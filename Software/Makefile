@@ -92,6 +92,10 @@ Core/Src/system_stm32h7xx.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c
 
+# ── Port seam: board_casper2 (only App file allowed to include main.h/HAL) ──
+C_SOURCES += \
+App/port/board_casper2/board_casper2.c
+
 # ── Shared application sources (both builds) ──────────────────
 C_SOURCES += \
 App/drivers/ms5611.c \
@@ -270,6 +274,8 @@ C_INCLUDES =  \
 -IFATFS/Target \
 -IFATFS/App \
 -IMiddlewares/Third_Party/FatFs/src \
+-IApp/port \
+-IApp/port/board_casper2 \
 -IApp/drivers \
 -IApp/nav \
 -IApp/cal \
