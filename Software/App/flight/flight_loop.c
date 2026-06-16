@@ -1,6 +1,7 @@
 #include "flight_loop.h"
 #include "app_globals.h"
 
+#include "casper_port.h"
 #include "stm32h7xx_hal.h"
 #include "main.h"
 #include "casper_quat.h"
@@ -218,7 +219,7 @@ void flight_loop_init(void)
     last_imu_tick    = 0;
     baro_cal_sum     = 0.0;
     baro_cal_count   = 0;
-    loop_start_tick  = HAL_GetTick();
+    loop_start_tick  = casper_millis();
     imu_subsample_count = 0;
     ned_accel_accum[0] = ned_accel_accum[1] = ned_accel_accum[2] = 0.0f;
     last_accel_mag_g = 0.0f;
@@ -249,13 +250,13 @@ static void cdc_send_blocking(const uint8_t *buf, uint16_t len)
 {
     while (CDC_Transmit_FS((uint8_t *)buf, len) == USBD_BUSY) {}
     /* Small delay for USB IN transfer to complete */
-    HAL_Delay(2);
+    casper_delay_ms(2);
 }
 
 static bool wait_for_ack(void)
 {
-    uint32_t t0 = HAL_GetTick();
-    while (HAL_GetTick() - t0 < DUMP_TIMEOUT_MS) {
+    uint32_t t0 = casper_millis();
+    while (casper_millis() - t0 < DUMP_TIMEOUT_MS) {
         if (cdc_ring_available() > 0) {
             uint8_t b = cdc_ring_read_byte();
             if (b == DUMP_ACK) return true;
@@ -277,7 +278,7 @@ static void flash_dump_over_cdc(w25q512jv_t *fl)
     static const uint8_t num_regions = sizeof(regions) / sizeof(regions[0]);
 
     /* Let any in-flight CDC TX drain, then flush RX */
-    HAL_Delay(50);
+    casper_delay_ms(50);
     while (cdc_ring_available() > 0) cdc_ring_read_byte();
 
     /* Header: magic + region count */
@@ -349,7 +350,7 @@ void flight_loop_tick(void)
     imu.data_ready = true;          /* mimic the EXTI on PC15 */
     uint32_t now = g_hil_raw.tick_ms;
 #else
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 #endif
     /* ── Mag: polled read at 100 Hz, frame-map + calibrate ── */
     if (now - last_mag_tick >= 10) {
@@ -423,17 +424,17 @@ void flight_loop_tick(void)
        * step's accuracy than blow up the estimator. */
       float dt_actual;
       {
-          static uint32_t s_prev_imu_cyc = 0;
-          uint32_t cyc = DWT->CYCCNT;
-          if (s_prev_imu_cyc == 0u) {
+          static uint32_t s_prev_imu_us = 0;
+          uint32_t us = casper_micros();
+          if (s_prev_imu_us == 0u) {
               dt_actual = EKF_DT;
           } else {
-              uint32_t delta = cyc - s_prev_imu_cyc;  /* unsigned wrap-safe */
-              dt_actual = (float)delta * (1.0f / 432000000.0f);
+              uint32_t delta = us - s_prev_imu_us;  /* unsigned wrap-safe */
+              dt_actual = (float)delta * 1.0e-6f;
               if (dt_actual > 0.005f) dt_actual = 0.005f;
               if (dt_actual < 0.0001f) dt_actual = 0.0001f;
           }
-          s_prev_imu_cyc = cyc;
+          s_prev_imu_us = us;
       }
 
       float gyro_sensor[3] = {
@@ -901,7 +902,7 @@ void flight_loop_tick(void)
     flight_logger_tick(&logger);
     DIAG_PROBE_END(probe_log_tick);
 #ifdef LOGGER_SANITY
-    logger_sanity_tick(HAL_GetTick());
+    logger_sanity_tick(casper_millis());
 #endif
 
 #ifndef LOGGER_SANITY

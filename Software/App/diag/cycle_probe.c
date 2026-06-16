@@ -17,11 +17,10 @@ void diag_probe_emit(const char *name, diag_probe_t *p, uint32_t elapsed_ms)
             "[CYC] %-9s n=0\r\n", name);
         if (n > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)n);
     } else {
-        uint32_t avg = p->sum / p->count;
-        uint32_t max_us = p->max / DIAG_CYC_PER_US;
-        uint32_t avg_us = avg / DIAG_CYC_PER_US;
-        /* total active time in micro-seconds across the window: */
-        uint32_t total_us = p->sum / DIAG_CYC_PER_US;
+        /* sum and max are now in microseconds (recorded by casper_micros()). */
+        uint32_t max_us  = p->max;
+        uint32_t avg_us  = p->sum / p->count;
+        uint32_t total_us = p->sum;
         /* Elapsed window in micro-seconds. */
         uint32_t window_us = elapsed_ms * 1000U;
         /* CPU % to one decimal place: total_us / window_us * 100, ×10 then /10. */
@@ -29,12 +28,12 @@ void diag_probe_emit(const char *name, diag_probe_t *p, uint32_t elapsed_ms)
             ? (uint32_t)(((uint64_t)total_us * 1000U) / window_us)
             : 0U;
         int n = snprintf(buf, sizeof(buf),
-            "[CYC] %-9s n=%lu max=%lu (%luus) avg=%lu (%luus) "
+            "[CYC] %-9s n=%lu max=%luus avg=%luus "
             "total=%lu.%lums = %lu.%lu%%\r\n",
             name,
             (unsigned long)p->count,
-            (unsigned long)p->max,  (unsigned long)max_us,
-            (unsigned long)avg,     (unsigned long)avg_us,
+            (unsigned long)max_us,
+            (unsigned long)avg_us,
             (unsigned long)(total_us / 1000U),
             (unsigned long)((total_us % 1000U) / 100U),
             (unsigned long)(pct_x10 / 10U),

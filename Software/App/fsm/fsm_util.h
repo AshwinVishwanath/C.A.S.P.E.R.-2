@@ -12,8 +12,8 @@ extern "C" {
 uint32_t fsm_get_tick(void);
 void     fsm_set_tick(uint32_t ms);
 #else
-#include "stm32h7xx_hal.h"
-#define  fsm_get_tick() HAL_GetTick()
+#include "casper_port.h"
+#define  fsm_get_tick() casper_millis()
 #endif
 
 /* ── Dwell Timer (FSM_TRANSITION_SPEC.md §3) ─────────────────────── */

@@ -12,23 +12,21 @@
 #define APP_DIAG_CYCLE_PROBE_H
 
 #include <stdint.h>
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 
 #ifdef LOGGER_SANITY
 
 typedef struct {
     uint32_t count;
-    uint32_t sum;
-    uint32_t max;
+    uint32_t sum;   /* accumulated µs */
+    uint32_t max;   /* peak µs        */
 } diag_probe_t;
 
-/* SYSCLK = 432 MHz, so cycles / 432 ≈ µs. Update if clock changes. */
-#define DIAG_CPU_HZ        432000000UL
-#define DIAG_CYC_PER_US    432UL
-
-#define DIAG_PROBE_BEGIN(P)  uint32_t _t_##P = DWT->CYCCNT
+/* Probes now record microseconds via casper_micros() so the board layer
+ * owns the SYSCLK constant — no hardcoded 432 MHz here. */
+#define DIAG_PROBE_BEGIN(P)  uint32_t _t_##P = casper_micros()
 #define DIAG_PROBE_END(P)    do {                                   \
-    uint32_t _d = DWT->CYCCNT - _t_##P;                              \
+    uint32_t _d = casper_micros() - _t_##P;                          \
     (P).count++;                                                     \
     (P).sum += _d;                                                   \
     if (_d > (P).max) (P).max = _d;                                  \
@@ -38,7 +36,7 @@ typedef struct {
  *
  *   [CYC] <name>: n=<count> max=<cyc> (<us>) avg=<cyc> (<us>) total=<ms>/s = <pct>% CPU
  *
- * Caller passes elapsed_ms = HAL_GetTick delta since last print so the
+ * Caller passes elapsed_ms = casper_millis() delta since last print so the
  * "ms/s" field can be computed correctly even if the print isn't exactly
  * 1 second apart. */
 void diag_probe_emit(const char *name, diag_probe_t *p, uint32_t elapsed_ms);
