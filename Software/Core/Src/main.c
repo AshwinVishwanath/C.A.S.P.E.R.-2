@@ -483,7 +483,9 @@ int main(void)
   cac_init();
   cfg_manager_init();
   flight_fsm_init();
-  pyro_mgr_init(&hadc1, &hadc2, &hadc3);
+  /* ADC calibration must run before pyro init (STM32H7 requirement). */
+  casper_adc_init_all();
+  pyro_mgr_init(BSP_ADC_CONT, BSP_PIN_PY, BSP_PIN_CONT_LED);
 #ifndef GPS_TEST
   buzzer_init(&BSP_PWM_BUZZ);
 #endif

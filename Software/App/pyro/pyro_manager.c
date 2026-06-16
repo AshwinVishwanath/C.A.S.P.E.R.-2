@@ -7,7 +7,6 @@
 #include "casper_pyro.h"
 #include "flight_fsm.h"
 #include "tlm_types.h"
-#include "stm32h7xx_hal.h"
 #include "fsm_types.h"
 
 extern int tlm_queue_event(uint8_t type, uint16_t data);
@@ -27,11 +26,11 @@ static inline bool pyro_ch_excluded(uint8_t ch)
     return (PYRO_EXCLUDE_MASK >> ch) & 1;
 }
 
-void pyro_mgr_init(ADC_HandleTypeDef *hadc1,
-                    ADC_HandleTypeDef *hadc2,
-                    ADC_HandleTypeDef *hadc3)
+void pyro_mgr_init(casper_adc_t *adc[PYRO_NUM_CHANNELS],
+                   casper_pin_t  fire[PYRO_NUM_CHANNELS],
+                   casper_pin_t  led[PYRO_NUM_CHANNELS])
 {
-    casper_pyro_init(&pyro, hadc1, hadc2, hadc3);
+    casper_pyro_init(&pyro, adc, fire, led);
     for (int i = 0; i < PYRO_MGR_NUM_CHANNELS; i++) {
         s_armed[i] = false;
     }

@@ -109,25 +109,31 @@ casper_pwm_t BSP_PWM_BUZZ = { &htim4, TIM_CHANNEL_3 };
 
 /* ── ADC continuity channels ──────────────────────────────────────────────
  *
- *  Mapping mirrors the hw[] table in casper_pyro.c exactly:
+ *  Mapping:
  *    Index 0 — CH1: ADC1 channel 4  (PC4,   CONT1     ADC1_CH4)
  *    Index 1 — CH2: ADC1 channel 3  (PA6,   CONT_2    ADC1_CH3)
  *    Index 2 — CH3: ADC3 channel 1  (PC3_C, CONT_3    ADC3_CH1)
  *    Index 3 — CH4: ADC2 channel 10 (PC0,   CONT_4    ADC2_CH10)
  *
- *  casper_adc_t is an opaque type; the extern in board_casper2.h declares a
- *  pointer so that App/ code never needs the concrete struct size.  We define
- *  a static array here and export a pointer to its first element.
+ *  casper_adc_t is an opaque type.  App/ code only holds pointers so it
+ *  never needs the concrete struct size.  We define the concrete objects as
+ *  static and export an array of pointers — App/ can subscript the pointer
+ *  array without knowing sizeof(casper_adc_t).
  * ----------------------------------------------------------------------- */
 static casper_adc_t s_adc_cont[4] = {
-    { &hadc1, ADC_CHANNEL_4  },   /* [0] CH1 — ADC1_CH4 */
-    { &hadc1, ADC_CHANNEL_3  },   /* [1] CH2 — ADC1_CH3 */
-    { &hadc3, ADC_CHANNEL_1  },   /* [2] CH3 — ADC3_CH1 */
+    { &hadc1, ADC_CHANNEL_4  },   /* [0] CH1 — ADC1_CH4  */
+    { &hadc1, ADC_CHANNEL_3  },   /* [1] CH2 — ADC1_CH3  */
+    { &hadc3, ADC_CHANNEL_1  },   /* [2] CH3 — ADC3_CH1  */
     { &hadc2, ADC_CHANNEL_10 },   /* [3] CH4 — ADC2_CH10 */
 };
 
-/** Pointer to the continuity ADC channel array; indexable as BSP_ADC_CONT[0..3]. */
-casper_adc_t *BSP_ADC_CONT = s_adc_cont;
+/** Array of 4 opaque ADC channel pointers; pass to pyro_mgr_init / casper_pyro_init. */
+casper_adc_t *BSP_ADC_CONT[4] = {
+    &s_adc_cont[0],
+    &s_adc_cont[1],
+    &s_adc_cont[2],
+    &s_adc_cont[3],
+};
 
 /* =========================================================================
  *  GPIO pin descriptor definitions
@@ -177,6 +183,24 @@ casper_pin_t BSP_PIN_CONT_YN_1 = { (void *)CONT_YN_1_GPIO_Port, CONT_YN_1_Pin };
 casper_pin_t BSP_PIN_CONT_YN_2 = { (void *)CONT_YN_2_GPIO_Port, CONT_YN_2_Pin };
 casper_pin_t BSP_PIN_CONT_YN_3 = { (void *)CONT_YN_3_GPIO_Port, CONT_YN_3_Pin };
 casper_pin_t BSP_PIN_CONT_YN_4 = { (void *)CONT_YN_4_GPIO_Port, CONT_YN_4_Pin };
+
+/* ── Pyro pin arrays (for casper_pyro_init / pyro_mgr_init table API) ── */
+
+/** Array of fire-output pins, indexed [0..3] = CH1..CH4. */
+casper_pin_t BSP_PIN_PY[4] = {
+    { (void *)PY1_GPIO_Port, PY1_Pin },   /* [0] CH1 — PD10 */
+    { (void *)PY2_GPIO_Port, PY2_Pin },   /* [1] CH2 — PD9  */
+    { (void *)PY3_GPIO_Port, PY3_Pin },   /* [2] CH3 — PD8  */
+    { (void *)PY4_GPIO_Port, PY4_Pin },   /* [3] CH4 — PB15 */
+};
+
+/** Array of continuity-LED pins, indexed [0..3] = CH1..CH4. */
+casper_pin_t BSP_PIN_CONT_LED[4] = {
+    { (void *)CONT_YN_1_GPIO_Port, CONT_YN_1_Pin },  /* [0] CH1 — PA10 */
+    { (void *)CONT_YN_2_GPIO_Port, CONT_YN_2_Pin },  /* [1] CH2 — PB14 */
+    { (void *)CONT_YN_3_GPIO_Port, CONT_YN_3_Pin },  /* [2] CH3 — PE8  */
+    { (void *)CONT_YN_4_GPIO_Port, CONT_YN_4_Pin },  /* [3] CH4 — PE7  */
+};
 
 /* =========================================================================
  *  Helper: translate HAL_StatusTypeDef → casper_status_t

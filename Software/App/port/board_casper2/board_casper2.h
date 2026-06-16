@@ -49,21 +49,19 @@ extern casper_qspi_t BSP_QSPI_FLASH;
 extern casper_pwm_t BSP_PWM_BUZZ;
 
 /**
- * @brief ADC continuity-sense channels (one per pyro channel, index 0–3).
+ * @brief ADC continuity-sense pointer array (one casper_adc_t* per pyro channel).
  *
- * Exposed as a pointer to the first element of a 4-element array defined in
- * board_casper2.c.  Access as BSP_ADC_CONT[0] … BSP_ADC_CONT[3].
+ * Each element is a pointer to an opaque casper_adc_t (defined only in
+ * board_casper2.c).  App/ code passes this array directly to
+ * casper_pyro_init() / pyro_mgr_init() without needing the concrete struct size.
  *
- * casper_adc_t is an opaque (incomplete) type; only pointers to it are valid
- * in App/ code, so the extern must be a pointer, not a fixed-size array.
- *
- * Mapping (matches casper_pyro.c hw[] table):
- *   [0] CH1 — ADC1 channel 4  (PC4, CONT1)
- *   [1] CH2 — ADC1 channel 3  (PA6, CONT_2)
+ * Mapping:
+ *   [0] CH1 — ADC1 channel 4  (PC4,   CONT1)
+ *   [1] CH2 — ADC1 channel 3  (PA6,   CONT_2)
  *   [2] CH3 — ADC3 channel 1  (PC3_C, CONT_3)
- *   [3] CH4 — ADC2 channel 10 (PC0, CONT_4)
+ *   [3] CH4 — ADC2 channel 10 (PC0,   CONT_4)
  */
-extern casper_adc_t *BSP_ADC_CONT;  /**< Points to [4]-element array. */
+extern casper_adc_t *BSP_ADC_CONT[4];  /**< Array of 4 opaque ADC channel pointers. */
 
 /* =========================================================================
  *  GPIO pin descriptors — built from main.h defines
@@ -118,10 +116,26 @@ extern casper_pin_t BSP_PIN_PY2;  /**< PD9.  */
 extern casper_pin_t BSP_PIN_PY3;  /**< PD8.  */
 extern casper_pin_t BSP_PIN_PY4;  /**< PB15. */
 
+/**
+ * @brief Array of pyro fire-output pins, indexed [0..3] = CH1..CH4.
+ *
+ * Convenience aggregate for passing to casper_pyro_init / pyro_mgr_init.
+ * Same order as BSP_PIN_PY1..4.
+ */
+extern casper_pin_t BSP_PIN_PY[4];
+
 /* ── Continuity-detect LEDs ── */
 extern casper_pin_t BSP_PIN_CONT_YN_1;  /**< PA10. */
 extern casper_pin_t BSP_PIN_CONT_YN_2;  /**< PB14. */
 extern casper_pin_t BSP_PIN_CONT_YN_3;  /**< PE8.  */
 extern casper_pin_t BSP_PIN_CONT_YN_4;  /**< PE7.  */
+
+/**
+ * @brief Array of continuity-detect LED pins, indexed [0..3] = CH1..CH4.
+ *
+ * Convenience aggregate for passing to casper_pyro_init / pyro_mgr_init.
+ * Same order as BSP_PIN_CONT_YN_1..4.
+ */
+extern casper_pin_t BSP_PIN_CONT_LED[4];
 
 #endif /* BOARD_CASPER2_H */

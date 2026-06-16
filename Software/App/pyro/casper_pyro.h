@@ -1,7 +1,7 @@
 #ifndef CASPER_PYRO_H
 #define CASPER_PYRO_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"   /* casper_adc_t, casper_pin_t, casper_gpio_write, casper_adc_read */
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -16,17 +16,28 @@ typedef struct {
     uint32_t fire_start_ms[PYRO_NUM_CHANNELS];
     uint32_t fire_duration_ms[PYRO_NUM_CHANNELS];
 
-    /* Hardware handles (set during init) */
-    ADC_HandleTypeDef *hadc1;   /* channels 1 & 2 (ADC1 CH4/CH3) */
-    ADC_HandleTypeDef *hadc2;   /* channel 4      (ADC2 CH10)    */
-    ADC_HandleTypeDef *hadc3;   /* channel 3      (ADC3 CH1)     */
+    /* Board-provided hardware tables (set during init, never NULL) */
+    casper_adc_t *cont[PYRO_NUM_CHANNELS];   /* one ADC channel per pyro continuity input */
+    casper_pin_t  fire[PYRO_NUM_CHANNELS];   /* fire output pins (MOSFET gates)            */
+    casper_pin_t  led[PYRO_NUM_CHANNELS];    /* continuity indicator LED pins               */
 } casper_pyro_t;
 
-/* Init: store ADC handles, calibrate ADCs, force all pyros OFF */
+/**
+ * Init: store board-provided ADC + GPIO tables, force all fire pins LOW,
+ * zero all state.
+ *
+ * @param p     Driver context to initialise.
+ * @param adc   Pointer array of PYRO_NUM_CHANNELS casper_adc_t* (one per ch).
+ *              Typically BSP_ADC_CONT (pointer to the board's ADC array).
+ * @param fire  Array of PYRO_NUM_CHANNELS casper_pin_t for fire outputs.
+ * @param led   Array of PYRO_NUM_CHANNELS casper_pin_t for continuity LEDs.
+ *
+ * NOTE: casper_adc_init_all() (HAL calibration) must be called BEFORE this.
+ */
 void casper_pyro_init(casper_pyro_t *p,
-                      ADC_HandleTypeDef *hadc1,
-                      ADC_HandleTypeDef *hadc2,
-                      ADC_HandleTypeDef *hadc3);
+                      casper_adc_t  *adc[PYRO_NUM_CHANNELS],
+                      casper_pin_t   fire[PYRO_NUM_CHANNELS],
+                      casper_pin_t   led[PYRO_NUM_CHANNELS]);
 
 /* Fire channel ch (0-3) for duration_ms.  Returns false if ch invalid. */
 bool casper_pyro_fire(casper_pyro_t *p, uint8_t ch, uint32_t duration_ms);
