@@ -85,6 +85,35 @@ static uint8_t s_gps_pending;
 /* RX buffer */
 static uint8_t s_rx_buf[RADIO_MAX_PACKET_SIZE];
 
+/* ── TX-event ring (for MAG_NOISE / EMI characterization) ─────────── */
+#define TX_EVT_RING_SIZE 16
+
+typedef struct {
+    uint32_t start_ms;
+    uint32_t end_ms;
+    uint16_t tx_index;   /* matches s_total_tx_count at the moment of TX entry */
+    uint8_t  ok;         /* 1 = TxDone, 0 = timeout */
+} tx_evt_t;
+
+static tx_evt_t s_tx_evt_ring[TX_EVT_RING_SIZE];
+static volatile uint8_t s_tx_evt_head;   /* push index */
+static volatile uint8_t s_tx_evt_tail;   /* pop index  */
+
+static void push_tx_event(uint32_t start_ms, uint32_t end_ms,
+                          uint16_t idx, uint8_t ok)
+{
+    uint8_t next = (s_tx_evt_head + 1) & (TX_EVT_RING_SIZE - 1);
+    if (next == s_tx_evt_tail) {
+        /* ring full — drop oldest (advance tail) */
+        s_tx_evt_tail = (s_tx_evt_tail + 1) & (TX_EVT_RING_SIZE - 1);
+    }
+    s_tx_evt_ring[s_tx_evt_head].start_ms = start_ms;
+    s_tx_evt_ring[s_tx_evt_head].end_ms   = end_ms;
+    s_tx_evt_ring[s_tx_evt_head].tx_index = idx;
+    s_tx_evt_ring[s_tx_evt_head].ok       = ok;
+    s_tx_evt_head = next;
+}
+
 /* ── Helpers (same as tlm_manager.c) ───────────────────────────────── */
 
 static void put_le16(uint8_t *dst, uint16_t val)
@@ -548,11 +577,15 @@ void radio_manager_tick(const casper_ekf_t *ekf,
             sx1276_clear_irq_flags(SX1276_IRQ_ALL);
             g_radio_dio0_flag = 0;
 
+            /* Capture exact TX end timestamp before state transitions */
+            push_tx_event(s_tx_start_ms, HAL_GetTick(), s_total_tx_count, 1);
+
             /* TX complete — open RX window */
             open_rx_window();
         }
         /* TX timeout */
         else if (now - s_tx_start_ms > RADIO_TX_TIMEOUT_MS) {
+            push_tx_event(s_tx_start_ms, HAL_GetTick(), s_total_tx_count, 0);
             s_tx_error_count++;
             s_total_fail_count++;
             radio_reinit();
@@ -625,6 +658,24 @@ int radio_send_response(const uint8_t *buf, uint8_t len)
 int radio_is_active(void)
 {
     return (s_radio_state != RADIO_STATE_DISABLED) ? 1 : 0;
+}
+
+bool radio_is_tx_active(void)
+{
+    return s_radio_state == RADIO_STATE_TX;
+}
+
+bool radio_drain_tx_event(uint32_t *start_ms, uint32_t *end_ms,
+                          uint16_t *idx, bool *ok)
+{
+    if (s_tx_evt_tail == s_tx_evt_head) return false;
+    const tx_evt_t *e = &s_tx_evt_ring[s_tx_evt_tail];
+    if (start_ms) *start_ms = e->start_ms;
+    if (end_ms)   *end_ms   = e->end_ms;
+    if (idx)      *idx      = e->tx_index;
+    if (ok)       *ok       = (e->ok != 0);
+    s_tx_evt_tail = (s_tx_evt_tail + 1) & (TX_EVT_RING_SIZE - 1);
+    return true;
 }
 
 void radio_get_stats(int8_t *rssi, int8_t *snr,

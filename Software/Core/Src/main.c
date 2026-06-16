@@ -48,6 +48,9 @@
 #ifdef GYRO_TEMP_CAL
 #include "temp_cal.h"
 #endif
+#ifdef MAG_NOISE
+#include "mag_noise.h"
+#endif
 /* ── MC Testing / Telemetry modules ── */
 #include "tlm_manager.h"
 #include "cmd_router.h"
@@ -79,7 +82,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#if defined(MAG_CAL) + defined(MAG_VAL) + defined(GYRO_TEMP_CAL) + defined(GPS_TEST) > 1
+#if defined(MAG_CAL) + defined(MAG_VAL) + defined(GYRO_TEMP_CAL) + defined(GPS_TEST) + defined(MAG_NOISE) > 1
 #error "Only one calibration/test mode may be defined at a time"
 #endif
 
@@ -515,13 +518,17 @@ int main(void)
 
     DBG_PRINT("[INIT] all init complete\r\n");
 
-#ifndef GPS_TEST
-  /* Startup beep: 3 short = radio OK, 5 long = radio FAIL */
+#if !defined(GPS_TEST) && !defined(MAG_NOISE)
+  /* Startup beep: 3 short = radio OK, 5 long = radio FAIL.
+   * Suppressed in MAG_NOISE so the only buzzer activity is the
+   * inter-run markers driven by the mag_noise sequencer. */
   if (radio_init_ok) {
     buzzer_beep_n(50, 3, 100, 150);
   } else {
     buzzer_beep_n(50, 5, 300, 100);
   }
+#else
+  (void)radio_init_ok;
 #endif
 
   } /* end DBG_PRINT scope */
@@ -678,6 +685,18 @@ int main(void)
     }
   }
 #endif
+#ifdef MAG_NOISE
+  mag_noise_t mnoise;
+  if (!mag_noise_init(&mnoise)) {
+    while (1) {
+      HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+      HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
+      HAL_Delay(100);
+    }
+  }
+#endif
 #ifdef MAG_VAL
   mag_val_t mval;
   if (!mag_val_init(&mval)) {
@@ -757,6 +776,87 @@ int main(void)
           HAL_Delay(200);
         }
         while (1) { HAL_Delay(1000); }
+      }
+    }
+#elif defined(MAG_NOISE)
+    {
+      static uint32_t last_imu_tick = 0;
+      static uint32_t last_mag_tick = 0;
+      static bool     att_init_done = false;
+      uint32_t now = HAL_GetTick();
+
+      /* Sequencer + buzzer state machines run every loop. */
+      mag_noise_sequencer_tick(&mnoise, now);
+      buzzer_tick();
+
+      mag_noise_run_t run_now = mag_noise_current_run(&mnoise);
+      bool radio_run = (run_now == MAG_NOISE_RUN_B) ||
+                       (run_now == MAG_NOISE_RUN_C);
+
+      /* ── IMU at native ODR (DRDY EXTI, STATUS_REG fallback) ──────── */
+      if (!imu.data_ready && (now - last_imu_tick) >= 1) {
+        uint8_t st = lsm6dso32_read_reg_ext(&imu, LSM6DSO32_STATUS_REG);
+        if (st & 0x03) imu.data_ready = true;
+      }
+      if (imu.data_ready) {
+        imu.data_ready = false;
+        lsm6dso32_read(&imu);
+        float dt = (last_imu_tick == 0) ? 0.0012f
+                 : (float)(now - last_imu_tick) * 0.001f;
+        if (dt <= 0.0f) dt = 0.0012f;
+        last_imu_tick = now;
+
+        float accel_mps2[3] = { imu.accel_g[0]  * 9.80665f,
+                                imu.accel_g[1]  * 9.80665f,
+                                imu.accel_g[2]  * 9.80665f };
+        float gyro_rps[3]   = { imu.gyro_dps[0] * 0.017453292f,
+                                imu.gyro_dps[1] * 0.017453292f,
+                                imu.gyro_dps[2] * 0.017453292f };
+
+        /* Accel+gyro-only reference attitude (mag=NULL) */
+        if (!att_init_done) {
+          att_init_done = casper_att_static_init(&att, accel_mps2, NULL);
+        } else {
+          casper_att_update(&att, gyro_rps, accel_mps2, NULL, dt);
+        }
+      }
+
+      /* ── Radio drive (only during runs B and C) ──────────────────── */
+      if (radio_run) {
+        static casper_ekf_t      fake_ekf;     /* zero-initialised */
+        static fc_telem_state_t  fake_tstate;
+        static pyro_state_t      fake_pstate;
+        /* Run C spoofs high altitude so the radio_manager switches to
+         * Profile B; Run B leaves altitude=0 so it stays on Profile A. */
+        fake_ekf.x[0] = (run_now == MAG_NOISE_RUN_C) ? 30000.0f : 0.0f;
+        radio_manager_tick(&fake_ekf, &fake_tstate, &fake_pstate, FSM_STATE_PAD);
+      }
+      mag_noise_drain_tx_events(&mnoise);
+
+      /* ── Mag sample + log at 100 Hz ──────────────────────────────── */
+      if (now - last_mag_tick >= 10) {
+        mmc5983ma_read(&mag);
+
+        bool     tx_active = false;
+        uint16_t tx_count  = 0;
+        if (radio_run) {
+          tx_active = radio_is_tx_active();
+          int8_t _r, _s; uint16_t _rxc, _fc;
+          radio_get_stats(&_r, &_s, &tx_count, &_rxc, &_fc);
+        }
+        bool qspi_busy = (hqspi.State != HAL_QSPI_STATE_READY);
+
+        mag_noise_tick(&mnoise, &mag, &imu, &att,
+                       tx_active, qspi_busy, tx_count, now);
+        last_mag_tick = now;
+      }
+
+      /* ── Forced flash flush (Run D) — sequencer no-ops other runs ─ */
+      mag_noise_force_flush(&mnoise, now);
+
+      /* ── All-done: parked by sequencer; just sleep ──────────────── */
+      if (mag_noise_is_done(&mnoise)) {
+        HAL_Delay(1000);
       }
     }
 #elif defined(MAG_VAL)

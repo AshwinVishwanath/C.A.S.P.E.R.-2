@@ -81,6 +81,11 @@ void buzzer_tick(void)
     }
 }
 
+bool buzzer_is_busy(void)
+{
+    return s_state != BZ_IDLE;
+}
+
 void buzzer_beep_n(uint8_t pct, uint8_t count,
                    uint16_t on_ms, uint16_t period_ms)
 {
