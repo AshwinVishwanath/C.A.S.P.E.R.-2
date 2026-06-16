@@ -18,17 +18,17 @@
 #endif
 
 /* ------------------------------------------------------------------ */
-/*  SPI helpers (using TransmitReceive for STM32H7 FIFO robustness)   */
+/*  SPI helpers (full-duplex transceive; CS driven by GPIO seam)      */
 /* ------------------------------------------------------------------ */
 
 static inline void cs_low(const adxl372_t *dev)
 {
-    HAL_GPIO_WritePin(dev->cs_port, dev->cs_pin, GPIO_PIN_RESET);
+    casper_gpio_write(dev->cs, CASPER_PIN_LOW);
 }
 
 static inline void cs_high(const adxl372_t *dev)
 {
-    HAL_GPIO_WritePin(dev->cs_port, dev->cs_pin, GPIO_PIN_SET);
+    casper_gpio_write(dev->cs, CASPER_PIN_HIGH);
 }
 
 static void adxl372_write_reg(adxl372_t *dev, uint8_t reg, uint8_t val)
@@ -37,7 +37,7 @@ static void adxl372_write_reg(adxl372_t *dev, uint8_t reg, uint8_t val)
     uint8_t tx[2] = {(uint8_t)(reg << 1), val};
     uint8_t rx[2];
     cs_low(dev);
-    HAL_SPI_TransmitReceive(dev->hspi, tx, rx, 2, 100);
+    casper_spi_transceive(dev->bus, tx, rx, 2, 100);
     cs_high(dev);
 }
 
@@ -47,7 +47,7 @@ static uint8_t adxl372_read_reg(adxl372_t *dev, uint8_t reg)
     uint8_t tx[2] = {(uint8_t)((reg << 1) | 1u), 0x00};
     uint8_t rx[2] = {0};
     cs_low(dev);
-    HAL_SPI_TransmitReceive(dev->hspi, tx, rx, 2, 100);
+    casper_spi_transceive(dev->bus, tx, rx, 2, 100);
     cs_high(dev);
     return rx[1];
 }
@@ -61,7 +61,7 @@ static void adxl372_read_burst(adxl372_t *dev, uint8_t reg,
     uint8_t rx[7] = {0};
     tx[0] = (uint8_t)((reg << 1) | 1u);
     cs_low(dev);
-    HAL_SPI_TransmitReceive(dev->hspi, tx, rx, len + 1, 100);
+    casper_spi_transceive(dev->bus, tx, rx, len + 1, 100);
     cs_high(dev);
     memcpy(buf, &rx[1], len);
 }
@@ -71,12 +71,10 @@ static void adxl372_read_burst(adxl372_t *dev, uint8_t reg,
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-bool adxl372_init(adxl372_t *dev, SPI_HandleTypeDef *hspi,
-                  GPIO_TypeDef *cs_port, uint16_t cs_pin)
+bool adxl372_init(adxl372_t *dev, casper_spi_t *bus, casper_pin_t cs)
 {
-    dev->hspi       = hspi;
-    dev->cs_port    = cs_port;
-    dev->cs_pin     = cs_pin;
+    dev->bus        = bus;
+    dev->cs         = cs;
     dev->data_ready = false;
     dev->device_id  = 0;
 
@@ -89,7 +87,7 @@ bool adxl372_init(adxl372_t *dev, SPI_HandleTypeDef *hspi,
 
     /* Soft reset (write 0x52 to SRESET register) */
     adxl372_write_reg(dev, ADXL372_SRESET, ADXL372_RESET_CODE);
-    HAL_Delay(10);  /* Wait for reset to complete */
+    casper_delay_ms(10);  /* Wait for reset to complete */
 
     /* Read device ID (PARTID, register 0x02) for diagnostics */
     dev->device_id = adxl372_read_reg(dev, ADXL372_DEVID);
@@ -116,7 +114,7 @@ void adxl372_fifo_init(adxl372_t *dev, uint8_t odr_bits)
 #else
     /* Go to standby before reconfiguring */
     adxl372_write_reg(dev, ADXL372_POWER_CTL, ADXL372_OP_STANDBY);
-    HAL_Delay(1);
+    casper_delay_ms(1);
 
     /* Set ODR and matching BW (BW = ODR/2) */
     adxl372_write_reg(dev, ADXL372_TIMING, odr_bits);
@@ -194,7 +192,7 @@ void adxl372_wakeup_init(adxl372_t *dev, float threshold_g, uint8_t time_act)
 {
     /* Go to standby before reconfiguring */
     adxl372_write_reg(dev, ADXL372_POWER_CTL, ADXL372_OP_STANDBY);
-    HAL_Delay(1);
+    casper_delay_ms(1);
 
     /* Activity threshold: 11-bit, 100 mg/LSB
      * thresh_raw = threshold_g / 0.1

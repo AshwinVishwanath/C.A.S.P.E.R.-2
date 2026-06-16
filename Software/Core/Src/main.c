@@ -395,7 +395,7 @@ int main(void)
   }
 
     DBG_PRINT("[INIT] ADXL372...\r\n");
-  adxl372_init(&high_g, &hspi3, SPI3_CS_GPIO_Port, SPI3_CS_Pin);
+  adxl372_init(&high_g, &BSP_SPI_HIGHG, BSP_PIN_HIGHG_CS);
   if (high_g.device_id != ADXL372_DEVID_VAL) {
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);

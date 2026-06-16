@@ -1,7 +1,7 @@
 #ifndef ADXL372_H
 #define ADXL372_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -124,9 +124,8 @@
 /*  Driver struct                                                      */
 /* ------------------------------------------------------------------ */
 typedef struct {
-    SPI_HandleTypeDef *hspi;
-    GPIO_TypeDef      *cs_port;
-    uint16_t           cs_pin;
+    casper_spi_t      *bus;           /* SPI bus handle (opaque, board-owned) */
+    casper_pin_t       cs;            /* Chip-select pin descriptor */
 
     float              accel_g[3];    /* Acceleration in g (+-200g range, 100 mg/LSB) */
     int16_t            raw_accel[3];  /* Raw 12-bit left-justified register values */
@@ -140,8 +139,7 @@ typedef struct {
 
 /* Initialise: soft-reset, verify DEVID, configure ODR/BW/mode.
  * Returns true on success. */
-bool adxl372_init(adxl372_t *dev, SPI_HandleTypeDef *hspi,
-                  GPIO_TypeDef *cs_port, uint16_t cs_pin);
+bool adxl372_init(adxl372_t *dev, casper_spi_t *bus, casper_pin_t cs);
 
 /* Reconfigure for FIFO stream mode at given ODR. */
 void adxl372_fifo_init(adxl372_t *dev, uint8_t odr_bits);
