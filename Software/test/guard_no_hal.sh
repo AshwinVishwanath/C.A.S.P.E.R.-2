@@ -3,10 +3,9 @@
 #
 # PURPOSE:
 #   Fail loudly if any App/ source or header includes stm32h7xx_hal.h or
-#   main.h outside the three approved exceptions:
-#     1. App/port/board_casper2/board_casper2.c  (only file allowed HAL)
-#     2. App/radio/sx1276.c                       (Casper-2 radio exception)
-#     3. App/hse_test/hse_test.c                  (board-diagnostic, not in flight build)
+#   main.h outside the two approved exceptions:
+#     1. App/port/board_casper2/board_casper2.{c,h}  (the board layer — HAL owner)
+#     2. App/radio/sx1276.c                          (Casper-2 radio, replaced by EEbyte on C3)
 #
 # USAGE (from Software/):
 #   bash test/guard_no_hal.sh
@@ -33,17 +32,15 @@ VIOLATIONS=$(grep -rn \
     | grep -v 'App/port/board_casper2/board_casper2\.c' \
     | grep -v 'App/port/board_casper2/board_casper2\.h' \
     | grep -v 'App/radio/sx1276\.c' \
-    | grep -v 'App/hse_test/hse_test\.c' \
     || true)
 
 if [ -n "$VIOLATIONS" ]; then
     echo "guard_no_hal: FAIL — forbidden HAL/main.h includes found in App/:"
     echo "$VIOLATIONS"
     echo ""
-    echo "Only these three files may include stm32h7xx_hal.h or main.h:"
-    echo "  App/port/board_casper2/board_casper2.c  (portability seam — HAL owner)"
-    echo "  App/radio/sx1276.c                       (Casper-2 radio exception)"
-    echo "  App/hse_test/hse_test.c                  (board-diagnostic, not flight build)"
+    echo "Only the board layer may include stm32h7xx_hal.h or main.h:"
+    echo "  App/port/board_casper2/board_casper2.{c,h}  (portability seam — HAL owner)"
+    echo "  App/radio/sx1276.c                          (Casper-2 radio exception)"
     echo ""
     echo "Route all HAL access through casper_port.h / board_casper2.h instead."
     exit 1
