@@ -7,7 +7,6 @@
 #ifndef APP_GROUND_GROUND_RADIO_H
 #define APP_GROUND_GROUND_RADIO_H
 
-#include "stm32h7xx_hal.h"
 #include <stdint.h>
 
 /* Profile switch FSM states */
@@ -29,10 +28,11 @@ typedef struct {
 /**
  * Initialize ground station radio: SX1276 in RX-continuous mode,
  * Profile A (SF7, BW250, CR4/5).
- * @param hspi  SPI1 handle
+ * @param hspi_opaque  SPI1 handle as void* (SPI_HandleTypeDef* cast to void*).
+ *                     Keeps HAL types out of this header.
  * @return 0 on success, -1 on SX1276 init failure
  */
-int ground_radio_init(SPI_HandleTypeDef *hspi);
+int ground_radio_init(void *hspi_opaque);
 
 /**
  * Handle a received packet from the SX1276 FIFO.

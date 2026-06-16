@@ -9,7 +9,8 @@
  */
 
 #include "radio_manager.h"
-#include "main.h"
+#include "casper_port.h"
+#include "board_casper2.h"
 #include "sx1276.h"
 #include "radio_config.h"
 #include "radio_irq.h"
@@ -199,7 +200,7 @@ static int build_event_packet(uint8_t *buf, uint8_t type, uint16_t data)
 
 static void start_tx(const uint8_t *pkt, uint8_t len)
 {
-    HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);  /* TX activity LED */
+    casper_gpio_toggle(BSP_PIN_CONT_LED[0]);  /* TX activity LED */
     sx1276_set_mode(SX1276_MODE_STDBY);
     sx1276_write_reg(SX1276_REG_FIFO_ADDR_PTR, SX1276_FIFO_TX_BASE);
     sx1276_write_fifo(pkt, len);
@@ -207,7 +208,7 @@ static void start_tx(const uint8_t *pkt, uint8_t len)
     sx1276_set_mode(SX1276_MODE_TX);
 
     s_radio_state = RADIO_STATE_TX;
-    s_tx_start_ms = HAL_GetTick();
+    s_tx_start_ms = casper_millis();
     s_total_tx_count++;
 }
 
@@ -233,7 +234,7 @@ static void open_rx_window(void)
     sx1276_set_mode(SX1276_MODE_RXSINGLE);
 
     s_radio_state = RADIO_STATE_RX;
-    s_rx_start_ms = HAL_GetTick();
+    s_rx_start_ms = casper_millis();
 }
 
 /* ── RX: validate and dispatch received packet ─────────────────────── */
@@ -392,7 +393,7 @@ static void radio_reinit(void)
 
 /* ── Public API ────────────────────────────────────────────────────── */
 
-int radio_manager_init(SPI_HandleTypeDef *hspi)
+int radio_manager_init(void *hspi_opaque)
 {
     /* Reset module state */
     s_seq = 0;
@@ -407,8 +408,10 @@ int radio_manager_init(SPI_HandleTypeDef *hspi)
     s_evt_tail = 0;
     s_evt_count = 0;
 
-    /* Init SX1276 low-level driver */
-    if (sx1276_init(hspi) != 0) {
+    /* Init SX1276 low-level driver.
+     * hspi_opaque is an SPI_HandleTypeDef* passed as void* to keep HAL out
+     * of this header; sx1276.c (the approved HAL exception) casts it back. */
+    if (sx1276_init(hspi_opaque) != 0) {
         s_radio_state = RADIO_STATE_DISABLED;
         return -1;
     }
@@ -446,12 +449,12 @@ void radio_manager_tick(const casper_ekf_t *ekf,
     if (s_radio_state == RADIO_STATE_DISABLED) return;
 
     /* Poll DIO0/DIO1 GPIOs (EXTI disabled — using polling instead) */
-    if (HAL_GPIO_ReadPin(SPI1_INT_GPIO_Port, SPI1_INT_Pin))
+    if (casper_gpio_read(BSP_PIN_RADIO_DIO0) == CASPER_PIN_HIGH)
         g_radio_dio0_flag = 1;
-    if (HAL_GPIO_ReadPin(RADIO_DIO1_GPIO_Port, RADIO_DIO1_Pin))
+    if (casper_gpio_read(BSP_PIN_RADIO_DIO1) == CASPER_PIN_HIGH)
         g_radio_dio1_flag = 1;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     switch (s_radio_state) {
 

@@ -7,7 +7,8 @@
 #include "ground_main.h"
 #include "ground_radio.h"
 #include "radio_irq.h"
-#include "main.h"
+#include "casper_port.h"
+#include "board_casper2.h"
 #include "usbd_cdc_if.h"
 #include "ms5611.h"
 #include "max_m10m.h"
@@ -34,7 +35,7 @@ static char s_status_buf[200];
 
 /* ── Init ─────────────────────────────────────────────────────────── */
 
-void ground_main_init(SPI_HandleTypeDef *hspi1, ms5611_t *baro, max_m10m_t *gps)
+void ground_main_init(void *hspi1_opaque, ms5611_t *baro, max_m10m_t *gps)
 {
     s_baro = baro;
     s_gps  = gps;
@@ -42,13 +43,13 @@ void ground_main_init(SPI_HandleTypeDef *hspi1, ms5611_t *baro, max_m10m_t *gps)
     s_ground_lat_deg     = 0.0f;
     s_ground_lon_deg     = 0.0f;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
     s_last_baro_ms   = now;
     s_last_gps_ms    = now;
     s_last_status_ms = now;
 
     /* Init radio in RX-continuous mode */
-    int rc = ground_radio_init(hspi1);
+    int rc = ground_radio_init(hspi1_opaque);
 
     /* Report init result over CDC */
     int len = snprintf(s_status_buf, sizeof(s_status_buf),
@@ -63,12 +64,12 @@ void ground_main_init(SPI_HandleTypeDef *hspi1, ms5611_t *baro, max_m10m_t *gps)
 
 void ground_main_tick(void)
 {
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     /* ── 0. Poll DIO0/DIO1 GPIOs (EXTI disabled — polling mode) ── */
-    if (HAL_GPIO_ReadPin(SPI1_INT_GPIO_Port, SPI1_INT_Pin))
+    if (casper_gpio_read(BSP_PIN_RADIO_DIO0) == CASPER_PIN_HIGH)
         g_radio_dio0_flag = 1;
-    if (HAL_GPIO_ReadPin(RADIO_DIO1_GPIO_Port, RADIO_DIO1_Pin))
+    if (casper_gpio_read(BSP_PIN_RADIO_DIO1) == CASPER_PIN_HIGH)
         g_radio_dio1_flag = 1;
 
     /* ── 1. Radio RX: check for received packets ──────────────── */

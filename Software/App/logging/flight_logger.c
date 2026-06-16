@@ -3,7 +3,7 @@
 #include "quat_pack.h"
 #include "crc32_hw.h"
 #include "tlm_types.h"
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include <string.h>
 #include <math.h>
 
@@ -149,7 +149,7 @@ void flight_logger_launch(flight_logger_t *log)
     log->qspi_state    = QSPI_IDLE;
     log->active_stream = NULL;
 
-    log_index_start_flight(&log->index, HAL_GetTick());
+    log_index_start_flight(&log->index, casper_millis());
 
     /* Pre-erase summary sector if this flight starts a new 4 KB sector.
      * Each flight uses 2 pages (512B), so 8 flights per sector.
@@ -161,7 +161,7 @@ void flight_logger_launch(flight_logger_t *log)
             w25q512jv_erase_sector(log->index.flash, summary_addr);
     }
 
-    log->summary.launch_tick = HAL_GetTick();
+    log->summary.launch_tick = casper_millis();
     log->launched = true;
 }
 
@@ -311,7 +311,7 @@ void flight_logger_push_hr(flight_logger_t *log,
     hr_record_t rec;
     memset(&rec, 0, sizeof(rec));
 
-    rec.timestamp_ms = HAL_GetTick();
+    rec.timestamp_ms = casper_millis();
 
     /* Baro: pressure in Pa, encode as 2 Pa/LSB */
     rec.baro_pressure = (uint16_t)(baro->pressure / 2);
@@ -388,7 +388,7 @@ void flight_logger_push_lr(flight_logger_t *log,
     lr_record_t rec;
     memset(&rec, 0, sizeof(rec));
 
-    rec.timestamp_ms     = HAL_GetTick();
+    rec.timestamp_ms     = casper_millis();
     rec.pyro_state       = pyro_state;
     rec.pyro_cont_adc[0] = pyro_cont[0];
     rec.pyro_cont_adc[1] = pyro_cont[1];
@@ -418,7 +418,7 @@ void flight_logger_push_lr(flight_logger_t *log,
 void flight_logger_push_adxl(flight_logger_t *log, const int16_t samples[][3],
                              uint16_t count)
 {
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     for (uint16_t i = 0; i < count; i++) {
         adxl_record_t rec;
@@ -455,7 +455,7 @@ void flight_logger_summary_imu(flight_logger_t *log, float accel_mag_g,
 void flight_logger_summary_ekf(flight_logger_t *log, float vel_mps,
                                float alt_m, float baro_pa, float temp_k)
 {
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     /* Peak velocity */
     if (vel_mps > log->summary.peak_velocity_mps) {
@@ -498,7 +498,7 @@ void flight_logger_summary_ekf(flight_logger_t *log, float vel_mps,
 void flight_logger_summary_event(flight_logger_t *log, uint8_t fsm_state,
                                  uint8_t prev_state)
 {
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     log->summary.num_fsm_transitions++;
 
@@ -616,7 +616,7 @@ void flight_logger_finalize(flight_logger_t *log)
     flight_logger_write_final_summary(log);
 
     /* Close flight index entry */
-    log_index_end_flight(&log->index, HAL_GetTick(),
+    log_index_end_flight(&log->index, casper_millis(),
                          log->hr.flash_addr,
                          log->lr.flash_addr,
                          log->adxl.flash_addr);

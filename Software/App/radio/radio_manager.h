@@ -10,14 +10,15 @@
 #ifndef APP_RADIO_RADIO_MANAGER_H
 #define APP_RADIO_RADIO_MANAGER_H
 
-#include "stm32h7xx_hal.h"
 #include "tlm_types.h"
 #include "casper_ekf.h"
 #include "radio_config.h"
 #include <stdint.h>
 
-/* Initialize radio: reset SX1276, configure LoRa, apply Profile A */
-int radio_manager_init(SPI_HandleTypeDef *hspi);
+/* Initialize radio: reset SX1276, configure LoRa, apply Profile A.
+ * hspi_opaque must be an SPI_HandleTypeDef* cast to void* (resolved in
+ * radio_manager.c which includes the HAL via sx1276.h). */
+int radio_manager_init(void *hspi_opaque);
 
 /* Non-blocking tick — call every superloop iteration (~833 Hz).
  * Manages TX scheduling, RX windows, IRQ processing, profile switching. */

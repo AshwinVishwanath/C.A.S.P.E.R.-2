@@ -9,7 +9,7 @@
 #ifndef MAG_VAL_H
 #define MAG_VAL_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include "mmc5983ma.h"
 #include "mag_cal.h"
 #include "ff.h"

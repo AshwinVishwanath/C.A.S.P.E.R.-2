@@ -2,8 +2,7 @@
 #include "app_globals.h"
 
 #include "casper_port.h"
-#include "stm32h7xx_hal.h"
-#include "main.h"
+#include "board_casper2.h"
 #include "casper_quat.h"
 #include "mag_cal.h"
 #include "pyro_manager.h"
@@ -468,20 +467,20 @@ void flight_loop_tick(void)
         if (!init_done) {
           if (casper_att_static_init(&att, accel_ms2, mag_ptr)) {
             init_done = true;
-            HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+            casper_gpio_write(BSP_PIN_CONT_LED[0], CASPER_PIN_LOW);
+            casper_gpio_write(BSP_PIN_CONT_LED[1], CASPER_PIN_LOW);
+            casper_gpio_write(BSP_PIN_CONT_LED[2], CASPER_PIN_LOW);
+            casper_gpio_write(BSP_PIN_CONT_LED[3], CASPER_PIN_LOW);
           } else {
             uint32_t mc = att.mag_count;
             if (mc >= 125)
-              HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+              casper_gpio_write(BSP_PIN_CONT_LED[3], CASPER_PIN_HIGH);
             if (mc >= 250)
-              HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_SET);
+              casper_gpio_write(BSP_PIN_CONT_LED[2], CASPER_PIN_HIGH);
             if (mc >= 375)
-              HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+              casper_gpio_write(BSP_PIN_CONT_LED[1], CASPER_PIN_HIGH);
             if (mc >= 500)
-              HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_SET);
+              casper_gpio_write(BSP_PIN_CONT_LED[0], CASPER_PIN_HIGH);
           }
         } else {
           casper_att_update(&att, gyro_rads, accel_ms2, mag_ptr, dt_actual);
@@ -501,10 +500,10 @@ void flight_loop_tick(void)
             baro_ref = (float)(baro_cal_sum / (double)baro_cal_count);
           else
             baro_ref = ms5611_get_altitude(&baro, 1013.25f);
-          HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_RESET);
+          casper_gpio_write(BSP_PIN_CONT_LED[0], CASPER_PIN_LOW);
+          casper_gpio_write(BSP_PIN_CONT_LED[1], CASPER_PIN_LOW);
+          casper_gpio_write(BSP_PIN_CONT_LED[2], CASPER_PIN_LOW);
+          casper_gpio_write(BSP_PIN_CONT_LED[3], CASPER_PIN_LOW);
         }
       } else {
         /* Attitude update at actual sample rate (see adaptive-dt block above) */
@@ -643,11 +642,11 @@ void flight_loop_tick(void)
     if (cal_done) {
       static uint32_t ekf_led_tick = 0;
       if (now - ekf_led_tick >= 500) {
-        HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+        casper_gpio_toggle(BSP_PIN_CONT_LED[0]);
         ekf_led_tick = now;
       }
       if (s_baro_fed_ekf) {
-        HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, GPIO_PIN_SET);
+        casper_gpio_write(BSP_PIN_CONT_LED[3], CASPER_PIN_HIGH);
       }
     }
 #endif
@@ -912,17 +911,17 @@ void flight_loop_tick(void)
     {
       /* LED2 (PB14): SOLID = launched (DRAIN), FAST BLINK = finalized */
       if (logger.launched && !logger.finalized) {
-        HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, GPIO_PIN_SET);
+        casper_gpio_write(BSP_PIN_CONT_LED[1], CASPER_PIN_HIGH);
       } else if (logger.finalized) {
         static uint32_t fin_blink = 0;
         if (now - fin_blink >= 200) {
-          HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
+          casper_gpio_toggle(BSP_PIN_CONT_LED[1]);
           fin_blink = now;
         }
       }
       /* LED3 (PE8): ON when QSPI busy, OFF when idle */
-      HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin,
-          logger.qspi_state != QSPI_IDLE ? GPIO_PIN_SET : GPIO_PIN_RESET);
+      casper_gpio_write(BSP_PIN_CONT_LED[2],
+          logger.qspi_state != QSPI_IDLE ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
     }
 #endif
 #endif

@@ -9,8 +9,15 @@
  * PLL source or SYSCLK.
  */
 
+/*
+ * hse_test.c — board-diagnostic tool (not compiled in flight builds).
+ * This file is an approved exception to the no-HAL-in-App rule because
+ * it is a pure board-bring-up utility, never linked into the flight image,
+ * and exercises HAL/RCC APIs that have no portable equivalent.
+ */
 #include "hse_test.h"
-#include "main.h"
+#include "stm32h7xx_hal.h"   /* Approved exception: board-diagnostic only */
+#include "main.h"             /* Approved exception: GPIO port/pin defines  */
 #include "usbd_cdc_if.h"
 #include "buzzer.h"
 #include <stdio.h>

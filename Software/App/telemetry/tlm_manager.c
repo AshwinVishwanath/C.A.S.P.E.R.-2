@@ -4,7 +4,7 @@
 #include "quat_pack.h"
 #include "status_pack.h"
 #include "endian.h"
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include "usbd_cdc_if.h"
 #include <string.h>
 #include <math.h>
@@ -46,7 +46,7 @@ void tlm_init(void)
 int tlm_tick(const fc_telem_state_t *state, const pyro_state_t *pyro,
              fsm_state_t fsm)
 {
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
     if (now - s_last_fast_ms < TLM_FAST_PERIOD_MS) {
         return 0;
     }

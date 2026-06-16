@@ -10,6 +10,7 @@
 #include "radio_irq.h"
 #include "crc32_hw.h"
 #include "tlm_types.h"
+#include "casper_port.h"
 #include "usbd_cdc_if.h"
 #include <string.h>
 #include <stdio.h>
@@ -93,14 +94,14 @@ static void gs_cdc_print(const char *str, int len)
 /*  Init                                                               */
 /* ------------------------------------------------------------------ */
 
-int ground_radio_init(SPI_HandleTypeDef *hspi)
+int ground_radio_init(void *hspi_opaque)
 {
     memset(&s_stats, 0, sizeof(s_stats));
     s_profile_state   = GS_PROFILE_AWAITING_FIRST;
     s_last_valid_rx_ms = 0;
     s_tx_pending       = 0;
 
-    if (sx1276_init(hspi) != 0) return -1;
+    if (sx1276_init(hspi_opaque) != 0) return -1;
 
     sx1276_set_lora_mode();
 
@@ -179,7 +180,7 @@ void ground_radio_on_rx(void)
 
     /* Valid packet — update stats and profile timer */
     s_stats.rx_pkt_count++;
-    s_last_valid_rx_ms = HAL_GetTick();
+    s_last_valid_rx_ms = casper_millis();
 
     if (s_profile_state == GS_PROFILE_AWAITING_FIRST) {
         s_profile_state = GS_PROFILE_A_ACTIVE;
@@ -272,7 +273,7 @@ void ground_radio_profile_tick(void)
 {
     if (s_profile_state != GS_PROFILE_A_ACTIVE) return;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
     if (now - s_last_valid_rx_ms >= GS_PROFILE_LOSS_TIMEOUT_MS) {
         /* Switch to Profile B (SF8) — one-way, never switch back */
         sx1276_set_mode(SX1276_MODE_STDBY);

@@ -155,9 +155,13 @@ static void sx1276_dbg(const char *msg)
     HAL_Delay(20);
 }
 
-int sx1276_init(SPI_HandleTypeDef *hspi)
+int sx1276_init(void *hspi_opaque)
 {
     char dbg[80];
+    /* Accept void* from radio_manager (which keeps HAL out of its header);
+     * cast back to SPI_HandleTypeDef* here — this translation unit is the
+     * approved HAL exception (App/radio/sx1276.c). */
+    SPI_HandleTypeDef *hspi = (SPI_HandleTypeDef *)hspi_opaque;
     s_spi = hspi->Instance;
 
     cs_deselect();
