@@ -610,3 +610,143 @@ void casper_pwm_tone_off(casper_pwm_t *pwm)
 {
     HAL_TIM_PWM_Stop(pwm->h, pwm->chan);
 }
+
+/* =========================================================================
+ *  Early board bring-up
+ *
+ *  casper_board_early_init() consolidates the two USER CODE regions in
+ *  main() that run before any MX_*_Init() peripheral setup:
+ *
+ *    USER CODE BEGIN Init:
+ *      - Enable GPIO clocks for LED ports via raw RCC register write
+ *        (before HAL GPIO clock functions are available)
+ *      - Configure all 4 LED pins as GP output (MODER = 01)
+ *      - Milestone 1: light LED1 briefly to show HAL_Init passed
+ *
+ *    USER CODE BEGIN SysInit:
+ *      - Enable CoreDebug TRCENA (required before DWT can be written)
+ *      - Unlock DWT lock register (STM32H7 security feature)
+ *      - Reset and enable DWT->CYCCNT free-running cycle counter
+ *
+ *  These are raw-register operations that cannot go through casper_port.h
+ *  (no abstraction covers DWT or pre-clock raw MODER writes).  They
+ *  legitimately belong in the board layer.
+ * ======================================================================= */
+
+void casper_board_early_init(void)
+{
+    /* ── USER CODE BEGIN Init content ── */
+
+    /* Enable GPIO clocks for all 4 LED ports.
+     * Written directly to RCC AHB4ENR because this runs before
+     * MX_GPIO_Init() and __HAL_RCC_GPIO*_CLK_ENABLE() do the same thing. */
+    RCC->AHB4ENR |= RCC_AHB4ENR_GPIOAEN | RCC_AHB4ENR_GPIOBEN | RCC_AHB4ENR_GPIOEEN;
+    (void)RCC->AHB4ENR;   /* read-back to flush the write */
+
+    /* Configure all 4 LED pins as GP output (MODER = 01) */
+    GPIOA->MODER = (GPIOA->MODER & ~(3UL << (10*2))) | (1UL << (10*2)); /* PA10 */
+    GPIOB->MODER = (GPIOB->MODER & ~(3UL << (14*2))) | (1UL << (14*2)); /* PB14 */
+    GPIOE->MODER = (GPIOE->MODER & ~(3UL << (8*2)))  | (1UL << (8*2));  /* PE8  */
+    GPIOE->MODER = (GPIOE->MODER & ~(3UL << (7*2)))  | (1UL << (7*2));  /* PE7  */
+
+    /* Milestone 1: HAL_Init passed — light LED1 briefly */
+    GPIOA->BSRR = (1UL << 10);   /* LED1 ON  */
+    HAL_Delay(500);
+
+    /* ── USER CODE BEGIN SysInit content ── */
+
+    /* Enable the Cortex-M7 DWT free-running cycle counter (DWT->CYCCNT).
+     * Used by:
+     *   - flight_loop.c adaptive-dt: actual elapsed time per IMU sample,
+     *     fed to attitude estimator and EKF predict instead of a fixed
+     *     EKF_DT constant. Critical for estimator correctness.
+     *   - LOGGER_SANITY cycle probes (when enabled) — performance
+     *     measurement of the hot paths.
+     * Cost: zero — DWT runs from SYSCLK with no software intervention. */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->LAR    = 0xC5ACCE55u;            /* H7 lock register magic */
+    DWT->CYCCNT = 0;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+/* =========================================================================
+ *  Board helpers called from app_main.c during app_init()
+ * ======================================================================= */
+
+void *casper_board_spi1_handle(void)
+{
+    /* Return &hspi1 as void* so app_main.c can pass it to
+     * radio_manager_init() and ground_main_init() without including main.h. */
+    return (void *)&hspi1;
+}
+
+void casper_board_fix_pc2_miso(void)
+{
+    /* Explicitly close PC2 analog switch for SPI2 MISO (PC2_C). */
+    HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE);
+
+    /* Fix PC2 MODER: something during init sets PC2 to analog mode instead of AF.
+     * Force it back to AF5 (SPI2 MISO). */
+    GPIO_InitTypeDef gpio_fix = {0};
+    gpio_fix.Pin       = GPIO_PIN_2;
+    gpio_fix.Mode      = GPIO_MODE_AF_PP;
+    gpio_fix.Pull      = GPIO_NOPULL;
+    gpio_fix.Speed     = GPIO_SPEED_FREQ_LOW;
+    gpio_fix.Alternate = GPIO_AF5_SPI2;
+    HAL_GPIO_Init(GPIOC, &gpio_fix);
+}
+
+void casper_board_fix_i2c3_int(void)
+{
+    /* Reconfigure I2C_3_INT (PC8) from push-pull output to EXTI rising edge
+     * so the MMC5983MA DRDY interrupt fires correctly. */
+    GPIO_InitTypeDef gpio_fix = {0};
+    gpio_fix.Pin  = I2C_3_INT_Pin;
+    gpio_fix.Mode = GPIO_MODE_IT_RISING;
+    gpio_fix.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(I2C_3_INT_GPIO_Port, &gpio_fix);
+}
+
+void casper_board_exti_enable_imu_int2(void)
+{
+    /* Enable EXTI15_10 (PC15 = LSM6DSO32 INT2) after all sensor init.
+     * Clear any pending bit first to avoid an immediate spurious ISR. */
+    __HAL_GPIO_EXTI_CLEAR_IT(SPI2_INT_Pin);
+    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 2);
+    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+void casper_board_exti_enable_dio0(void)
+{
+    /* Enable EXTI1 for SX1276 DIO0 (PB1 = SPI1_INT).
+     * Ground-station build only. */
+    __HAL_GPIO_EXTI_CLEAR_IT(SPI1_INT_Pin);
+    HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+}
+
+void casper_board_exti_enable_dio1(void)
+{
+    /* Enable EXTI9_5 for SX1276 DIO1 (PD7 = RADIO_DIO1).
+     * Ground-station build only. */
+    __HAL_GPIO_EXTI_CLEAR_IT(RADIO_DIO1_Pin);
+    HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 1);
+    HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+}
+
+void casper_board_pyro_safe_mode(void)
+{
+    /* Reconfigure all pyro fire-output pins as floating inputs with pull-down.
+     * Ground-station safety: the GS board has no pyros; keeping the MOSFET
+     * gates as floating outputs risks an accidental assertion if anything
+     * drives them HIGH.  INPUT/PULLDOWN is safe regardless of the downstream
+     * MOSFET state. */
+    GPIO_InitTypeDef pyro_safe = {0};
+    pyro_safe.Pin  = PY1_Pin | PY2_Pin | PY3_Pin;
+    pyro_safe.Mode = GPIO_MODE_INPUT;
+    pyro_safe.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(GPIOD, &pyro_safe);
+
+    pyro_safe.Pin = PY4_Pin;
+    HAL_GPIO_Init(GPIOB, &pyro_safe);
+}

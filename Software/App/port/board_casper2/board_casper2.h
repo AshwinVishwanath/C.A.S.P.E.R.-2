@@ -138,4 +138,91 @@ extern casper_pin_t BSP_PIN_CONT_YN_4;  /**< PE7.  */
  */
 extern casper_pin_t BSP_PIN_CONT_LED[4];
 
+/* =========================================================================
+ *  Early board bring-up — moved from main.c USER CODE BEGIN Init / SysInit
+ * ======================================================================= */
+
+/**
+ * @brief Early board bring-up: raw-register LED GPIO setup + DWT counter.
+ *
+ * Called from main() immediately after HAL_Init() (before SystemClock_Config)
+ * for the LED GPIO raw-register setup, and again (conceptually — actually
+ * inlined in main USER CODE SysInit) for DWT.  In the refactored flow main()
+ * calls this once after HAL_Init() to cover both the GPIO milestone setup and
+ * the DWT cycle-counter enable.
+ *
+ * Contains only register/direct-hardware operations that must happen before
+ * MX_*_Init() runs.  No sensor or app logic here.
+ */
+void casper_board_early_init(void);
+
+/* =========================================================================
+ *  Board helpers called from app_main.c during app_init()
+ *
+ *  These wrap HAL or pin-level operations that app_main.c cannot do itself
+ *  (it must not include main.h or stm32h7xx_hal.h).  Each helper is a thin
+ *  wrapper around the exact HAL calls that existed in main.c USER CODE.
+ * ======================================================================= */
+
+/**
+ * @brief Return a void* to hspi1 (SPI_HandleTypeDef*).
+ *
+ * Used by app_init() to pass to radio_manager_init() and ground_main_init(),
+ * both of which accept the handle as void* to keep HAL types out of their
+ * headers.  app_main.c calls this instead of referencing &hspi1 directly.
+ */
+void *casper_board_spi1_handle(void);
+
+/**
+ * @brief Close PC2 analog switch + reconfigure PC2 as AF5 (SPI2 MISO).
+ *
+ * HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE)
+ * followed by HAL_GPIO_Init to AF5.  Must run after MS5611 init, before
+ * LSM6DSO32 init.  Originally in main.c USER CODE BEGIN 2.
+ */
+void casper_board_fix_pc2_miso(void);
+
+/**
+ * @brief Reconfigure I2C_3_INT (PC8) from push-pull output to EXTI rising.
+ *
+ * CubeMX sets PC8 as an output; it must be an EXTI rising-edge input for the
+ * MMC5983MA data-ready interrupt.  Originally in main.c USER CODE BEGIN 2
+ * just before mmc5983ma_init().
+ */
+void casper_board_fix_i2c3_int(void);
+
+/**
+ * @brief Enable NVIC for EXTI15_10 (PC15 = LSM6DSO32 INT2), clear pending.
+ *
+ * Must be called after all sensor init completes to avoid an ISR flood from
+ * INT2 already being asserted.  Originally in main.c USER CODE BEGIN 2 at
+ * the end of the flight init block.
+ */
+void casper_board_exti_enable_imu_int2(void);
+
+/**
+ * @brief Enable EXTI1 NVIC line for SX1276 DIO0 (PB1).
+ *
+ * Ground-station build only: enables the interrupt line for radio DIO0.
+ * Originally in main.c USER CODE BEGIN 2 (ground branch).
+ */
+void casper_board_exti_enable_dio0(void);
+
+/**
+ * @brief Enable EXTI9_5 NVIC line for SX1276 DIO1 (PD7).
+ *
+ * Ground-station build only: enables the interrupt line for radio DIO1.
+ * Originally in main.c USER CODE BEGIN 2 (ground branch).
+ */
+void casper_board_exti_enable_dio1(void);
+
+/**
+ * @brief Reconfigure all four pyro output pins as floating inputs.
+ *
+ * Ground-station build safety measure: the GS has no pyros so the fire-output
+ * MOSFET gates are put into high-Z INPUT/PULLDOWN to prevent any accidental
+ * assertion.  Originally in main.c USER CODE BEGIN 2 (ground branch).
+ */
+void casper_board_pyro_safe_mode(void);
+
 #endif /* BOARD_CASPER2_H */

@@ -160,6 +160,7 @@ App/command/cfg_manager.c \
 App/diag/self_test.c \
 App/diag/logger_sanity.c \
 App/diag/cycle_probe.c \
+App/flight/app_main.c \
 App/flight/flight_loop.c \
 App/radio/radio_manager.c \
 App/logging/flight_logger.c \
