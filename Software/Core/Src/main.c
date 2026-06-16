@@ -464,9 +464,9 @@ int main(void)
 
     DBG_PRINT("[INIT] MMC5983MA...\r\n");
 #ifdef GYRO_TEMP_CAL
-  mmc5983ma_init_oneshot(&mag, &hi2c3);
+  mmc5983ma_init_oneshot(&mag, &BSP_I2C_MAG);
 #else
-  mmc5983ma_init(&mag, &hi2c3);
+  mmc5983ma_init(&mag, &BSP_I2C_MAG);
 #endif
   if (mag.product_id != MMC5983MA_PROD_ID_VAL) {
     for (int i = 0; i < 6; i++) {

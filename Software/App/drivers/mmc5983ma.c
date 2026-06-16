@@ -1,6 +1,12 @@
 /**
  * @file    mmc5983ma.c
  * @brief   MMC5983MA 3-axis magnetometer driver (I2C) for C.A.S.P.E.R.-2
+ *
+ * Board dependencies accessed exclusively through the casper_port seam:
+ *   casper_i2c_*       for bus I/O
+ *   casper_millis      for poll-timeout in trigger_oneshot
+ *   casper_delay_ms    for post-reset delay
+ * No HAL types appear here.
  */
 #include "mmc5983ma.h"
 #ifdef HIL_MODE
@@ -11,29 +17,27 @@
 
 /* ── I2C helpers ─────────────────────────────────────────────────────────── */
 
-static HAL_StatusTypeDef mmc5983ma_write_reg(mmc5983ma_t *dev,
-                                              uint8_t reg, uint8_t val)
+static casper_status_t mmc5983ma_write_reg(mmc5983ma_t *dev,
+                                            uint8_t reg, uint8_t val)
 {
-    return HAL_I2C_Mem_Write(dev->hi2c, dev->addr, reg,
-                             I2C_MEMADD_SIZE_8BIT, &val, 1, I2C_TIMEOUT);
+    return casper_i2c_mem_write(dev->bus, dev->addr, reg,
+                                1, &val, 1, I2C_TIMEOUT);
 }
 
-static HAL_StatusTypeDef mmc5983ma_read_reg(mmc5983ma_t *dev,
-                                             uint8_t reg, uint8_t *val)
+static casper_status_t mmc5983ma_read_reg(mmc5983ma_t *dev,
+                                           uint8_t reg, uint8_t *val)
 {
-    return HAL_I2C_Mem_Read(dev->hi2c, dev->addr, reg,
-                            I2C_MEMADD_SIZE_8BIT, val, 1, I2C_TIMEOUT);
+    return casper_i2c_mem_read(dev->bus, dev->addr, reg,
+                               1, val, 1, I2C_TIMEOUT);
 }
 
-#ifndef HIL_MODE
-static HAL_StatusTypeDef mmc5983ma_read_burst(mmc5983ma_t *dev,
-                                               uint8_t reg,
-                                               uint8_t *buf, uint16_t len)
+static casper_status_t mmc5983ma_read_burst(mmc5983ma_t *dev,
+                                             uint8_t reg,
+                                             uint8_t *buf, uint16_t len)
 {
-    return HAL_I2C_Mem_Read(dev->hi2c, dev->addr, reg,
-                            I2C_MEMADD_SIZE_8BIT, buf, len, I2C_TIMEOUT);
+    return casper_i2c_mem_read(dev->bus, dev->addr, reg,
+                               1, buf, len, I2C_TIMEOUT);
 }
-#endif
 
 /* ── Shared hardware initialisation (internal helper) ───────────────────── */
 
@@ -44,10 +48,10 @@ static HAL_StatusTypeDef mmc5983ma_read_burst(mmc5983ma_t *dev,
  *
  * @return true if the product ID matches MMC5983MA_PROD_ID_VAL, false otherwise.
  */
-static bool mmc5983ma_hw_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
+static bool mmc5983ma_hw_init(mmc5983ma_t *dev, casper_i2c_t *bus)
 {
-    dev->hi2c = hi2c;
-    dev->addr = MMC5983MA_I2C_ADDR_WRITE;  /* HAL expects left-shifted addr */
+    dev->bus  = bus;
+    dev->addr = MMC5983MA_I2C_ADDR_WRITE;  /* left-shifted 8-bit addr: 0x60 */
     dev->data_ready = false;
     dev->product_id = 0x00;
 
@@ -60,11 +64,11 @@ static bool mmc5983ma_hw_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
 
     /* Software reset */
     mmc5983ma_write_reg(dev, MMC5983MA_REG_CTRL1, MMC5983MA_CTRL1_SW_RST);
-    HAL_Delay(15);  /* datasheet: 10ms typical after SW_RST */
+    casper_delay_ms(15);  /* datasheet: 10ms typical after SW_RST */
 
     /* Read and verify product ID */
     uint8_t id = 0;
-    if (mmc5983ma_read_reg(dev, MMC5983MA_REG_PROD_ID, &id) != HAL_OK)
+    if (mmc5983ma_read_reg(dev, MMC5983MA_REG_PROD_ID, &id) != CASPER_OK)
         return false;
     dev->product_id = id;
 
@@ -83,9 +87,9 @@ static bool mmc5983ma_hw_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
 
 /* ── Initialisation ──────────────────────────────────────────────────────── */
 
-bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
+bool mmc5983ma_init(mmc5983ma_t *dev, casper_i2c_t *bus)
 {
-    if (!mmc5983ma_hw_init(dev, hi2c))
+    if (!mmc5983ma_hw_init(dev, bus))
         return false;
 
     /* Continuous mode at 100 Hz */
@@ -97,10 +101,10 @@ bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
 
 /* ── Single-shot initialisation (no continuous mode) ────────────────────── */
 
-bool mmc5983ma_init_oneshot(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c)
+bool mmc5983ma_init_oneshot(mmc5983ma_t *dev, casper_i2c_t *bus)
 {
     /* No CTRL2 write — continuous mode stays off */
-    return mmc5983ma_hw_init(dev, hi2c);
+    return mmc5983ma_hw_init(dev, bus);
 }
 
 /* ── Single-shot trigger + poll + read ──────────────────────────────────── */
@@ -113,9 +117,9 @@ int mmc5983ma_trigger_oneshot(mmc5983ma_t *dev)
 
     /* Poll for measurement complete (up to 5 ms at BW=800Hz) */
     uint8_t status = 0;
-    uint32_t start = HAL_GetTick();
+    uint32_t start = casper_millis();
     while (!(status & MMC5983MA_STATUS_MEAS_M_DONE)) {
-        if (HAL_GetTick() - start > 5)
+        if (casper_millis() - start > 5)
             return MMC5983MA_ERR_I2C;
         mmc5983ma_read_reg(dev, MMC5983MA_REG_STATUS, &status);
     }
@@ -147,7 +151,7 @@ int mmc5983ma_read(mmc5983ma_t *dev)
 #else
     uint8_t buf[7];
 
-    if (mmc5983ma_read_burst(dev, MMC5983MA_REG_X_OUT_0, buf, 7) != HAL_OK)
+    if (mmc5983ma_read_burst(dev, MMC5983MA_REG_X_OUT_0, buf, 7) != CASPER_OK)
         return MMC5983MA_ERR_I2C;
 
     /* Assemble 18-bit unsigned values from three registers per axis */
