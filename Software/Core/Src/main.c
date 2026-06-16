@@ -67,6 +67,7 @@
 #include "crc32_hw.h"
 #include "radio_irq.h"
 #include "buzzer.h"
+#include "board_casper2.h"   /* BSP_PWM_BUZZ — buzzer_init() call site */
 #ifdef BUILD_TARGET_GROUND
 #include "ground_main.h"
 #endif
@@ -281,7 +282,7 @@ int main(void)
 
     DBG_PRINT("[INIT] CRC + radio...\r\n");
     crc32_hw_init();
-    buzzer_init(&htim4);
+    buzzer_init(&BSP_PWM_BUZZ);
 
     DBG_PRINT("[INIT] ground_main_init...\r\n");
     ground_main_init(&hspi1, &baro, &gps);
@@ -484,7 +485,7 @@ int main(void)
   flight_fsm_init();
   pyro_mgr_init(&hadc1, &hadc2, &hadc3);
 #ifndef GPS_TEST
-  buzzer_init(&htim4);
+  buzzer_init(&BSP_PWM_BUZZ);
 #endif
 
     DBG_PRINT("[INIT] radio...\r\n");

@@ -99,7 +99,9 @@ if ($Only -ne "") {
 $fail = 0
 foreach ($s in $suites) {
   $exe = "test/bin_$($s.name).exe"
-  $extra = if ($s.ContainsKey("xtra")) { $s.xtra } else { @() }
+  # Force array context: a single-element xtra collapses to a scalar string,
+  # and splatting a string iterates it char-by-char (mangling -IApp/buzzer).
+  $extra = @(if ($s.ContainsKey("xtra")) { $s.xtra } else { @() })
   & $CC @CFLAGS @extra @($s.src) -lm -o $exe
   if ($LASTEXITCODE -ne 0) { Write-Output "BUILD FAIL: $($s.name)"; $fail = 1; continue }
   Write-Output "==== suite: $($s.name) ===="
