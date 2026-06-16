@@ -1,7 +1,7 @@
 #ifndef LSM6DSO32_H
 #define LSM6DSO32_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -26,9 +26,8 @@
 #define LSM6DSO32_OUTX_L_A      0x28
 
 typedef struct {
-    SPI_HandleTypeDef *hspi;
-    GPIO_TypeDef      *cs_port;
-    uint16_t           cs_pin;
+    casper_spi_t      *bus;           /* SPI bus handle (opaque, board-owned) */
+    casper_pin_t       cs;            /* Chip-select pin descriptor */
 
     float              accel_g[3];    /* Acceleration in g */
     float              gyro_dps[3];   /* Angular rate in degrees/sec */
@@ -42,8 +41,7 @@ typedef struct {
 
 /* Initialise: reset sensor, verify WHO_AM_I, configure accel/gyro/interrupt.
  * Returns true on success. */
-bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
-                     GPIO_TypeDef *cs_port, uint16_t cs_pin);
+bool lsm6dso32_init(lsm6dso32_t *dev, casper_spi_t *bus, casper_pin_t cs);
 
 /* Read accelerometer + gyroscope data. Returns LSM6DSO32_READ_OK on success. */
 int lsm6dso32_read(lsm6dso32_t *dev);

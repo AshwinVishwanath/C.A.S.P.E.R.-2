@@ -365,7 +365,7 @@ int main(void)
     DBG_PRINT("[INIT] LSM6DSO32...\r\n");
 
   // Init LSM6DSO32 IMU on SPI2
-  lsm6dso32_init(&imu, &hspi2, SPI2_CS_GPIO_Port, SPI2_CS_Pin);
+  lsm6dso32_init(&imu, &BSP_SPI_IMU, BSP_PIN_IMU_CS);
   if (imu.device_id != LSM6DSO32_WHO_AM_I_VAL) {
     // WHO_AM_I mismatch — blink LED3+LED4 as warning but continue
     for (int i = 0; i < 6; i++) {
