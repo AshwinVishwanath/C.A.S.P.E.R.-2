@@ -1,31 +1,25 @@
+/*
+ * crc32_hw.c — thin compatibility wrapper over the portable CRC-32 seam.
+ *
+ * The previous implementation called the STM32H7 HAL CRC peripheral directly.
+ * After the port-layer migration the real hardware logic lives in
+ * board_casper2.c (casper_crc32_init / casper_crc32_compute).  This file
+ * now delegates to those portable functions so that no App/ file outside the
+ * board layer needs to include stm32h7xx_hal.h.
+ *
+ * The public API (crc32_hw_init / crc32_hw_compute) is unchanged, so all
+ * callers (tlm_manager.c, cac_handler.c, etc.) rebuild without modification.
+ */
+
 #include "crc32_hw.h"
-#include "stm32h7xx_hal.h"
-
-static CRC_HandleTypeDef *s_hcrc;
-
-/* Reference to the global CRC handle declared in main.c */
-extern CRC_HandleTypeDef hcrc;
+#include "casper_port.h"   /* casper_crc32_init / casper_crc32_compute */
 
 void crc32_hw_init(void)
 {
-    s_hcrc = &hcrc;
-
-    /* Reconfigure for standard CRC-32 (reflected I/O) */
-    __HAL_RCC_CRC_CLK_ENABLE();
-
-    s_hcrc->Instance = CRC;
-    s_hcrc->Init.DefaultPolynomialUse    = DEFAULT_POLYNOMIAL_ENABLE;
-    s_hcrc->Init.DefaultInitValueUse     = DEFAULT_INIT_VALUE_ENABLE;
-    s_hcrc->Init.InputDataInversionMode  = CRC_INPUTDATA_INVERSION_BYTE;
-    s_hcrc->Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_ENABLE;
-    s_hcrc->InputDataFormat              = CRC_INPUTDATA_FORMAT_BYTES;
-
-    HAL_CRC_Init(s_hcrc);
+    casper_crc32_init();
 }
 
 uint32_t crc32_hw_compute(const uint8_t *data, uint32_t len)
 {
-    uint32_t raw = HAL_CRC_Calculate(s_hcrc, (uint32_t *)data, len);
-    /* Final XOR for standard CRC-32 */
-    return raw ^ 0xFFFFFFFFu;
+    return casper_crc32_compute(data, len);
 }
