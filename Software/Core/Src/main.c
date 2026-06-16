@@ -235,7 +235,7 @@ int main(void)
   MX_SPI3_Init();
 
   // Init flash BEFORE USB so MSC storage callbacks can respond during enumeration
-  w25q512jv_init(&flash, &hqspi);
+  w25q512jv_init(&flash, &BSP_QSPI_FLASH);
 #endif
 
   MX_USB_DEVICE_Init();

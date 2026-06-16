@@ -524,23 +524,13 @@ void casper_qspi_set_handler(casper_qspi_t *dev,
  *
  *  These three callbacks are the only HAL weak-symbol overrides in App/.
  *  They translate HAL events to casper_qspi_evt_t and dispatch to the
- *  handler registered via casper_qspi_set_handler().
+ *  handler registered via casper_qspi_set_handler() (currently w25q_it_handler
+ *  inside w25q512jv.c, registered during w25q512jv_init()).
  *
- *  NOTE: these live here, NOT in w25q512jv.c.  The driver's IT state
- *  machine will be ported to use casper_qspi_set_handler() in a later
- *  migration subsystem.  Until then w25q512jv.c still defines its own
- *  versions — so these definitions are intentionally NOT present yet to
- *  avoid duplicate symbol errors.  They are provided here as the target
- *  landing site and are guarded so they only compile once the driver has
- *  been migrated (CASPER_QSPI_CALLBACKS_IN_BOARD defined by the build).
- *
- *  IMPORTANT FOR THE INTEGRATOR:
- *    When w25q512jv.c's HAL_QSPI_*Callback definitions are removed as part
- *    of the QSPI migration subsystem, remove the #ifdef guard below so
- *    these definitions become active.
+ *  Only one QSPI bus exists on Casper 2 (BSP_QSPI_FLASH).  The hqspi
+ *  argument is ignored because there is nothing to disambiguate; if a
+ *  second QSPI bus were ever added the handler would need a lookup here.
  * ======================================================================= */
-
-#ifdef CASPER_QSPI_CALLBACKS_IN_BOARD
 
 void HAL_QSPI_TxCpltCallback(QSPI_HandleTypeDef *hqspi)
 {
@@ -565,8 +555,6 @@ void HAL_QSPI_ErrorCallback(QSPI_HandleTypeDef *hqspi)
         BSP_QSPI_FLASH.handler(BSP_QSPI_FLASH.handler_ctx,
                                CASPER_QSPI_EVT_ERROR);
 }
-
-#endif /* CASPER_QSPI_CALLBACKS_IN_BOARD */
 
 /* =========================================================================
  *  casper_crc.h implementation

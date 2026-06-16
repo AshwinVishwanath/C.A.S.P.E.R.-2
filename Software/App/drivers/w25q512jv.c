@@ -1,11 +1,12 @@
 /**
- * W25Q512JV QSPI NOR flash driver — bare-metal C for STM32 HAL.
+ * W25Q512JV QSPI NOR flash driver — board-agnostic (casper_port seam).
  * Reference: Winbond W25Q512JV datasheet Rev G
  *
  * Configured for: 64 MB, single-line SPI (no quad yet),
- * 4-byte address mode, polling (no DMA).
+ * 4-byte address mode.
  *
- * All operations use the STM32 HAL QSPI indirect mode.
+ * All operations use casper_qspi_* (no direct HAL calls).
+ * IT callbacks are dispatched by the board layer via casper_qspi_set_handler().
  */
 
 #include "w25q512jv.h"
@@ -15,20 +16,34 @@
 /*  Internal helpers                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Build a casper_qspi_cmd_t for an instruction-only frame (no address, no data). */
+static casper_qspi_cmd_t make_cmd_only(uint8_t opcode)
+{
+    casper_qspi_cmd_t c = {0};
+    c.instruction       = opcode;
+    c.instruction_lines = 1;
+    c.address_lines     = 0;
+    c.data_lines        = 0;
+    return c;
+}
+
+/* Build a casper_qspi_cmd_t for a status-register read (no address, 1 data byte). */
+static casper_qspi_cmd_t make_cmd_sr(uint8_t opcode)
+{
+    casper_qspi_cmd_t c = {0};
+    c.instruction       = opcode;
+    c.instruction_lines = 1;
+    c.address_lines     = 0;
+    c.data_lines        = 1;
+    c.data_len          = 1;
+    return c;
+}
+
 /* Send instruction-only command (no address, no data) */
 static int w25q_cmd_only(w25q512jv_t *dev, uint8_t opcode)
 {
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = opcode;
-    cmd.AddressMode       = QSPI_ADDRESS_NONE;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_NONE;
-    cmd.DummyCycles       = 0;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
-
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    casper_qspi_cmd_t cmd = make_cmd_only(opcode);
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
     return W25Q_OK;
 }
@@ -36,21 +51,11 @@ static int w25q_cmd_only(w25q512jv_t *dev, uint8_t opcode)
 /* Read a single status register (opcode = 0x05/0x35/0x15) */
 static uint8_t w25q_read_sr(w25q512jv_t *dev, uint8_t opcode)
 {
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = opcode;
-    cmd.AddressMode       = QSPI_ADDRESS_NONE;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_1_LINE;
-    cmd.DummyCycles       = 0;
-    cmd.NbData            = 1;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
-
-    uint8_t val = 0;
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    casper_qspi_cmd_t cmd = make_cmd_sr(opcode);
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return 0xFF;
-    if (HAL_QSPI_Receive(dev->hqspi, &val, 100) != HAL_OK)
+    uint8_t val = 0;
+    if (casper_qspi_receive(dev->bus, &val, 100) != CASPER_OK)
         return 0xFF;
     return val;
 }
@@ -58,20 +63,10 @@ static uint8_t w25q_read_sr(w25q512jv_t *dev, uint8_t opcode)
 /* Write a single status register (opcode = 0x01/0x31/0x11) */
 static int w25q_write_sr(w25q512jv_t *dev, uint8_t opcode, uint8_t val)
 {
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = opcode;
-    cmd.AddressMode       = QSPI_ADDRESS_NONE;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_1_LINE;
-    cmd.DummyCycles       = 0;
-    cmd.NbData            = 1;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
-
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    casper_qspi_cmd_t cmd = make_cmd_sr(opcode);
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
-    if (HAL_QSPI_Transmit(dev->hqspi, &val, 100) != HAL_OK)
+    if (casper_qspi_transmit(dev->bus, &val, 100) != CASPER_OK)
         return W25Q_ERROR;
     return W25Q_OK;
 }
@@ -91,8 +86,8 @@ static int w25q_write_enable(w25q512jv_t *dev)
 /* Poll SR1.BUSY until clear or timeout */
 static int w25q_wait_busy(w25q512jv_t *dev, uint32_t timeout_ms)
 {
-    uint32_t start = HAL_GetTick();
-    while ((HAL_GetTick() - start) < timeout_ms) {
+    uint32_t start = casper_millis();
+    while ((casper_millis() - start) < timeout_ms) {
         uint8_t sr1 = w25q_read_sr(dev, W25Q_CMD_READ_SR1);
         if (!(sr1 & W25Q_SR1_BUSY))
             return W25Q_OK;
@@ -104,57 +99,103 @@ static int w25q_wait_busy(w25q512jv_t *dev, uint32_t timeout_ms)
 static int w25q_page_program(w25q512jv_t *dev, uint32_t addr,
                              const uint8_t *buf, uint16_t len)
 {
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = W25Q_CMD_PAGE_PROGRAM_4B;
-    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
-    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
-    cmd.Address           = addr;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_1_LINE;
-    cmd.DummyCycles       = 0;
-    cmd.NbData            = len;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+    casper_qspi_cmd_t cmd = {0};
+    cmd.instruction       = W25Q_CMD_PAGE_PROGRAM_4B;
+    cmd.instruction_lines = 1;
+    cmd.address_lines     = 1;
+    cmd.address_bytes     = 4;
+    cmd.address           = addr;
+    cmd.data_lines        = 1;
+    cmd.dummy_cycles      = 0;
+    cmd.data_len          = len;
 
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
-    if (HAL_QSPI_Transmit(dev->hqspi, (uint8_t *)buf, 100) != HAL_OK)
+    if (casper_qspi_transmit(dev->bus, buf, 100) != CASPER_OK)
         return W25Q_ERROR;
     return W25Q_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  IT handler — registered on the bus during init                     */
+/*                                                                      */
+/*  The board layer (board_casper2.c) owns HAL_QSPI_TxCpltCallback,    */
+/*  HAL_QSPI_StatusMatchCallback, and HAL_QSPI_ErrorCallback.  Those   */
+/*  translate the HAL events into casper_qspi_evt_t and call this      */
+/*  function via the handler pointer stored in the casper_qspi_t.      */
+/*                                                                      */
+/*  ctx is the w25q512jv_t* that was passed to casper_qspi_set_handler */
+/*  during w25q512jv_init().                                            */
+/* ------------------------------------------------------------------ */
+static void w25q_it_handler(void *ctx, casper_qspi_evt_t evt)
+{
+    w25q512jv_t *dev = (w25q512jv_t *)ctx;
+
+    if (evt == CASPER_QSPI_EVT_TX_DONE) {
+        /* Page data transfer finished.  Now poll BUSY until the flash
+         * commits the page program (WIP bit clears). */
+        if (dev->it_state == W25Q_IT_WRITE_DATA) {
+            casper_qspi_poll_t poll = {0};
+            poll.instruction  = W25Q_CMD_READ_SR1;
+            poll.match        = 0x00;
+            poll.mask         = W25Q_SR1_BUSY;
+            poll.poll_interval = 0x10;
+
+            dev->it_state = W25Q_IT_WRITE_POLL;
+            if (casper_qspi_autopoll_it(dev->bus, &poll) != CASPER_OK) {
+                dev->it_state = W25Q_IT_IDLE;
+                if (dev->on_error)
+                    dev->on_error(dev->cb_ctx, false);
+            }
+        }
+    } else if (evt == CASPER_QSPI_EVT_MATCH) {
+        /* Auto-polling matched (BUSY cleared) — write or erase done. */
+        dev->it_state = W25Q_IT_IDLE;
+        if (dev->on_complete)
+            dev->on_complete(dev->cb_ctx, true);
+    } else {
+        /* CASPER_QSPI_EVT_ERROR */
+        dev->it_state = W25Q_IT_IDLE;
+        if (dev->on_error)
+            dev->on_error(dev->cb_ctx, false);
+    }
 }
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-bool w25q512jv_init(w25q512jv_t *dev, QSPI_HandleTypeDef *hqspi)
+bool w25q512jv_init(w25q512jv_t *dev, casper_qspi_t *bus)
 {
-    dev->hqspi       = hqspi;
+    dev->bus         = bus;
     dev->initialized = false;
+    dev->it_state    = W25Q_IT_IDLE;
+    dev->on_complete = NULL;
+    dev->on_error    = NULL;
+    dev->cb_ctx      = NULL;
     memset(dev->jedec_id, 0, sizeof(dev->jedec_id));
 
-    /* Software reset: Enable Reset → Reset → wait */
+    /* Register the IT event handler so the board layer can dispatch to us. */
+    casper_qspi_set_handler(bus, w25q_it_handler, dev);
+
+    /* Software reset: Enable Reset → Reset → wait 1 ms */
     w25q_cmd_only(dev, W25Q_CMD_ENABLE_RESET);
     w25q_cmd_only(dev, W25Q_CMD_RESET);
-    HAL_Delay(1);
+    casper_delay_ms(1);
 
     /* Read JEDEC ID (0x9F): 3 bytes */
     {
-        QSPI_CommandTypeDef cmd = {0};
-        cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-        cmd.Instruction       = W25Q_CMD_READ_JEDEC_ID;
-        cmd.AddressMode       = QSPI_ADDRESS_NONE;
-        cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-        cmd.DataMode          = QSPI_DATA_1_LINE;
-        cmd.DummyCycles       = 0;
-        cmd.NbData            = 3;
-        cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-        cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+        casper_qspi_cmd_t cmd = {0};
+        cmd.instruction       = W25Q_CMD_READ_JEDEC_ID;
+        cmd.instruction_lines = 1;
+        cmd.address_lines     = 0;
+        cmd.data_lines        = 1;
+        cmd.dummy_cycles      = 0;
+        cmd.data_len          = 3;
 
-        if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+        if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
             return false;
-        if (HAL_QSPI_Receive(dev->hqspi, dev->jedec_id, 100) != HAL_OK)
+        if (casper_qspi_receive(dev->bus, dev->jedec_id, 100) != CASPER_OK)
             return false;
     }
 
@@ -193,22 +234,19 @@ int w25q512jv_read(w25q512jv_t *dev, uint32_t addr,
     if (len == 0)
         return W25Q_OK;
 
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = W25Q_CMD_FAST_READ_4B;
-    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
-    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
-    cmd.Address           = addr;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_1_LINE;
-    cmd.DummyCycles       = W25Q_DUMMY_FAST_READ;
-    cmd.NbData            = len;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+    casper_qspi_cmd_t cmd = {0};
+    cmd.instruction       = W25Q_CMD_FAST_READ_4B;
+    cmd.instruction_lines = 1;
+    cmd.address_lines     = 1;
+    cmd.address_bytes     = 4;
+    cmd.address           = addr;
+    cmd.data_lines        = 1;
+    cmd.dummy_cycles      = W25Q_DUMMY_FAST_READ;
+    cmd.data_len          = len;
 
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
-    if (HAL_QSPI_Receive(dev->hqspi, buf, 1000) != HAL_OK)
+    if (casper_qspi_receive(dev->bus, buf, 1000) != CASPER_OK)
         return W25Q_ERROR;
     return W25Q_OK;
 }
@@ -245,19 +283,16 @@ int w25q512jv_erase_sector(w25q512jv_t *dev, uint32_t addr)
     if (w25q_write_enable(dev) != W25Q_OK)
         return W25Q_ERROR;
 
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = W25Q_CMD_SECTOR_ERASE_4B;
-    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
-    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
-    cmd.Address           = addr;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_NONE;
-    cmd.DummyCycles       = 0;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+    casper_qspi_cmd_t cmd = {0};
+    cmd.instruction       = W25Q_CMD_SECTOR_ERASE_4B;
+    cmd.instruction_lines = 1;
+    cmd.address_lines     = 1;
+    cmd.address_bytes     = 4;
+    cmd.address           = addr;
+    cmd.data_lines        = 0;
+    cmd.dummy_cycles      = 0;
 
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
 
     return w25q_wait_busy(dev, W25Q_TIMEOUT_SECTOR_ERASE);
@@ -271,19 +306,16 @@ int w25q512jv_erase_block(w25q512jv_t *dev, uint32_t addr)
     if (w25q_write_enable(dev) != W25Q_OK)
         return W25Q_ERROR;
 
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = W25Q_CMD_BLOCK_ERASE_64K_4B;
-    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
-    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
-    cmd.Address           = addr;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_NONE;
-    cmd.DummyCycles       = 0;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+    casper_qspi_cmd_t cmd = {0};
+    cmd.instruction       = W25Q_CMD_BLOCK_ERASE_64K_4B;
+    cmd.instruction_lines = 1;
+    cmd.address_lines     = 1;
+    cmd.address_bytes     = 4;
+    cmd.address           = addr;
+    cmd.data_lines        = 0;
+    cmd.dummy_cycles      = 0;
 
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
 
     return w25q_wait_busy(dev, W25Q_TIMEOUT_BLOCK_ERASE);
@@ -319,25 +351,22 @@ int w25q512jv_write_page_it(w25q512jv_t *dev, uint32_t addr,
         return W25Q_ERROR;
 
     /* Page Program command header (blocking — no data yet) */
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = W25Q_CMD_PAGE_PROGRAM_4B;
-    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
-    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
-    cmd.Address           = addr;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_1_LINE;
-    cmd.DummyCycles       = 0;
-    cmd.NbData            = W25Q512JV_PAGE_SIZE;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+    casper_qspi_cmd_t cmd = {0};
+    cmd.instruction       = W25Q_CMD_PAGE_PROGRAM_4B;
+    cmd.instruction_lines = 1;
+    cmd.address_lines     = 1;
+    cmd.address_bytes     = 4;
+    cmd.address           = addr;
+    cmd.data_lines        = 1;
+    cmd.dummy_cycles      = 0;
+    cmd.data_len          = W25Q512JV_PAGE_SIZE;
 
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
 
-    /* Start async data transfer — ISR fires HAL_QSPI_TxCpltCallback */
+    /* Start async data transfer — fires w25q_it_handler(TX_DONE) on completion */
     dev->it_state = W25Q_IT_WRITE_DATA;
-    if (HAL_QSPI_Transmit_IT(dev->hqspi, (uint8_t *)buf) != HAL_OK) {
+    if (casper_qspi_transmit_it(dev->bus, buf) != CASPER_OK) {
         dev->it_state = W25Q_IT_IDLE;
         return W25Q_ERROR;
     }
@@ -358,108 +387,31 @@ int w25q512jv_erase_sector_it(w25q512jv_t *dev, uint32_t addr)
         return W25Q_ERROR;
 
     /* Sector Erase command (blocking — no data phase) */
-    QSPI_CommandTypeDef cmd = {0};
-    cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    cmd.Instruction       = W25Q_CMD_SECTOR_ERASE_4B;
-    cmd.AddressMode       = QSPI_ADDRESS_1_LINE;
-    cmd.AddressSize       = QSPI_ADDRESS_32_BITS;
-    cmd.Address           = addr;
-    cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    cmd.DataMode          = QSPI_DATA_NONE;
-    cmd.DummyCycles       = 0;
-    cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
+    casper_qspi_cmd_t cmd = {0};
+    cmd.instruction       = W25Q_CMD_SECTOR_ERASE_4B;
+    cmd.instruction_lines = 1;
+    cmd.address_lines     = 1;
+    cmd.address_bytes     = 4;
+    cmd.address           = addr;
+    cmd.data_lines        = 0;
+    cmd.dummy_cycles      = 0;
 
-    if (HAL_QSPI_Command(dev->hqspi, &cmd, 100) != HAL_OK)
+    if (casper_qspi_command(dev->bus, &cmd, 100) != CASPER_OK)
         return W25Q_ERROR;
 
-    /* Start auto-polling for WIP (Write In Progress) bit clear */
-    QSPI_CommandTypeDef poll_cmd = {0};
-    poll_cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-    poll_cmd.Instruction       = W25Q_CMD_READ_SR1;
-    poll_cmd.AddressMode       = QSPI_ADDRESS_NONE;
-    poll_cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-    poll_cmd.DataMode          = QSPI_DATA_1_LINE;
-    poll_cmd.DummyCycles       = 0;
-    poll_cmd.NbData            = 1;
-    poll_cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-    poll_cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
-
-    QSPI_AutoPollingTypeDef cfg = {0};
-    cfg.Match           = 0x00;
-    cfg.Mask            = W25Q_SR1_BUSY;
-    cfg.MatchMode       = QSPI_MATCH_MODE_AND;
-    cfg.StatusBytesSize = 1;
-    cfg.Interval        = 0x10;
-    cfg.AutomaticStop   = QSPI_AUTOMATIC_STOP_ENABLE;
+    /* Start auto-polling for WIP (Write In Progress) bit clear.
+     * Fires w25q_it_handler(MATCH) when BUSY clears. */
+    casper_qspi_poll_t poll = {0};
+    poll.instruction   = W25Q_CMD_READ_SR1;
+    poll.match         = 0x00;
+    poll.mask          = W25Q_SR1_BUSY;
+    poll.poll_interval = 0x10;
 
     dev->it_state = W25Q_IT_ERASE_POLL;
-    if (HAL_QSPI_AutoPolling_IT(dev->hqspi, &poll_cmd, &cfg) != HAL_OK) {
+    if (casper_qspi_autopoll_it(dev->bus, &poll) != CASPER_OK) {
         dev->it_state = W25Q_IT_IDLE;
         return W25Q_ERROR;
     }
 
     return W25Q_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/*  HAL QSPI callbacks (called from ISR context)                       */
-/* ------------------------------------------------------------------ */
-
-void HAL_QSPI_TxCpltCallback(QSPI_HandleTypeDef *hqspi)
-{
-    /* Called when Transmit_IT finishes sending page data.
-     * Now poll BUSY flag to know when the flash has committed. */
-    extern w25q512jv_t flash;
-
-    if (flash.it_state == W25Q_IT_WRITE_DATA) {
-        QSPI_CommandTypeDef cmd = {0};
-        cmd.InstructionMode   = QSPI_INSTRUCTION_1_LINE;
-        cmd.Instruction       = W25Q_CMD_READ_SR1;
-        cmd.AddressMode       = QSPI_ADDRESS_NONE;
-        cmd.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;
-        cmd.DataMode          = QSPI_DATA_1_LINE;
-        cmd.DummyCycles       = 0;
-        cmd.NbData            = 1;
-        cmd.DdrMode           = QSPI_DDR_MODE_DISABLE;
-        cmd.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;
-
-        QSPI_AutoPollingTypeDef cfg = {0};
-        cfg.Match           = 0x00;
-        cfg.Mask            = W25Q_SR1_BUSY;
-        cfg.MatchMode       = QSPI_MATCH_MODE_AND;
-        cfg.StatusBytesSize = 1;
-        cfg.Interval        = 0x10;
-        cfg.AutomaticStop   = QSPI_AUTOMATIC_STOP_ENABLE;
-
-        flash.it_state = W25Q_IT_WRITE_POLL;
-        if (HAL_QSPI_AutoPolling_IT(hqspi, &cmd, &cfg) != HAL_OK) {
-            flash.it_state = W25Q_IT_IDLE;
-            if (flash.on_error)
-                flash.on_error(flash.cb_ctx, false);
-        }
-    }
-}
-
-void HAL_QSPI_StatusMatchCallback(QSPI_HandleTypeDef *hqspi)
-{
-    /* Called when auto-polling matches (BUSY cleared) — write or erase done */
-    extern w25q512jv_t flash;
-    (void)hqspi;
-
-    flash.it_state = W25Q_IT_IDLE;
-
-    if (flash.on_complete)
-        flash.on_complete(flash.cb_ctx, true);
-}
-
-void HAL_QSPI_ErrorCallback(QSPI_HandleTypeDef *hqspi)
-{
-    extern w25q512jv_t flash;
-    (void)hqspi;
-
-    flash.it_state = W25Q_IT_IDLE;
-
-    if (flash.on_error)
-        flash.on_error(flash.cb_ctx, false);
 }
