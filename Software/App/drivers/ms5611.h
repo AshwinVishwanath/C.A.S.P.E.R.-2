@@ -1,7 +1,7 @@
 #ifndef MS5611_H
 #define MS5611_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -31,9 +31,8 @@ typedef enum {
 } ms5611_nb_state_t;
 
 typedef struct {
-    SPI_HandleTypeDef *hspi;
-    GPIO_TypeDef      *cs_port;
-    uint16_t           cs_pin;
+    casper_spi_t      *bus;   /* SPI bus handle (opaque, board-owned) */
+    casper_pin_t       cs;    /* Chip-select pin descriptor */
 
     float              C[7];          /* Pre-scaled calibration constants */
     uint16_t           prom[7];       /* Raw PROM values (factory cal)    */
@@ -54,8 +53,7 @@ typedef struct {
 } ms5611_t;
 
 /* Initialise: reset sensor, read PROM calibration. Returns true on success. */
-bool  ms5611_init(ms5611_t *dev, SPI_HandleTypeDef *hspi,
-                  GPIO_TypeDef *cs_port, uint16_t cs_pin);
+bool  ms5611_init(ms5611_t *dev, casper_spi_t *bus, casper_pin_t cs);
 
 /* Blocking read of temperature + pressure. Returns MS5611_READ_OK on success. */
 int   ms5611_read(ms5611_t *dev);

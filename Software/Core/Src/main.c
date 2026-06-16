@@ -262,7 +262,7 @@ int main(void)
 
     DBG_PRINT("[INIT] Ground station mode\r\n");
     DBG_PRINT("[INIT] MS5611...\r\n");
-    if (!ms5611_init(&baro, &hspi4, SPI4_CS_GPIO_Port, SPI4_CS_Pin)) {
+    if (!ms5611_init(&baro, &BSP_SPI_BARO, BSP_PIN_BARO_CS)) {
       for (int i = 0; i < 6; i++) {
         HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
@@ -331,8 +331,8 @@ int main(void)
     // M1: MS5611
     DBG_PRINT("[INIT] MS5611...\r\n");
 
-  // Init MS5611 barometer on SPI4
-  if (!ms5611_init(&baro, &hspi4, SPI4_CS_GPIO_Port, SPI4_CS_Pin)) {
+  // Init MS5611 barometer on SPI4 via port seam
+  if (!ms5611_init(&baro, &BSP_SPI_BARO, BSP_PIN_BARO_CS)) {
     // PROM read failed — blink LED3+LED4 as warning but continue
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
