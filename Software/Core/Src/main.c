@@ -272,7 +272,7 @@ int main(void)
     ms5611_set_oversampling(&baro, MS5611_OSR_2048);
 
     DBG_PRINT("[INIT] GPS...\r\n");
-    if (!max_m10m_init(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
+    if (!max_m10m_init(&gps, &BSP_I2C_GPS, BSP_PIN_GPS_NRST)) {
       for (int i = 0; i < 6; i++) {
         HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
         HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
@@ -412,7 +412,7 @@ int main(void)
 #ifdef GPS_TEST
   /* Minimal init — no UBX config, just reset + I2C check.
    * Module outputs default NMEA which we passthrough to CDC. */
-  if (!max_m10m_init_minimal(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
+  if (!max_m10m_init_minimal(&gps, &BSP_I2C_GPS, BSP_PIN_GPS_NRST)) {
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
       HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
@@ -443,7 +443,7 @@ int main(void)
     }
   }
 #else
-  if (!max_m10m_init(&gps, &hi2c1, NRST_GPS_GPIO_Port, NRST_GPS_Pin)) {
+  if (!max_m10m_init(&gps, &BSP_I2C_GPS, BSP_PIN_GPS_NRST)) {
     for (int i = 0; i < 6; i++) {
       HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
       HAL_GPIO_TogglePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin);
