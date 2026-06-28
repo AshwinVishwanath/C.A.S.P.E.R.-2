@@ -97,7 +97,12 @@ C_SOURCES += \
 App/port/board_casper2/board_casper2.c
 
 # ── Shared application sources (both builds) ──────────────────
+# app_main.c is shared: it owns app_init()/app_tick() (called unconditionally
+# from the generated Core/Src/main.c) plus the `gps` instance used by the
+# shared EXTI callback. Its BUILD_TARGET_GROUND #ifdefs select the ground vs
+# flight bring-up/superloop internally, so it must compile for both targets.
 C_SOURCES += \
+App/flight/app_main.c \
 App/drivers/ms5611.c \
 App/drivers/max_m10m.c \
 App/radio/sx1276.c \
@@ -160,7 +165,6 @@ App/command/cfg_manager.c \
 App/diag/self_test.c \
 App/diag/logger_sanity.c \
 App/diag/cycle_probe.c \
-App/flight/app_main.c \
 App/flight/flight_loop.c \
 App/radio/radio_manager.c \
 App/logging/flight_logger.c \

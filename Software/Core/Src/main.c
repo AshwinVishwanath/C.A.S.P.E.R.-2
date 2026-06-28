@@ -78,16 +78,22 @@ static void MX_ADC1_Init(void);
 static void MX_ADC2_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_I2C1_Init(void);
+#ifndef BUILD_TARGET_GROUND
 static void MX_I2C2_Init(void);
 static void MX_QUADSPI_Init(void);
+#endif
 static void MX_SPI1_Init(void);
+#ifndef BUILD_TARGET_GROUND
 static void MX_SPI2_Init(void);
+#endif
 static void MX_SPI4_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_CRC_Init(void);
 static void MX_TIM4_Init(void);
+#ifndef BUILD_TARGET_GROUND
 static void MX_I2C3_Init(void);
 static void MX_SPI3_Init(void);
+#endif
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -555,6 +561,7 @@ static void MX_I2C1_Init(void)
 
 }
 
+#ifndef BUILD_TARGET_GROUND
 /**
   * @brief I2C2 Initialization Function
   * @param None
@@ -694,6 +701,8 @@ static void MX_QUADSPI_Init(void)
 
 }
 
+#endif /* !BUILD_TARGET_GROUND (MX_I2C2/I2C3/QUADSPI unused on ground) */
+
 /**
   * @brief SPI1 Initialization Function
   * @param None
@@ -743,6 +752,7 @@ static void MX_SPI1_Init(void)
 
 }
 
+#ifndef BUILD_TARGET_GROUND
 /**
   * @brief SPI2 Initialization Function
   * @param None
@@ -852,6 +862,8 @@ static void MX_SPI3_Init(void)
   /* USER CODE END SPI3_Init 2 */
 
 }
+
+#endif /* !BUILD_TARGET_GROUND (MX_SPI2/SPI3 unused on ground) */
 
 /**
   * @brief SPI4 Initialization Function
