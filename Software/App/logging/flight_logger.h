@@ -25,8 +25,7 @@
 typedef enum {
     QSPI_IDLE = 0,
     QSPI_ERASING,
-    QSPI_WRITING,
-    QSPI_POLLING
+    QSPI_WRITING
 } qspi_state_t;
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -42,7 +41,6 @@ typedef struct {
 
     qspi_state_t  qspi_state;
     log_stream_t  *active_stream;  /* stream being written/erased        */
-    uint8_t        erase_pool;     /* which pool is being erased (0-2)   */
 
     uint16_t hr_seq;               /* HR record sequence counter         */
     uint16_t hr_tick_div;          /* HR rate divider                    */
@@ -103,20 +101,10 @@ void flight_logger_write_final_summary(flight_logger_t *log);
 
 /* ── Status queries ──────────────────────────────────────────────────── */
 
-static inline bool flight_logger_is_launched(const flight_logger_t *log)
-    { return log->launched; }
-static inline bool flight_logger_is_finalized(const flight_logger_t *log)
-    { return log->finalized; }
-static inline qspi_state_t flight_logger_qspi_get_state(const flight_logger_t *log)
-    { return log->qspi_state; }
 static inline uint32_t flight_logger_hr_records(const flight_logger_t *log)
     { return log->hr.records_written; }
 static inline uint32_t flight_logger_lr_records(const flight_logger_t *log)
     { return log->lr.records_written; }
-static inline uint16_t flight_logger_drop_count(const flight_logger_t *log)
-    { return (uint16_t)(log->hr.drop_count + log->lr.drop_count + log->adxl.drop_count); }
-static inline uint16_t flight_logger_err_count(const flight_logger_t *log)
-    { return (uint16_t)(log->hr.err_count + log->lr.err_count + log->adxl.err_count); }
 
 /* ── QSPI callbacks (ISR context) ─────────────────────────────────────── */
 

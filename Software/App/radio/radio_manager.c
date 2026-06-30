@@ -14,7 +14,8 @@
  */
 
 #include "radio_manager.h"
-#include "main.h"
+#include "casper_port.h"
+#include "board_casper2.h"
 #include "sx1276.h"
 #include "radio_config.h"
 #include "radio_irq.h"
@@ -23,6 +24,7 @@
 #include "quat_pack.h"
 #include "status_pack.h"
 #include "tlm_types.h"
+#include "endian.h"
 #include <string.h>
 #include <math.h>
 
@@ -60,7 +62,6 @@ static uint32_t s_last_tx_ms;
 static uint32_t s_tx_start_ms;
 static uint32_t s_rx_start_ms;
 static uint32_t s_consec_crc_errors;
-static uint32_t s_tx_error_count;
 static uint16_t s_total_tx_count;
 static uint16_t s_total_rx_count;
 static uint16_t s_total_fail_count;
@@ -83,35 +84,8 @@ static uint8_t s_evt_head;
 static uint8_t s_evt_tail;
 static uint8_t s_evt_count;
 
-/* GPS queue (single slot, latest overwrites) */
-static uint8_t s_gps_buf[SIZE_FC_MSG_GPS];
-static uint8_t s_gps_pending;
-
 /* RX buffer */
 static uint8_t s_rx_buf[RADIO_MAX_PACKET_SIZE];
-
-/* ── Helpers (same as tlm_manager.c) ───────────────────────────────── */
-
-static void put_le16(uint8_t *dst, uint16_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-}
-
-static void put_le24(uint8_t *dst, uint32_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-    dst[2] = (uint8_t)((val >> 16) & 0xFF);
-}
-
-static void put_le32(uint8_t *dst, uint32_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-    dst[2] = (uint8_t)((val >> 16) & 0xFF);
-    dst[3] = (uint8_t)((val >> 24) & 0xFF);
-}
 
 /* ── Apply radio profile ───────────────────────────────────────────── */
 
@@ -195,41 +169,6 @@ static int build_fast_packet(uint8_t *buf,
     return SIZE_FC_MSG_FAST;
 }
 
-static int build_gps_packet(uint8_t *buf, const fc_gps_state_t *gps)
-{
-    uint8_t *p = buf;
-
-    /* [0] msg_id */
-    *p++ = MSG_ID_GPS;
-
-    /* [1-4] dlat_mm, i32 LE */
-    put_le32(p, (uint32_t)gps->dlat_mm);
-    p += 4;
-
-    /* [5-8] dlon_mm, i32 LE */
-    put_le32(p, (uint32_t)gps->dlon_mm);
-    p += 4;
-
-    /* [9-11] alt_msl in cm, u24 LE (1 cm resolution, max 167.7 km) */
-    float alt_cm = gps->alt_msl_m / ALT_SCALE_M;
-    if (alt_cm < 0.0f) alt_cm = 0.0f;
-    if (alt_cm > 16777215.0f) alt_cm = 16777215.0f;
-    put_le24(p, (uint32_t)alt_cm);
-    p += 3;
-
-    /* [12] fix_type */
-    *p++ = gps->fix_type;
-
-    /* [13] sat_count */
-    *p++ = gps->sat_count;
-
-    /* [14-17] CRC-32 over [0-13] */
-    uint32_t crc = crc32_hw_compute(buf, 14);
-    put_le32(p, crc);
-
-    return SIZE_FC_MSG_GPS;
-}
-
 static int build_event_packet(uint8_t *buf, uint8_t type, uint16_t data)
 {
     uint8_t *p = buf;
@@ -266,7 +205,7 @@ static int build_event_packet(uint8_t *buf, uint8_t type, uint16_t data)
 
 static void start_tx(const uint8_t *pkt, uint8_t len)
 {
-    HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);  /* TX activity LED */
+    casper_gpio_toggle(BSP_PIN_CONT_LED[0]);  /* TX activity LED */
     sx1276_set_mode(SX1276_MODE_STDBY);
     sx1276_write_reg(SX1276_REG_FIFO_ADDR_PTR, SX1276_FIFO_TX_BASE);
     sx1276_write_fifo(pkt, len);
@@ -274,7 +213,7 @@ static void start_tx(const uint8_t *pkt, uint8_t len)
     sx1276_set_mode(SX1276_MODE_TX);
 
     s_radio_state = RADIO_STATE_TX;
-    s_tx_start_ms = HAL_GetTick();
+    s_tx_start_ms = casper_millis();
     s_total_tx_count++;
 }
 
@@ -300,7 +239,7 @@ static void open_rx_window(void)
     sx1276_set_mode(SX1276_MODE_RXSINGLE);
 
     s_radio_state = RADIO_STATE_RX;
-    s_rx_start_ms = HAL_GetTick();
+    s_rx_start_ms = casper_millis();
 }
 
 /* ── RX: validate and dispatch received packet ─────────────────────── */
@@ -426,13 +365,6 @@ static int select_and_build_packet(const fc_telem_state_t *tstate,
         return build_fast_packet(s_tx_buf, tstate, pstate, fsm);
     }
 
-    /* Priority 4: GPS */
-    if (s_gps_pending) {
-        memcpy(s_tx_buf, s_gps_buf, SIZE_FC_MSG_GPS);
-        s_gps_pending = 0;
-        return SIZE_FC_MSG_GPS;
-    }
-
     return 0;
 }
 
@@ -466,7 +398,7 @@ static void radio_reinit(void)
 
 /* ── Public API ────────────────────────────────────────────────────── */
 
-int radio_manager_init(SPI_HandleTypeDef *hspi)
+int radio_manager_init(void *hspi_opaque)
 {
     /* Reset module state */
     s_seq = 0;
@@ -474,17 +406,17 @@ int radio_manager_init(SPI_HandleTypeDef *hspi)
     s_tx_start_ms = 0;
     s_rx_start_ms = 0;
     s_consec_crc_errors = 0;
-    s_tx_error_count = 0;
     s_resp_head = 0;
     s_resp_tail = 0;
     s_resp_count = 0;
     s_evt_head = 0;
     s_evt_tail = 0;
     s_evt_count = 0;
-    s_gps_pending = 0;
 
-    /* Init SX1276 low-level driver */
-    if (sx1276_init(hspi) != 0) {
+    /* Init SX1276 low-level driver.
+     * hspi_opaque is an SPI_HandleTypeDef* passed as void* to keep HAL out
+     * of this header; sx1276.c (the approved HAL exception) casts it back. */
+    if (sx1276_init(hspi_opaque) != 0) {
         s_radio_state = RADIO_STATE_DISABLED;
         return -1;
     }
@@ -522,12 +454,12 @@ void radio_manager_tick(const casper_ekf_t *ekf,
     if (s_radio_state == RADIO_STATE_DISABLED) return;
 
     /* Poll DIO0/DIO1 GPIOs (EXTI disabled — using polling instead) */
-    if (HAL_GPIO_ReadPin(SPI1_INT_GPIO_Port, SPI1_INT_Pin))
+    if (casper_gpio_read(BSP_PIN_RADIO_DIO0) == CASPER_PIN_HIGH)
         g_radio_dio0_flag = 1;
-    if (HAL_GPIO_ReadPin(RADIO_DIO1_GPIO_Port, RADIO_DIO1_Pin))
+    if (casper_gpio_read(BSP_PIN_RADIO_DIO1) == CASPER_PIN_HIGH)
         g_radio_dio1_flag = 1;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     switch (s_radio_state) {
 
@@ -558,7 +490,6 @@ void radio_manager_tick(const casper_ekf_t *ekf,
         }
         /* TX timeout */
         else if (now - s_tx_start_ms > RADIO_TX_TIMEOUT_MS) {
-            s_tx_error_count++;
             s_total_fail_count++;
             radio_reinit();
         }
@@ -592,14 +523,6 @@ void radio_manager_tick(const casper_ekf_t *ekf,
     }
 }
 
-void radio_send_gps(const fc_gps_state_t *gps_state)
-{
-    if (s_radio_state == RADIO_STATE_DISABLED) return;
-    /* Build GPS packet into the single-slot buffer */
-    build_gps_packet(s_gps_buf, gps_state);
-    s_gps_pending = 1;
-}
-
 void radio_queue_event(uint8_t type, uint16_t data)
 {
     if (s_radio_state == RADIO_STATE_DISABLED) return;
@@ -625,11 +548,6 @@ int radio_send_response(const uint8_t *buf, uint8_t len)
     s_resp_count++;
 
     return 0;
-}
-
-int radio_is_active(void)
-{
-    return (s_radio_state != RADIO_STATE_DISABLED) ? 1 : 0;
 }
 
 void radio_get_stats(int8_t *rssi, int8_t *snr,

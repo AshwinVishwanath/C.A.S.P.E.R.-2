@@ -6,7 +6,7 @@
 #ifndef ADXL372_H
 #define ADXL372_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -129,9 +129,8 @@
 /*  Driver struct                                                      */
 /* ------------------------------------------------------------------ */
 typedef struct {
-    SPI_HandleTypeDef *hspi;
-    GPIO_TypeDef      *cs_port;
-    uint16_t           cs_pin;
+    casper_spi_t      *bus;           /* SPI bus handle (opaque, board-owned) */
+    casper_pin_t       cs;            /* Chip-select pin descriptor */
 
     float              accel_g[3];    /* Acceleration in g (+-200g range, 100 mg/LSB) */
     int16_t            raw_accel[3];  /* Raw 12-bit left-justified register values */
@@ -145,13 +144,7 @@ typedef struct {
 
 /* Initialise: soft-reset, verify DEVID, configure ODR/BW/mode.
  * Returns true on success. */
-bool adxl372_init(adxl372_t *dev, SPI_HandleTypeDef *hspi,
-                  GPIO_TypeDef *cs_port, uint16_t cs_pin);
-
-/* Read 3-axis acceleration from data registers.
- * Stores result in dev->accel_g[].
- * Returns ADXL372_READ_OK on success. */
-int adxl372_read(adxl372_t *dev);
+bool adxl372_init(adxl372_t *dev, casper_spi_t *bus, casper_pin_t cs);
 
 /* Reconfigure for FIFO stream mode at given ODR. */
 void adxl372_fifo_init(adxl372_t *dev, uint8_t odr_bits);
@@ -162,9 +155,6 @@ uint16_t adxl372_fifo_entries(adxl372_t *dev);
 /* Read one XYZ triplet from FIFO. Stores raw int16 in dev->raw_accel[].
  * Returns 1 on success, 0 if FIFO empty. */
 int adxl372_fifo_read(adxl372_t *dev);
-
-/* Read a single register (for diagnostics / readback). */
-uint8_t adxl372_read_reg_ext(adxl372_t *dev, uint8_t reg);
 
 /* Call from HAL_GPIO_EXTI_Callback when INT pin fires (future use). */
 void adxl372_irq_handler(adxl372_t *dev);

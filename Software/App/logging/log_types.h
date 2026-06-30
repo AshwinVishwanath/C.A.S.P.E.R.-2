@@ -13,11 +13,9 @@
 
 #define FLASH_INDEX_BASE       0x00000000u   /* 4 KB   — flight index      */
 #define FLASH_INDEX_SIZE       0x00001000u
-#define FLASH_INDEX_END        (FLASH_INDEX_BASE + FLASH_INDEX_SIZE)
 
 #define FLASH_SUMMARY_BASE     0x00001000u   /* 64 KB  — flight summaries  */
 #define FLASH_SUMMARY_SIZE     0x00010000u
-#define FLASH_SUMMARY_END      (FLASH_SUMMARY_BASE + FLASH_SUMMARY_SIZE)
 
 #define FLASH_LR_BASE          0x00011000u   /* 512 KB — low-rate records  */
 #define FLASH_LR_SIZE          0x00080000u

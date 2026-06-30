@@ -10,7 +10,7 @@
 #include "pyro_manager.h"
 #include "flight_fsm.h"
 #include "endian.h"
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include <string.h>
 
 /* ── Forward declaration for cfg_manager ───────────────────────── */
@@ -104,12 +104,11 @@ void cac_init(void)
 
 void cac_tick(void)
 {
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     /* Confirm timeout */
     if (s_phase == CAC_AWAITING_CONFIRM) {
-        if (now - s_confirm_deadline > 0 &&
-            (int32_t)(now - s_confirm_deadline) >= 0) {
+        if ((int32_t)(now - s_confirm_deadline) >= 0) {
             s_phase = CAC_IDLE;
         }
     }
@@ -173,7 +172,7 @@ void cac_handle_arm(const uint8_t *data, int len)
     s_pending_type = PENDING_ARM;
     s_pending_channel = ch1;
     s_pending_action = action;
-    s_confirm_deadline = HAL_GetTick() + CAC_CONFIRM_TIMEOUT_MS;
+    s_confirm_deadline = casper_millis() + CAC_CONFIRM_TIMEOUT_MS;
 
     send_arm_ack(nonce, channel, action);
 }
@@ -244,7 +243,7 @@ void cac_handle_fire(const uint8_t *data, int len)
     s_pending_type = PENDING_FIRE;
     s_pending_channel = ch1;
     s_pending_duration = duration_ms;
-    s_confirm_deadline = HAL_GetTick() + CAC_CONFIRM_TIMEOUT_MS;
+    s_confirm_deadline = casper_millis() + CAC_CONFIRM_TIMEOUT_MS;
 
     send_fire_ack(nonce, channel, duration, flags);
 }
@@ -267,7 +266,7 @@ void cac_handle_testmode(const uint8_t *data, int len)
         pyro_mgr_set_test_mode(false);
     } else {
         s_test_mode = true;
-        s_test_mode_deadline = HAL_GetTick() + TEST_MODE_TIMEOUT_MS;
+        s_test_mode_deadline = casper_millis() + TEST_MODE_TIMEOUT_MS;
         pyro_mgr_set_test_mode(true);
     }
 
@@ -302,7 +301,7 @@ void cac_handle_config_poll(const uint8_t *data, int len)
 void cac_handle_confirm(const uint8_t *data, int len)
 {
     /* CONFIRM: [0xF0][0xCA][0x5A][nonce:2][CRC-32:4] = 9 bytes */
-    if (len < 9) return;
+    if (len < SIZE_CONFIRM) return;
 
     if (data[1] != CAC_MAGIC_1 || data[2] != CAC_MAGIC_2) return;
 
@@ -315,7 +314,7 @@ void cac_handle_confirm(const uint8_t *data, int len)
     if (nonce != s_pending_nonce) return;
 
     /* Check timeout */
-    if ((int32_t)(HAL_GetTick() - s_confirm_deadline) >= 0) {
+    if ((int32_t)(casper_millis() - s_confirm_deadline) >= 0) {
         s_phase = CAC_IDLE;
         return;
     }
@@ -352,16 +351,3 @@ void cac_handle_abort(const uint8_t *data, int len)
     }
 }
 
-/* ── Test mode queries ────────────────────────────────────────── */
-bool cac_test_mode_active(void)
-{
-    return s_test_mode;
-}
-
-uint32_t cac_test_mode_remaining_ms(void)
-{
-    if (!s_test_mode) return 0;
-    uint32_t now = HAL_GetTick();
-    if ((int32_t)(now - s_test_mode_deadline) >= 0) return 0;
-    return s_test_mode_deadline - now;
-}

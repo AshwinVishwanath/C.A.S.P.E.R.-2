@@ -15,14 +15,15 @@
 #ifndef APP_RADIO_RADIO_MANAGER_H
 #define APP_RADIO_RADIO_MANAGER_H
 
-#include "stm32h7xx_hal.h"
 #include "tlm_types.h"
 #include "casper_ekf.h"
 #include "radio_config.h"
 #include <stdint.h>
 
-/* Initialize radio: reset SX1276, configure LoRa, apply Profile A */
-int radio_manager_init(SPI_HandleTypeDef *hspi);
+/* Initialize radio: reset SX1276, configure LoRa, apply Profile A.
+ * hspi_opaque must be an SPI_HandleTypeDef* cast to void* (resolved in
+ * radio_manager.c which includes the HAL via sx1276.h). */
+int radio_manager_init(void *hspi_opaque);
 
 /* Non-blocking tick — call every superloop iteration (~833 Hz).
  * Manages TX scheduling, RX windows, IRQ processing, profile switching. */
@@ -31,17 +32,11 @@ void radio_manager_tick(const casper_ekf_t *ekf,
                         const pyro_state_t *pstate,
                         fsm_state_t fsm);
 
-/* Queue a GPS packet for next available TX slot */
-void radio_send_gps(const fc_gps_state_t *gps_state);
-
 /* Queue an event packet for next available TX slot */
 void radio_queue_event(uint8_t type, uint16_t data);
 
 /* Queue a response (ACK/NACK) for immediate TX (highest priority) */
 int radio_send_response(const uint8_t *buf, uint8_t len);
-
-/* Check if radio initialized OK */
-int radio_is_active(void);
 
 /* Get radio stats for data logging */
 void radio_get_stats(int8_t *rssi, int8_t *snr,

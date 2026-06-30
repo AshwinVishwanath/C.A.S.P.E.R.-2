@@ -31,17 +31,7 @@ typedef struct {
     float Ki;                   /* Integral gain                          */
     float gyro_lpf_cutoff_hz;   /* Gyro LPF cutoff (default 50 Hz)       */
     float mag_update_hz;        /* Mag update rate in flight (default 10) */
-    float launch_accel_g;       /* Launch detection threshold (default 3) */
 } casper_att_config_t;
-
-/* ── Ignition gate ─────────────────────────────────────────────────────── */
-
-#define CASPER_ATT_MAX_GATES 4
-
-typedef struct {
-    float start_time_s;         /* Mission elapsed time to begin gating  */
-    float duration_s;           /* Gate duration in seconds              */
-} casper_mag_gate_t;
 
 /* ── Main state ────────────────────────────────────────────────────────── */
 
@@ -54,8 +44,6 @@ typedef struct {
 
     /* Gyro bias (running average on pad, frozen at launch) */
     float gyro_bias[3];         /* rad/s                                */
-    double bias_sum[3];         /* accumulator (double for precision)   */
-    uint32_t bias_count;
 
     /* Magnetometer reference field in NED frame (µT) */
     float m_ref_ned[3];
@@ -70,10 +58,6 @@ typedef struct {
 
     /* Configuration (copied at init) */
     casper_att_config_t config;
-
-    /* Ignition gates */
-    casper_mag_gate_t gates[CASPER_ATT_MAX_GATES];
-    uint8_t num_gates;
 
     /* Phase flags */
     bool init_complete;         /* Static init averaging finished       */
@@ -133,19 +117,6 @@ void casper_att_update(casper_attitude_t *att,
                        const float accel_raw[3],
                        const float *mag_cal,
                        float dt);
-
-/**
- * Add an ignition gate (max CASPER_ATT_MAX_GATES).
- * During the gate window, magnetometer corrections are disabled.
- */
-void casper_att_add_gate(casper_attitude_t *att,
-                         float start_s, float duration_s);
-
-/* ── Getters ───────────────────────────────────────────────────────────── */
-
-void casper_att_get_quaternion(const casper_attitude_t *att, float q_out[4]);
-void casper_att_get_euler(const casper_attitude_t *att,
-                          float *roll_deg, float *pitch_deg, float *yaw_deg);
 
 #ifdef __cplusplus
 }

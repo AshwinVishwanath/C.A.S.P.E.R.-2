@@ -61,11 +61,6 @@ extern const radio_profile_t RADIO_PROFILE_B;  /* SF8, 250k, CR4/5 */
  */
 #define RADIO_DIO_MAPPING_2         0xA0
 
-/* ── Error counter thresholds ───────────────────────────────────── */
-
-#define RADIO_MAX_CONSEC_CRC_ERRORS 10
-#define RADIO_MAX_TX_RETRIES        3
-
 /* ── Response queue ─────────────────────────────────────────────── */
 
 #define RADIO_RESP_QUEUE_SIZE       4

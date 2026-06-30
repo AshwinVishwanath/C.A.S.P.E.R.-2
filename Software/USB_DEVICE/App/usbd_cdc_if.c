@@ -35,8 +35,12 @@
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
-/* ── CDC RX ring buffer (SPSC: ISR writes, main loop reads) ─── */
-#define CDC_RING_SIZE 256
+/* ── CDC RX ring buffer (SPSC: ISR writes, main loop reads) ───
+ * 4096 bytes so a HIL host can spike to ~5× speed (~250 KB/s) with-
+ * out the ISR dropping bytes at burst peaks. The ring filled in <2 ms
+ * at 256 bytes, and any byte drop fragments a COBS frame (CRC fails
+ * silently, packet is lost). */
+#define CDC_RING_SIZE 4096
 static uint8_t  cdc_ring_buf[CDC_RING_SIZE];
 static volatile uint16_t cdc_ring_head;   /* ISR writes here  */
 static volatile uint16_t cdc_ring_tail;   /* main loop reads  */

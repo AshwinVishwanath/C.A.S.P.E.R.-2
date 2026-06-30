@@ -16,7 +16,7 @@
 #ifndef MAX_M10M_H
 #define MAX_M10M_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"   /* casper_i2c_t, casper_pin_t, casper_millis, etc. */
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -111,10 +111,9 @@ typedef enum {
 
 /* ── Driver struct ──────────────────────────────────────────────── */
 typedef struct {
-    /* HAL handles */
-    I2C_HandleTypeDef *hi2c;
-    GPIO_TypeDef      *nrst_port;
-    uint16_t           nrst_pin;
+    /* Portable bus + reset-pin handles */
+    casper_i2c_t *i2c;
+    casper_pin_t  nrst;
 
     /* Parsed NAV-PVT data (raw integers) */
     int32_t            lat_deg7;       /* degrees * 1e-7  */
@@ -202,9 +201,12 @@ typedef struct {
 /**
  * Hard-reset GPS, verify I2C communication, configure 10 Hz GPS-only UBX output.
  * Returns true if I2C ACK received (module alive). Does NOT require antenna.
+ *
+ * @param dev   Driver instance (zeroed by init).
+ * @param i2c   Portable I2C bus handle (e.g. &BSP_I2C_GPS).
+ * @param nrst  NRST GPIO pin descriptor (e.g. BSP_PIN_GPS_NRST).
  */
-bool max_m10m_init(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
-                   GPIO_TypeDef *nrst_port, uint16_t nrst_pin);
+bool max_m10m_init(max_m10m_t *dev, casper_i2c_t *i2c, casper_pin_t nrst);
 
 /**
  * Non-blocking tick — call every main loop iteration.
@@ -221,9 +223,13 @@ bool max_m10m_has_3d_fix(const max_m10m_t *dev);
 /**
  * Minimal init — hard reset + I2C check only, no UBX config.
  * Module outputs default NMEA. Use for GPS_TEST passthrough.
+ *
+ * @param dev   Driver instance (zeroed by init).
+ * @param i2c   Portable I2C bus handle.
+ * @param nrst  NRST GPIO pin descriptor.
  */
-bool max_m10m_init_minimal(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
-                            GPIO_TypeDef *nrst_port, uint16_t nrst_pin);
+bool max_m10m_init_minimal(max_m10m_t *dev, casper_i2c_t *i2c,
+                            casper_pin_t nrst);
 
 /**
  * NMEA passthrough tick — reads I2C data, buffers complete NMEA lines.

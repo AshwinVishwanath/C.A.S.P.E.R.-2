@@ -8,8 +8,8 @@
  * @brief   Magnetometer calibration validation — 30s stationary collection
  */
 #include "mag_val.h"
+#include "board_casper2.h"
 #include "usbd_cdc_if.h"
-#include "main.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -29,14 +29,10 @@ static void mag_val_flush(mag_val_t *val)
 
 static void mag_val_update_leds(uint8_t pct)
 {
-    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin,
-                      pct >= 25 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin,
-                      pct >= 50 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin,
-                      pct >= 75 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin,
-                      pct >= 100 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    casper_gpio_write(BSP_PIN_CONT_LED[3], pct >= 25  ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
+    casper_gpio_write(BSP_PIN_CONT_LED[2], pct >= 50  ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
+    casper_gpio_write(BSP_PIN_CONT_LED[1], pct >= 75  ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
+    casper_gpio_write(BSP_PIN_CONT_LED[0], pct >= 100 ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
 }
 
 /* ── Init ────────────────────────────────────────────────────────────────── */

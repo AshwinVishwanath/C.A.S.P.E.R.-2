@@ -4,28 +4,31 @@
  *  SUMMARY:  SPI driver for primary 6-DoF IMU (accel/gyro), 833 Hz.
  * ============================================================ */
 /**
- * LSM6DSO32 SPI IMU driver — bare-metal C for STM32 HAL.
+ * LSM6DSO32 SPI IMU driver — portable seam (casper_port.h).
  * Reference: STMicroelectronics/lsm6dso32-pid
  *
- * Configured for: ±32g accel, ±2000 dps gyro, 104 Hz high-performance,
+ * Configured for: ±32g accel, ±2000 dps gyro, 833 Hz high-performance,
  * accelerometer data-ready interrupt on INT2 (INT1 is NC on this PCB).
  */
 
 #include "lsm6dso32.h"
 #include <string.h>
+#ifdef HIL_MODE
+#include "hil_raw_handler.h"
+#endif
 
 /* ------------------------------------------------------------------ */
-/*  SPI helpers (using TransmitReceive for STM32H7 FIFO robustness)   */
+/*  SPI helpers (full-duplex transceive; CS driven by GPIO seam)      */
 /* ------------------------------------------------------------------ */
 
 static inline void cs_low(const lsm6dso32_t *dev)
 {
-    HAL_GPIO_WritePin(dev->cs_port, dev->cs_pin, GPIO_PIN_RESET);
+    casper_gpio_write(dev->cs, CASPER_PIN_LOW);
 }
 
 static inline void cs_high(const lsm6dso32_t *dev)
 {
-    HAL_GPIO_WritePin(dev->cs_port, dev->cs_pin, GPIO_PIN_SET);
+    casper_gpio_write(dev->cs, CASPER_PIN_HIGH);
 }
 
 static void lsm6dso32_write_reg(lsm6dso32_t *dev, uint8_t reg, uint8_t val)
@@ -33,7 +36,7 @@ static void lsm6dso32_write_reg(lsm6dso32_t *dev, uint8_t reg, uint8_t val)
     uint8_t tx[2] = {reg & 0x7F, val};
     uint8_t rx[2];
     cs_low(dev);
-    HAL_SPI_TransmitReceive(dev->hspi, tx, rx, 2, 100);
+    casper_spi_transceive(dev->bus, tx, rx, 2, 100);
     cs_high(dev);
 }
 
@@ -42,7 +45,7 @@ static uint8_t lsm6dso32_read_reg(lsm6dso32_t *dev, uint8_t reg)
     uint8_t tx[2] = {reg | 0x80, 0x00};
     uint8_t rx[2] = {0};
     cs_low(dev);
-    HAL_SPI_TransmitReceive(dev->hspi, tx, rx, 2, 100);
+    casper_spi_transceive(dev->bus, tx, rx, 2, 100);
     cs_high(dev);
     return rx[1];
 }
@@ -54,7 +57,7 @@ static void lsm6dso32_read_burst(lsm6dso32_t *dev, uint8_t reg,
     uint8_t rx[15] = {0};
     tx[0] = reg | 0x80;
     cs_low(dev);
-    HAL_SPI_TransmitReceive(dev->hspi, tx, rx, len + 1, 100);
+    casper_spi_transceive(dev->bus, tx, rx, len + 1, 100);
     cs_high(dev);
     memcpy(buf, &rx[1], len);
 }
@@ -63,12 +66,10 @@ static void lsm6dso32_read_burst(lsm6dso32_t *dev, uint8_t reg,
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
-                     GPIO_TypeDef *cs_port, uint16_t cs_pin)
+bool lsm6dso32_init(lsm6dso32_t *dev, casper_spi_t *bus, casper_pin_t cs)
 {
-    dev->hspi       = hspi;
-    dev->cs_port    = cs_port;
-    dev->cs_pin     = cs_pin;
+    dev->bus        = bus;
+    dev->cs         = cs;
     dev->data_ready = false;
     dev->device_id  = 0;
 
@@ -82,7 +83,7 @@ bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
 
     /* Software reset */
     lsm6dso32_write_reg(dev, LSM6DSO32_CTRL3_C, 0x01);
-    HAL_Delay(20);  /* Boot time ~15ms per datasheet */
+    casper_delay_ms(20);  /* Boot time ~15ms per datasheet */
 
     /* Read WHO_AM_I (stored in dev->device_id for diagnostics) */
     dev->device_id = lsm6dso32_read_reg(dev, LSM6DSO32_WHO_AM_I);
@@ -110,6 +111,23 @@ bool lsm6dso32_init(lsm6dso32_t *dev, SPI_HandleTypeDef *hspi,
 
 int lsm6dso32_read(lsm6dso32_t *dev)
 {
+#ifdef HIL_MODE
+    /* Skip the SPI burst — populate engineering-units arrays directly
+     * from the host's most recent 0xD3 packet. Conversions match the
+     * non-HIL path (m/s² → g, rad/s → dps) so downstream code is
+     * indifferent to the data source. Temperature stays at the most
+     * recent value (host can override in a future packet field). */
+    static const float MS2_TO_G    = 1.0f / 9.80665f;
+    static const float RADS_TO_DPS = 57.2957795f;
+    dev->accel_g[0] = g_hil_raw.accel_ms2[0] * MS2_TO_G;
+    dev->accel_g[1] = g_hil_raw.accel_ms2[1] * MS2_TO_G;
+    dev->accel_g[2] = g_hil_raw.accel_ms2[2] * MS2_TO_G;
+    dev->gyro_dps[0] = g_hil_raw.gyro_rads[0] * RADS_TO_DPS;
+    dev->gyro_dps[1] = g_hil_raw.gyro_rads[1] * RADS_TO_DPS;
+    dev->gyro_dps[2] = g_hil_raw.gyro_rads[2] * RADS_TO_DPS;
+    dev->data_ready = false;
+    return LSM6DSO32_READ_OK;
+#else
     uint8_t buf[14];
 
     /* Burst-read 14 bytes: OUT_TEMP_L (0x20) through OUTZ_H_A (0x2D) */
@@ -142,35 +160,7 @@ int lsm6dso32_read(lsm6dso32_t *dev)
 
     dev->data_ready = false;
     return LSM6DSO32_READ_OK;
-}
-
-int lsm6dso32_read_raw(lsm6dso32_t *dev)
-{
-    uint8_t buf[14];
-
-    /* Burst-read 14 bytes: OUT_TEMP_L (0x20) through OUTZ_H_A (0x2D) */
-    lsm6dso32_read_burst(dev, LSM6DSO32_OUT_TEMP_L, buf, 14);
-
-    /* Temperature: bytes 0-1 (little-endian int16, 256 LSB/°C, 0 = 25°C) */
-    dev->raw_temp = (int16_t)((uint16_t)buf[1] << 8 | buf[0]);
-
-    /* Gyroscope: bytes 2-7 (little-endian int16) */
-    dev->raw_gyro[0] = (int16_t)((uint16_t)buf[3] << 8 | buf[2]);
-    dev->raw_gyro[1] = (int16_t)((uint16_t)buf[5] << 8 | buf[4]);
-    dev->raw_gyro[2] = (int16_t)((uint16_t)buf[7] << 8 | buf[6]);
-
-    /* Accelerometer: bytes 8-13 (little-endian int16) */
-    dev->raw_accel[0] = (int16_t)((uint16_t)buf[9]  << 8 | buf[8]);
-    dev->raw_accel[1] = (int16_t)((uint16_t)buf[11] << 8 | buf[10]);
-    dev->raw_accel[2] = (int16_t)((uint16_t)buf[13] << 8 | buf[12]);
-
-    dev->data_ready = false;
-    return LSM6DSO32_READ_OK;
-}
-
-void lsm6dso32_write_reg_ext(lsm6dso32_t *dev, uint8_t reg, uint8_t val)
-{
-    lsm6dso32_write_reg(dev, reg, val);
+#endif
 }
 
 uint8_t lsm6dso32_read_reg_ext(lsm6dso32_t *dev, uint8_t reg)

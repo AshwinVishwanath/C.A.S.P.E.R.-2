@@ -11,10 +11,17 @@
  * Non-blocking tick architecture — max_m10m_tick() polls the GPS
  * bytes-available register and reads data in 64-byte chunks, feeding
  * each byte through a UBX frame parser state machine.
+ *
+ * Board dependencies are accessed exclusively through the casper_port
+ * seam: casper_i2c_* for bus I/O, casper_gpio_* for NRST,
+ * casper_millis / casper_delay_ms for timing.  No HAL types appear here.
  */
 
 #include "max_m10m.h"
 #include <string.h>
+#ifdef HIL_MODE
+#include "hil_aux_handler.h"
+#endif
 
 /* ================================================================== */
 /* Internal helpers                                                    */
@@ -39,12 +46,13 @@ static void ubx_checksum(const uint8_t *buf, uint16_t len,
 /**
  * Send a complete UBX message to the GPS over I2C.
  * Builds sync + header + payload + checksum into a stack buffer.
+ * Returns CASPER_OK on success, CASPER_ERR / CASPER_TIMEOUT on failure.
  */
-static HAL_StatusTypeDef max_m10m_i2c_write_ubx(max_m10m_t *dev,
+static casper_status_t max_m10m_i2c_write_ubx(max_m10m_t *dev,
     uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t pay_len)
 {
     uint8_t frame[64];
-    if (pay_len + 8 > sizeof(frame)) return HAL_ERROR;
+    if ((uint32_t)pay_len + 8u > sizeof(frame)) return CASPER_ERR;
 
     frame[0] = UBX_SYNC_1;
     frame[1] = UBX_SYNC_2;
@@ -60,7 +68,7 @@ static HAL_StatusTypeDef max_m10m_i2c_write_ubx(max_m10m_t *dev,
     frame[6 + pay_len] = ck_a;
     frame[7 + pay_len] = ck_b;
 
-    return HAL_I2C_Master_Transmit(dev->hi2c,
+    return casper_i2c_master_tx(dev->i2c,
         MAX_M10M_I2C_ADDR << 1, frame, 8 + pay_len, 100);
 }
 
@@ -71,10 +79,10 @@ static HAL_StatusTypeDef max_m10m_i2c_write_ubx(max_m10m_t *dev,
 static uint16_t max_m10m_read_bytes_available(max_m10m_t *dev)
 {
     uint8_t buf[2] = {0};
-    HAL_StatusTypeDef rc = HAL_I2C_Mem_Read(dev->hi2c,
+    casper_status_t rc = casper_i2c_mem_read(dev->i2c,
         MAX_M10M_I2C_ADDR << 1, MAX_M10M_REG_BYTES_HI,
-        I2C_MEMADD_SIZE_8BIT, buf, 2, 50);
-    if (rc != HAL_OK) return 0;
+        1, buf, 2, 50);
+    if (rc != CASPER_OK) return 0;
     return ((uint16_t)buf[0] << 8) | buf[1];
 }
 
@@ -82,7 +90,7 @@ static uint16_t max_m10m_read_bytes_available(max_m10m_t *dev)
  * Send UBX-CFG-VALSET for a single key-value pair.
  * val_size: 1 = U1/L, 2 = U2, 4 = U4.
  */
-static HAL_StatusTypeDef max_m10m_send_valset(max_m10m_t *dev,
+static casper_status_t max_m10m_send_valset(max_m10m_t *dev,
     uint32_t key, uint32_t value, uint8_t val_size)
 {
     uint8_t payload[12]; /* 4 header + 4 key + up to 4 value */
@@ -108,32 +116,6 @@ static HAL_StatusTypeDef max_m10m_send_valset(max_m10m_t *dev,
 }
 
 /**
- * Same as send_valset but writes to RAM+BBR layers (0x03) so the
- * config survives GNSS subsystem restarts.
- */
-static HAL_StatusTypeDef max_m10m_send_valset_persist(max_m10m_t *dev,
-    uint32_t key, uint32_t value, uint8_t val_size)
-{
-    uint8_t payload[12];
-    payload[0] = 0x01;   /* version */
-    payload[1] = 0x03;   /* layers: RAM + BBR */
-    payload[2] = 0x00;
-    payload[3] = 0x00;
-    payload[4] = (uint8_t)(key);
-    payload[5] = (uint8_t)(key >> 8);
-    payload[6] = (uint8_t)(key >> 16);
-    payload[7] = (uint8_t)(key >> 24);
-    payload[8]  = (uint8_t)(value);
-    if (val_size >= 2) payload[9]  = (uint8_t)(value >> 8);
-    if (val_size >= 4) {
-        payload[10] = (uint8_t)(value >> 16);
-        payload[11] = (uint8_t)(value >> 24);
-    }
-    return max_m10m_i2c_write_ubx(dev, UBX_CLASS_CFG, UBX_CFG_VALSET_ID,
-                                   payload, 8 + val_size);
-}
-
-/**
  * Drain all pending data from the GPS I2C buffer (discard).
  * Used after GNSS restart to clear stale data before re-configuring.
  */
@@ -144,8 +126,8 @@ static void max_m10m_drain(max_m10m_t *dev)
         if (avail == 0 || avail == 0xFFFF) break;
         uint8_t junk[64];
         uint16_t chunk = avail > 64 ? 64 : avail;
-        HAL_I2C_Mem_Read(dev->hi2c, MAX_M10M_I2C_ADDR << 1,
-            MAX_M10M_REG_DATA_STREAM, I2C_MEMADD_SIZE_8BIT,
+        casper_i2c_mem_read(dev->i2c, MAX_M10M_I2C_ADDR << 1,
+            MAX_M10M_REG_DATA_STREAM, 1,
             junk, chunk, 50);
     }
 }
@@ -165,20 +147,20 @@ static bool max_m10m_wait_ack(max_m10m_t *dev, uint8_t cls, uint8_t id,
     dev->ack_received = false;
     dev->nak_received = false;
 
-    uint32_t start = HAL_GetTick();
-    while (HAL_GetTick() - start < timeout_ms) {
+    uint32_t start = casper_millis();
+    while (casper_millis() - start < timeout_ms) {
         uint16_t avail = max_m10m_read_bytes_available(dev);
         if (avail == 0 || avail == 0xFFFF) {
-            HAL_Delay(10);
+            casper_delay_ms(10);
             continue;
         }
         /* Read up to 64 bytes at a time */
         uint16_t chunk = avail > 64 ? 64 : avail;
         uint8_t buf[64];
-        HAL_StatusTypeDef rc = HAL_I2C_Mem_Read(dev->hi2c,
+        casper_status_t rc = casper_i2c_mem_read(dev->i2c,
             MAX_M10M_I2C_ADDR << 1, MAX_M10M_REG_DATA_STREAM,
-            I2C_MEMADD_SIZE_8BIT, buf, chunk, 50);
-        if (rc != HAL_OK) continue;
+            1, buf, chunk, 50);
+        if (rc != CASPER_OK) continue;
 
         for (uint16_t i = 0; i < chunk; i++)
             ubx_parse_byte(dev, buf[i]);
@@ -348,7 +330,7 @@ static void ubx_handle_frame(max_m10m_t *dev)
         dev->vel_d_m_s = (float)dev->vel_d_mm_s * 0.001f;
 
         dev->has_fix       = (dev->fix_type >= GPS_FIX_2D);
-        dev->last_pvt_tick = HAL_GetTick();
+        dev->last_pvt_tick = casper_millis();
         dev->pvt_count++;
 
     } else if (dev->parse_class == UBX_CLASS_ACK &&
@@ -386,25 +368,23 @@ static void ubx_handle_frame(max_m10m_t *dev)
 /* Public API                                                          */
 /* ================================================================== */
 
-bool max_m10m_init(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
-                   GPIO_TypeDef *nrst_port, uint16_t nrst_pin)
+bool max_m10m_init(max_m10m_t *dev, casper_i2c_t *i2c, casper_pin_t nrst)
 {
     memset(dev, 0, sizeof(*dev));
-    dev->hi2c      = hi2c;
-    dev->nrst_port = nrst_port;
-    dev->nrst_pin  = nrst_pin;
+    dev->i2c         = i2c;
+    dev->nrst        = nrst;
     dev->parse_state = UBX_PARSE_SYNC1;
 
     /* 1. Hard reset: NRST_GPS LOW 10ms, release, wait 1s for boot */
-    HAL_GPIO_WritePin(nrst_port, nrst_pin, GPIO_PIN_RESET);
-    HAL_Delay(10);
-    HAL_GPIO_WritePin(nrst_port, nrst_pin, GPIO_PIN_SET);
-    HAL_Delay(1000);
+    casper_gpio_write(nrst, CASPER_PIN_LOW);
+    casper_delay_ms(10);
+    casper_gpio_write(nrst, CASPER_PIN_HIGH);
+    casper_delay_ms(1000);
 
     /* 2. I2C comms check */
-    HAL_StatusTypeDef rc = HAL_I2C_IsDeviceReady(hi2c,
+    casper_status_t rc = casper_i2c_dev_ready(i2c,
         MAX_M10M_I2C_ADDR << 1, 3, 100);
-    if (rc != HAL_OK) {
+    if (rc != CASPER_OK) {
         dev->alive = false;
         return false;
     }
@@ -417,17 +397,17 @@ bool max_m10m_init(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
 
         /* Wait for reboot, actively reading to prevent I2C timeout
          * (M10 stops output if master doesn't read for 1.5s) */
-        uint32_t t0 = HAL_GetTick();
-        while (HAL_GetTick() - t0 < 2000) {
-            HAL_Delay(100);
-            rc = HAL_I2C_IsDeviceReady(hi2c, MAX_M10M_I2C_ADDR << 1, 1, 50);
-            if (rc == HAL_OK) {
+        uint32_t t0 = casper_millis();
+        while (casper_millis() - t0 < 2000) {
+            casper_delay_ms(100);
+            rc = casper_i2c_dev_ready(i2c, MAX_M10M_I2C_ADDR << 1, 1, 50);
+            if (rc == CASPER_OK) {
                 /* Module is back — drain any startup data */
                 max_m10m_drain(dev);
             }
         }
-        rc = HAL_I2C_IsDeviceReady(hi2c, MAX_M10M_I2C_ADDR << 1, 5, 200);
-        if (rc != HAL_OK) { dev->alive = false; return false; }
+        rc = casper_i2c_dev_ready(i2c, MAX_M10M_I2C_ADDR << 1, 5, 200);
+        if (rc != CASPER_OK) { dev->alive = false; return false; }
         max_m10m_drain(dev);
     }
 
@@ -454,9 +434,34 @@ bool max_m10m_init(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
 
 int max_m10m_tick(max_m10m_t *dev)
 {
+#ifdef HIL_MODE
+    /* Skip the I2C/UBX state machine. Report a fresh fix only when
+     * the host posts a new 0xD4 packet — pending is cleared on
+     * consumption so subsequent flight-loop iterations within the
+     * same aux packet don't re-fire the EKF GPS update. Lat/lon
+     * raw-int fields stay zero (host carries Δlat/Δlon for telemetry,
+     * but the EKF only needs alt/vel). */
+    if (!g_hil_aux.pending) {
+        return 0;
+    }
+    g_hil_aux.pending = false;
+    dev->alive       = true;
+    dev->alt_msl_m   = g_hil_aux.gps_alt_msl_m;
+    dev->vel_d_m_s   = g_hil_aux.gps_vel_d_mps;
+    dev->fix_type    = g_hil_aux.gps_fix;
+    dev->num_sv      = g_hil_aux.gps_sat;
+    dev->has_fix     = (g_hil_aux.gps_fix >= GPS_FIX_2D);
+    dev->h_msl_mm    = (int32_t)(g_hil_aux.gps_alt_msl_m * 1000.0f);
+    dev->vel_d_mm_s  = (int32_t)(g_hil_aux.gps_vel_d_mps * 1000.0f);
+    dev->last_pvt_tick = g_hil_aux.tick_ms;
+    dev->pvt_count++;
+    /* Returning 1 only when the host says GPS is valid keeps the
+     * downstream EKF/logger updates from acting on stale aux data. */
+    return hil_aux_gps_valid() ? 1 : 0;
+#else
     if (!dev->alive) return 0;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     switch (dev->tick_state) {
     case GPS_TICK_IDLE:
@@ -490,11 +495,11 @@ int max_m10m_tick(max_m10m_t *dev)
         if (chunk > 64) chunk = 64;
 
         uint8_t buf[64];
-        HAL_StatusTypeDef rc = HAL_I2C_Mem_Read(dev->hi2c,
+        casper_status_t rc = casper_i2c_mem_read(dev->i2c,
             MAX_M10M_I2C_ADDR << 1, MAX_M10M_REG_DATA_STREAM,
-            I2C_MEMADD_SIZE_8BIT, buf, chunk, 50);
+            1, buf, chunk, 50);
 
-        if (rc != HAL_OK) {
+        if (rc != CASPER_OK) {
             dev->dbg_i2c_err++;
             dev->tick_state = GPS_TICK_IDLE;
             return 0;
@@ -524,27 +529,27 @@ int max_m10m_tick(max_m10m_t *dev)
     }
 
     return 0;
+#endif
 }
 
-bool max_m10m_init_minimal(max_m10m_t *dev, I2C_HandleTypeDef *hi2c,
-                            GPIO_TypeDef *nrst_port, uint16_t nrst_pin)
+bool max_m10m_init_minimal(max_m10m_t *dev, casper_i2c_t *i2c,
+                            casper_pin_t nrst)
 {
     memset(dev, 0, sizeof(*dev));
-    dev->hi2c      = hi2c;
-    dev->nrst_port = nrst_port;
-    dev->nrst_pin  = nrst_pin;
+    dev->i2c         = i2c;
+    dev->nrst        = nrst;
     dev->parse_state = UBX_PARSE_SYNC1;
 
     /* Hard reset */
-    HAL_GPIO_WritePin(nrst_port, nrst_pin, GPIO_PIN_RESET);
-    HAL_Delay(10);
-    HAL_GPIO_WritePin(nrst_port, nrst_pin, GPIO_PIN_SET);
-    HAL_Delay(1000);
+    casper_gpio_write(nrst, CASPER_PIN_LOW);
+    casper_delay_ms(10);
+    casper_gpio_write(nrst, CASPER_PIN_HIGH);
+    casper_delay_ms(1000);
 
     /* I2C check */
-    HAL_StatusTypeDef rc = HAL_I2C_IsDeviceReady(hi2c,
+    casper_status_t rc = casper_i2c_dev_ready(i2c,
         MAX_M10M_I2C_ADDR << 1, 3, 100);
-    if (rc != HAL_OK) {
+    if (rc != CASPER_OK) {
         dev->alive = false;
         return false;
     }
@@ -560,7 +565,7 @@ int max_m10m_tick_nmea(max_m10m_t *dev)
 {
     if (!dev->alive) return 0;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now = casper_millis();
 
     /* Poll every 25ms */
     if (now - dev->tick_last_poll < 25) return 0;
@@ -574,10 +579,10 @@ int max_m10m_tick_nmea(max_m10m_t *dev)
     /* Read up to 64 bytes */
     uint16_t chunk = avail > 64 ? 64 : avail;
     uint8_t buf[64];
-    HAL_StatusTypeDef rc = HAL_I2C_Mem_Read(dev->hi2c,
+    casper_status_t rc = casper_i2c_mem_read(dev->i2c,
         MAX_M10M_I2C_ADDR << 1, MAX_M10M_REG_DATA_STREAM,
-        I2C_MEMADD_SIZE_8BIT, buf, chunk, 50);
-    if (rc != HAL_OK) { dev->dbg_i2c_err++; return 0; }
+        1, buf, chunk, 50);
+    if (rc != CASPER_OK) { dev->dbg_i2c_err++; return 0; }
     dev->dbg_bytes_read += chunk;
 
     /* Buffer into NMEA lines + feed UBX parser (for MON-RF responses) */
@@ -642,19 +647,19 @@ bool max_m10m_poll_mon_rf(max_m10m_t *dev)
     max_m10m_i2c_write_ubx(dev, UBX_CLASS_MON, UBX_MON_RF_ID, NULL, 0);
 
     /* Blocking wait for MON-RF response */
-    uint32_t start = HAL_GetTick();
-    while (HAL_GetTick() - start < 500) {
+    uint32_t start = casper_millis();
+    while (casper_millis() - start < 500) {
         uint16_t avail = max_m10m_read_bytes_available(dev);
         if (avail == 0 || avail == 0xFFFF) {
-            HAL_Delay(10);
+            casper_delay_ms(10);
             continue;
         }
         uint16_t chunk = avail > 64 ? 64 : avail;
         uint8_t buf[64];
-        HAL_StatusTypeDef rc = HAL_I2C_Mem_Read(dev->hi2c,
+        casper_status_t rc = casper_i2c_mem_read(dev->i2c,
             MAX_M10M_I2C_ADDR << 1, MAX_M10M_REG_DATA_STREAM,
-            I2C_MEMADD_SIZE_8BIT, buf, chunk, 50);
-        if (rc != HAL_OK) continue;
+            1, buf, chunk, 50);
+        if (rc != CASPER_OK) continue;
 
         for (uint16_t i = 0; i < chunk; i++)
             ubx_parse_byte(dev, buf[i]);

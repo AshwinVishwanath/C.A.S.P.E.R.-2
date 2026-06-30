@@ -14,17 +14,18 @@
 #ifndef APP_GROUND_GROUND_MAIN_H
 #define APP_GROUND_GROUND_MAIN_H
 
-#include "stm32h7xx_hal.h"
 #include "ms5611.h"
 #include "max_m10m.h"
 
 /**
  * Initialize ground station subsystems.
- * @param hspi1  SPI1 handle for SX1276
- * @param baro   Pointer to MS5611 instance (already initialized)
- * @param gps    Pointer to MAX-M10M instance (already initialized)
+ * @param hspi1_opaque  SPI1 handle as void* (SPI_HandleTypeDef* cast to void*).
+ *                      Keeps HAL types out of this header; ground_main.c casts
+ *                      it back when passing to ground_radio_init.
+ * @param baro          Pointer to MS5611 instance (already initialized)
+ * @param gps           Pointer to MAX-M10M instance (already initialized)
  */
-void ground_main_init(SPI_HandleTypeDef *hspi1, ms5611_t *baro, max_m10m_t *gps);
+void ground_main_init(void *hspi1_opaque, ms5611_t *baro, max_m10m_t *gps);
 
 /**
  * Ground station main loop tick. Call from while(1).

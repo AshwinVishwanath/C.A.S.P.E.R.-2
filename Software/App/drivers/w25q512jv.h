@@ -6,7 +6,14 @@
 #ifndef W25Q512JV_H
 #define W25Q512JV_H
 
-#include "stm32h7xx_hal.h"
+/*
+ * w25q512jv.h — W25Q512JV QSPI NOR-flash driver header.
+ *
+ * After the casper3-port-layer migration this driver is board-agnostic:
+ * it uses casper_port.h types only, no STM32 HAL.
+ */
+
+#include "casper_port.h"   /* casper_qspi_t, casper_status_t, casper_delay_ms, … */
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -141,9 +148,9 @@
 /* ------------------------------------------------------------------ */
 typedef enum {
     W25Q_IT_IDLE = 0,
-    W25Q_IT_WRITE_DATA,         /* Transmit_IT sending page data     */
-    W25Q_IT_WRITE_POLL,         /* AutoPolling_IT waiting WIP clear  */
-    W25Q_IT_ERASE_POLL          /* AutoPolling_IT waiting erase done */
+    W25Q_IT_WRITE_DATA,         /* transmit_it sending page data     */
+    W25Q_IT_WRITE_POLL,         /* autopoll_it waiting WIP clear     */
+    W25Q_IT_ERASE_POLL          /* autopoll_it waiting erase done    */
 } w25q_it_state_t;
 
 /* Callback function type for non-blocking operations */
@@ -153,12 +160,12 @@ typedef void (*w25q_callback_t)(void *ctx, bool success);
 /*  Driver struct                                                      */
 /* ------------------------------------------------------------------ */
 typedef struct {
-    QSPI_HandleTypeDef *hqspi;
-    uint8_t  jedec_id[3];       /* Manufacturer, MemType, Capacity */
+    casper_qspi_t *bus;          /* Opaque QSPI bus handle (board-provided). */
+    uint8_t  jedec_id[3];        /* Manufacturer, MemType, Capacity */
     bool     initialized;
 
     /* IT mode state */
-    volatile uint8_t  it_state; /* w25q_it_state_t — volatile for ISR access */
+    volatile uint8_t  it_state;  /* w25q_it_state_t — volatile for ISR access */
     w25q_callback_t   on_complete;
     w25q_callback_t   on_error;
     void             *cb_ctx;
@@ -169,8 +176,9 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 
 /* Initialise: reset, read JEDEC ID, enable QE, enter 4-byte mode.
+ * Also registers an IT handler on `bus` so IT callbacks route here.
  * Returns true on success. */
-bool w25q512jv_init(w25q512jv_t *dev, QSPI_HandleTypeDef *hqspi);
+bool w25q512jv_init(w25q512jv_t *dev, casper_qspi_t *bus);
 
 /* Read `len` bytes starting at `addr` into `buf`.
  * Returns W25Q_OK on success. */
@@ -191,14 +199,6 @@ int w25q512jv_erase_sector(w25q512jv_t *dev, uint32_t addr);
 /* Erase 64 KB block containing `addr`.
  * Returns W25Q_OK on success. */
 int w25q512jv_erase_block(w25q512jv_t *dev, uint32_t addr);
-
-/* Erase entire chip. WARNING: takes up to 400 seconds!
- * Returns W25Q_OK on success. */
-int w25q512jv_erase_chip(w25q512jv_t *dev);
-
-/* Write-read-verify test on sector 0.
- * Returns true if data matches. */
-bool w25q512jv_test(w25q512jv_t *dev);
 
 /* ------------------------------------------------------------------ */
 /*  Non-blocking (IT mode) API                                         */

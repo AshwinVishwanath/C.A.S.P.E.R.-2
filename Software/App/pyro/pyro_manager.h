@@ -8,15 +8,23 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"   /* casper_adc_t, casper_pin_t */
+#include "casper_pyro.h"   /* PYRO_NUM_CHANNELS */
 
 /**
  * Initialize the pyro manager and low-level pyro hardware.
+ *
  * Calls casper_pyro_init() internally — do NOT call casper_pyro_init() separately.
+ * casper_adc_init_all() must have been called before this (performs ADC calibration).
+ *
+ * @param adc   Pointer array of PYRO_NUM_CHANNELS casper_adc_t* for continuity ADCs.
+ *              Pass BSP_ADC_CONT (board singleton from board_casper2.h).
+ * @param fire  Array of PYRO_NUM_CHANNELS casper_pin_t for fire output pins.
+ * @param led   Array of PYRO_NUM_CHANNELS casper_pin_t for continuity LED pins.
  */
-void pyro_mgr_init(ADC_HandleTypeDef *hadc1,
-                    ADC_HandleTypeDef *hadc2,
-                    ADC_HandleTypeDef *hadc3);
+void pyro_mgr_init(casper_adc_t *adc[PYRO_NUM_CHANNELS],
+                   casper_pin_t  fire[PYRO_NUM_CHANNELS],
+                   casper_pin_t  led[PYRO_NUM_CHANNELS]);
 
 /**
  * Periodic tick (~10 Hz). Calls casper_pyro_tick() for ADC/LED/auto-stop,
@@ -105,5 +113,15 @@ int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms);
  * Get raw ADC continuity values for all channels.
  */
 void pyro_mgr_get_cont_adc(uint16_t adc_out[4]);
+
+#ifdef HIL_MODE
+/**
+ * Override per-channel continuity from a host-injected bitmap (HIL only).
+ * Bits 0..3 correspond to channels 1..4 (0-indexed). Replaces the values
+ * the ADC tick wrote, so auto-arm and fire preconditions see the simulated
+ * world. Call after pyro_mgr_tick() each iteration.
+ */
+void pyro_mgr_hil_set_continuity(uint8_t cont_bitmap);
+#endif
 
 #endif /* APP_PYRO_PYRO_MANAGER_H */

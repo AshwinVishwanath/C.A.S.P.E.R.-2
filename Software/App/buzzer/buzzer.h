@@ -6,14 +6,16 @@
 #ifndef APP_BUZZER_BUZZER_H
 #define APP_BUZZER_BUZZER_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"   /* casper_pwm_t, casper_millis — no HAL types */
 #include <stdint.h>
 
 /**
- * Initialize the buzzer driver. Starts TIM4 PWM on CH3, silent.
- * Must be called after MX_TIM4_Init().
+ * Initialize the buzzer driver. Starts the PWM channel once, silent.
+ * Must be called after the board layer has configured the timer.
+ *
+ * @param pwm  Opaque PWM handle (e.g. &BSP_PWM_BUZZ on Casper 2).
  */
-void buzzer_init(TIM_HandleTypeDef *htim);
+void buzzer_init(casper_pwm_t *pwm);
 
 /**
  * Non-blocking tick. Call from the superloop every iteration.

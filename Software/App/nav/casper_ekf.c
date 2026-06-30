@@ -182,7 +182,6 @@ void casper_ekf_init(casper_ekf_t *ekf)
     memset(ekf, 0, sizeof(*ekf));
 
     float dt = EKF_DT;
-    ekf->dt = dt;
 
     /* ── P0 ── */
     ekf->P[0 * 4 + 0] = P0_ALT;

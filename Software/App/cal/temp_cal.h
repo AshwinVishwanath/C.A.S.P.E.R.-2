@@ -14,7 +14,7 @@
 #ifndef TEMP_CAL_H
 #define TEMP_CAL_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"
 #include "lsm6dso32.h"
 #include "ms5611.h"
 #include "mmc5983ma.h"

@@ -5,7 +5,6 @@
  * ============================================================ */
 #include "flight_fsm.h"
 #include "fsm_util.h"
-#include "stm32h7xx_hal.h"
 #include <math.h>
 #include <string.h>
 
@@ -106,11 +105,6 @@ void flight_fsm_init(void)
     s_peak_alt_m = 0.0f;
     s_landed_alt_ref = 0.0f;
     s_stage_count = 0;
-}
-
-void flight_fsm_reset(void)
-{
-    flight_fsm_init();
 }
 
 fsm_state_t flight_fsm_tick(const fsm_input_t *in)

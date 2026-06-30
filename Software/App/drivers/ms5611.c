@@ -11,6 +11,9 @@
 
 #include "ms5611.h"
 #include <math.h>
+#ifdef HIL_MODE
+#include "hil_raw_handler.h"
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                   */
@@ -18,18 +21,18 @@
 
 static inline void cs_low(const ms5611_t *dev)
 {
-    HAL_GPIO_WritePin(dev->cs_port, dev->cs_pin, GPIO_PIN_RESET);
+    casper_gpio_write(dev->cs, CASPER_PIN_LOW);
 }
 
 static inline void cs_high(const ms5611_t *dev)
 {
-    HAL_GPIO_WritePin(dev->cs_port, dev->cs_pin, GPIO_PIN_SET);
+    casper_gpio_write(dev->cs, CASPER_PIN_HIGH);
 }
 
 static void ms5611_command(ms5611_t *dev, uint8_t cmd)
 {
     cs_low(dev);
-    HAL_SPI_Transmit(dev->hspi, &cmd, 1, 100);
+    casper_spi_transmit(dev->bus, &cmd, 1, 100);
     cs_high(dev);
 }
 
@@ -41,8 +44,8 @@ static uint16_t ms5611_read_prom(ms5611_t *dev, uint8_t reg)
     uint8_t buf[2] = {0};
 
     cs_low(dev);
-    HAL_SPI_Transmit(dev->hspi, &cmd, 1, 100);
-    HAL_SPI_Receive(dev->hspi, buf, 2, 100);
+    casper_spi_transmit(dev->bus, &cmd, 1, 100);
+    casper_spi_receive(dev->bus, buf, 2, 100);
     cs_high(dev);
 
     return ((uint16_t)buf[0] << 8) | buf[1];
@@ -54,8 +57,8 @@ static uint32_t ms5611_read_adc(ms5611_t *dev)
     uint8_t buf[3] = {0};
 
     cs_low(dev);
-    HAL_SPI_Transmit(dev->hspi, &cmd, 1, 100);
-    HAL_SPI_Receive(dev->hspi, buf, 3, 100);
+    casper_spi_transmit(dev->bus, &cmd, 1, 100);
+    casper_spi_receive(dev->bus, buf, 3, 100);
     cs_high(dev);
 
     return ((uint32_t)buf[0] << 16) | ((uint32_t)buf[1] << 8) | buf[2];
@@ -72,9 +75,9 @@ static void ms5611_convert(ms5611_t *dev, uint8_t base_cmd)
     uint8_t cmd = base_cmd + idx * 2;
     ms5611_command(dev, cmd);
 
-    /* Wait for conversion — HAL_Delay works in milliseconds, round up */
+    /* Wait for conversion — casper_delay_ms works in milliseconds, round up */
     uint32_t delay_ms = (conv_delay_us[idx] + 999) / 1000;
-    HAL_Delay(delay_ms);
+    casper_delay_ms(delay_ms);
 }
 
 /* Compute temperature & pressure from raw D1, D2 ADC values */
@@ -127,12 +130,10 @@ static void ms5611_init_constants(float C[7])
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-bool ms5611_init(ms5611_t *dev, SPI_HandleTypeDef *hspi,
-                 GPIO_TypeDef *cs_port, uint16_t cs_pin)
+bool ms5611_init(ms5611_t *dev, casper_spi_t *bus, casper_pin_t cs)
 {
-    dev->hspi        = hspi;
-    dev->cs_port     = cs_port;
-    dev->cs_pin      = cs_pin;
+    dev->bus         = bus;
+    dev->cs          = cs;
     dev->osr         = MS5611_OSR_4096;
     dev->temperature = 0;
     dev->pressure    = 0;
@@ -146,7 +147,7 @@ bool ms5611_init(ms5611_t *dev, SPI_HandleTypeDef *hspi,
 
     /* Reset */
     ms5611_command(dev, MS5611_CMD_RESET);
-    HAL_Delay(4); /* Datasheet: 2.8 ms reload, use 4 ms margin */
+    casper_delay_ms(4); /* Datasheet: 2.8 ms reload, use 4 ms margin */
 
     /* Initialise scaling constants */
     ms5611_init_constants(dev->C);
@@ -181,7 +182,7 @@ int ms5611_read(ms5611_t *dev)
 
     ms5611_compute(dev, D1, D2);
 
-    dev->last_read   = HAL_GetTick();
+    dev->last_read   = casper_millis();
     dev->last_result = MS5611_READ_OK;
     return MS5611_READ_OK;
 }
@@ -191,30 +192,12 @@ float ms5611_get_temperature(const ms5611_t *dev)
     return (float)dev->temperature * 0.01f;
 }
 
-float ms5611_get_pressure(const ms5611_t *dev)
-{
-    return (float)dev->pressure * 0.01f;
-}
-
 float ms5611_get_altitude(const ms5611_t *dev, float sea_level_hPa)
 {
     float pressure_hPa = (float)dev->pressure * 0.01f;
     if (pressure_hPa <= 0.0f) pressure_hPa = 0.01f;  /* Guard: negative/zero → NaN from powf */
     float ratio = pressure_hPa / sea_level_hPa;
     return 44307.694f * (1.0f - powf(ratio, 0.190284f));
-}
-
-int ms5611_read_raw(ms5611_t *dev)
-{
-    /* D1: pressure */
-    ms5611_convert(dev, MS5611_CMD_CONVERT_D1);
-    dev->raw_pressure = ms5611_read_adc(dev);
-
-    /* D2: temperature */
-    ms5611_convert(dev, MS5611_CMD_CONVERT_D2);
-    dev->raw_temperature = ms5611_read_adc(dev);
-
-    return MS5611_READ_OK;
 }
 
 void ms5611_set_oversampling(ms5611_t *dev, ms5611_osr_t osr)
@@ -229,7 +212,29 @@ void ms5611_set_oversampling(ms5611_t *dev, ms5611_osr_t osr)
 
 int ms5611_tick(ms5611_t *dev)
 {
-    uint32_t now = HAL_GetTick();
+#ifdef HIL_MODE
+    /* Skip the SPI conversion state machine. Report a fresh sample
+     * whenever the host marked the current 0xD3 packet as carrying a
+     * new baro reading. Pressure comes from the host as float Pa;
+     * temperature defaults to 25 °C unless previously set, since the
+     * EKF baro path doesn't read it. The flight loop runs once per
+     * 0xD3 packet in HIL, so each baro_valid=true packet drives
+     * exactly one EKF baro update — same shape as real hardware. */
+    if (!g_hil_raw.baro_valid || g_hil_raw.baro_pa <= 0.0f) {
+        return 0;
+    }
+    dev->raw_pressure    = 0;  /* not modelled */
+    dev->raw_temperature = 0;
+    dev->pressure        = (int32_t)g_hil_raw.baro_pa;
+    if (dev->temperature == 0) {
+        dev->temperature = 2500;  /* 25.00 °C in 0.01 °C units */
+    }
+    dev->last_read   = g_hil_raw.tick_ms;
+    dev->last_result = MS5611_READ_OK;
+    dev->nb_state    = MS5611_NB_IDLE;
+    return 1;
+#else
+    uint32_t now = casper_millis();
 
     switch (dev->nb_state) {
     case MS5611_NB_IDLE:
@@ -268,4 +273,5 @@ int ms5611_tick(ms5611_t *dev)
     }
 
     return 0;
+#endif
 }

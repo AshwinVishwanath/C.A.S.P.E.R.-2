@@ -9,8 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
-#include "stm32h7xx_hal.h"
-#include "main.h"
+#include "casper_port.h"
+#include "board_casper2.h"
 #include "usbd_cdc_if.h"
 #include "buzzer.h"
 #include "flight_logger.h"
@@ -79,17 +79,15 @@ static void emit_probes(uint32_t now_ms)
 
 static void leds_set(bool l1, bool l2, bool l3, bool l4)
 {
-    HAL_GPIO_WritePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin, l1 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin, l2 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin, l3 ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(CONT_YN_4_GPIO_Port, CONT_YN_4_Pin, l4 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    casper_gpio_write(BSP_PIN_CONT_LED[0], l1 ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
+    casper_gpio_write(BSP_PIN_CONT_LED[1], l2 ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
+    casper_gpio_write(BSP_PIN_CONT_LED[2], l3 ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
+    casper_gpio_write(BSP_PIN_CONT_LED[3], l4 ? CASPER_PIN_HIGH : CASPER_PIN_LOW);
 }
 
 static void emit(const char *s)
 {
-    uint16_t len = 0;
-    while (s[len] != '\0') len++;
-    CDC_Transmit_FS((uint8_t *)s, len);
+    CDC_Transmit_FS((uint8_t *)s, (uint16_t)strlen(s));
 }
 
 static void emit_hex16(const char *prefix, const uint8_t *buf)
@@ -123,23 +121,23 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
     char line[96];
     int n;
 
-    HAL_Delay(200);
+    casper_delay_ms(200);
     emit("\r\n[PROBE] sector-0 write probe starting\r\n");
-    HAL_Delay(200);
+    casper_delay_ms(200);
 
     /* Erase sector 0 first so the test is conclusive: writing the pattern
      * onto a guaranteed-0xFF baseline genuinely exercises the write path.
      * Also clears any partial / stale index data left by previous runs. */
     emit("[PROBE] erasing sector 0 (4 KB)...\r\n");
-    HAL_Delay(100);
+    casper_delay_ms(100);
     int erc = w25q512jv_erase_sector(log->index.flash, 0x00000000U);
     n = snprintf(line, sizeof(line),
         "[PROBE] erase_sector returned: %d (W25Q_OK=%d)\r\n", erc, W25Q_OK);
     if (n > 0) CDC_Transmit_FS((uint8_t *)line, (uint16_t)n);
-    HAL_Delay(200);
+    casper_delay_ms(200);
     if (erc != W25Q_OK) {
         emit("[PROBE] verdict: FAIL — erase driver error\r\n");
-        HAL_Delay(300);
+        casper_delay_ms(300);
         return SANITY_FAIL_DRIVER;
     }
 
@@ -151,7 +149,7 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
         return SANITY_FAIL_DRIVER;
     }
     emit_hex16("[PROBE] pre: ", pre);
-    HAL_Delay(200);
+    casper_delay_ms(200);
 
     bool pre_all_ff = true;
     for (int i = 0; i < 16; i++) {
@@ -159,22 +157,22 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
     }
     if (!pre_all_ff) {
         emit("[PROBE] FAIL: sector 0 not erased after erase command\r\n");
-        HAL_Delay(300);
+        casper_delay_ms(300);
         return SANITY_FAIL_DRIVER;
     }
 
     emit("[PROBE] writing pattern A5 5A x8 at 0x00000000\r\n");
-    HAL_Delay(200);
+    casper_delay_ms(200);
     rc = w25q512jv_write(log->index.flash, 0x00000000U, pattern, 16);
     n = snprintf(line, sizeof(line),
         "[PROBE] w25q512jv_write returned: %d (W25Q_OK=%d)\r\n",
         rc, W25Q_OK);
     if (n > 0) CDC_Transmit_FS((uint8_t *)line, (uint16_t)n);
-    HAL_Delay(200);
+    casper_delay_ms(200);
 
     if (rc != W25Q_OK) {
         emit("[PROBE] verdict: FAIL — driver error\r\n");
-        HAL_Delay(300);
+        casper_delay_ms(300);
         return SANITY_FAIL_DRIVER;
     }
 
@@ -186,23 +184,23 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
         return SANITY_FAIL_DRIVER;
     }
     emit_hex16("[PROBE] post:", post);
-    HAL_Delay(200);
+    casper_delay_ms(200);
 
     if (memcmp(post, pattern, 16) == 0) {
         emit("[PROBE] verdict: PASS - sector 0 write works\r\n");
-        HAL_Delay(200);
+        casper_delay_ms(200);
 
         /* Cleanup: erase sector 0 again so we leave no trace. Otherwise the
          * probe pattern gets miscounted as a "flight" on next boot's
          * flight_logger_init() index scan, and log_index_start_flight() then
          * writes the real entry to a wrong offset. */
         emit("[PROBE] cleanup: erasing sector 0 again\r\n");
-        HAL_Delay(100);
+        casper_delay_ms(100);
         int crc = w25q512jv_erase_sector(log->index.flash, 0x00000000U);
         n = snprintf(line, sizeof(line),
             "[PROBE] cleanup erase returned: %d\r\n", crc);
         if (n > 0) CDC_Transmit_FS((uint8_t *)line, (uint16_t)n);
-        HAL_Delay(200);
+        casper_delay_ms(200);
 
         /* Re-scan the now-erased index. flight_logger_init() ran at boot
          * before the probe and may have miscounted previous-run probe
@@ -216,17 +214,17 @@ static sanity_state_t do_sector0_probe(flight_logger_t *log)
             (unsigned)log->index.flight_count,
             (unsigned long)log->index.hr_next_addr);
         if (n > 0) CDC_Transmit_FS((uint8_t *)line, (uint16_t)n);
-        HAL_Delay(300);
+        casper_delay_ms(300);
 
         return SANITY_BOOT_HOLD;
     }
     if (memcmp(post, pre, 16) == 0) {
         emit("[PROBE] verdict: FAIL — silent write (likely BP/WPS bits)\r\n");
-        HAL_Delay(500);
+        casper_delay_ms(500);
         return SANITY_FAIL_SILENT;
     }
     emit("[PROBE] verdict: FAIL — corruption (post != pattern AND post != pre)\r\n");
-    HAL_Delay(500);
+    casper_delay_ms(500);
     return SANITY_FAIL_CORRUPT;
 }
 
@@ -240,7 +238,7 @@ void logger_sanity_init(flight_logger_t *log)
     S.cal_announced = false;
 
     S.state = do_sector0_probe(log);
-    S.t_init_ms = HAL_GetTick();   /* anchor BOOT_HOLD after probe completes */
+    S.t_init_ms = casper_millis();   /* anchor BOOT_HOLD after probe completes */
 }
 
 void logger_sanity_tick(uint32_t now_ms)
@@ -278,9 +276,9 @@ void logger_sanity_tick(uint32_t now_ms)
         }
         if (cdc_sanity_take_go()) {
             emit("[SANITY] GO detected - calling flight_logger_launch...\r\n");
-            HAL_Delay(50);
+            casper_delay_ms(50);
             flight_logger_launch(S.log);
-            S.t_launch_ms = HAL_GetTick();
+            S.t_launch_ms = casper_millis();
             S.t_last_emit_ms = S.t_launch_ms;
             S.t_last_probe_ms = S.t_launch_ms;
             emit("[SANITY] launch returned - logging for 5s\r\n");
@@ -326,9 +324,9 @@ void logger_sanity_tick(uint32_t now_ms)
     case SANITY_FINALIZE: {
         flight_logger_finalize(S.log);
         emit("[SANITY] FINALIZE\r\n");
-        HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
-        HAL_GPIO_TogglePin(CONT_YN_2_GPIO_Port, CONT_YN_2_Pin);
-        HAL_GPIO_TogglePin(CONT_YN_3_GPIO_Port, CONT_YN_3_Pin);
+        casper_gpio_toggle(BSP_PIN_CONT_LED[0]);
+        casper_gpio_toggle(BSP_PIN_CONT_LED[1]);
+        casper_gpio_toggle(BSP_PIN_CONT_LED[2]);
         emit("[SANITY] DONE - power-cycle and decode flash\r\n");
         buzzer_beep_n(30, 3, 50, 200);
         S.state = SANITY_DONE;

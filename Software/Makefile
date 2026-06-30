@@ -92,8 +92,17 @@ Core/Src/system_stm32h7xx.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c
 
-# ── Shared application sources (both builds) ──────────────────
+# ── Port seam: board_casper2 (only App file allowed to include main.h/HAL) ──
 C_SOURCES += \
+App/port/board_casper2/board_casper2.c
+
+# ── Shared application sources (both builds) ──────────────────
+# app_main.c is shared: it owns app_init()/app_tick() (called unconditionally
+# from the generated Core/Src/main.c) plus the `gps` instance used by the
+# shared EXTI callback. Its BUILD_TARGET_GROUND #ifdefs select the ground vs
+# flight bring-up/superloop internally, so it must compile for both targets.
+C_SOURCES += \
+App/flight/app_main.c \
 App/drivers/ms5611.c \
 App/drivers/max_m10m.c \
 App/radio/sx1276.c \
@@ -103,6 +112,7 @@ App/telemetry/cobs.c \
 App/telemetry/crc32_hw.c \
 App/pack/quat_pack.c \
 App/pack/status_pack.c \
+App/nav/casper_quat.c \
 App/buzzer/buzzer.c
 
 ifeq ($(BUILD_TARGET),GROUND)
@@ -118,10 +128,8 @@ App/drivers/lsm6dso32.c \
 App/drivers/adxl372.c \
 App/drivers/w25q512jv.c \
 App/drivers/mmc5983ma.c \
-App/nav/casper_quat.c \
 App/nav/casper_attitude.c \
 App/nav/casper_ekf.c \
-App/nav/casper_gyro_int.c \
 App/cal/mag_cal.c \
 App/cal/mag_val.c \
 App/cal/temp_cal.c \
@@ -150,6 +158,8 @@ App/fsm/fsm_util.c \
 App/command/cmd_router.c \
 App/command/hil_handler.c \
 App/command/hil_raw_handler.c \
+App/command/hil_aux_handler.c \
+App/command/hil_adxl_handler.c \
 App/command/cac_handler.c \
 App/command/cfg_manager.c \
 App/diag/self_test.c \
@@ -220,19 +230,39 @@ C_DEFS =  \
 -DARM_MATH_CM7 \
 -DUSB_MODE=1 \
 -DTEST_MODE=1 \
--DGPS_TEST \
 -DMSC_MEDIA_PACKET=4096
 
-# Uncomment to enable bench logger sanity test (CDC 'go' + 5s + finalize):
- C_DEFS += -DLOGGER_SANITY=1
+# HIL build: hardware-in-the-loop firmware that consumes simulated
+# sensor packets over USB CDC. Sets -DHIL_MODE and suppresses the
+# bench logger sanity harness (which is incompatible — the bench
+# waits for a typed 'go', the HIL host drives the FSM via packets).
+HIL ?= 0
+ifeq ($(HIL),1)
+C_DEFS += -DHIL_MODE
+SUPPRESS_LOGGER_SANITY := 1
+endif
+
+# Bench logger sanity test (CDC 'go' + 5s + finalize). Suppressed
+# automatically when HIL=1.
+ifndef SUPPRESS_LOGGER_SANITY
+C_DEFS += -DLOGGER_SANITY=1
+endif
 
 ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND
+# GS_OUTPUT: ASCII (default — current behavior, unchanged) or COBS (binary
+# COBS-framed Mission Control mode).  Only meaningful for BUILD_TARGET=GROUND.
+# GS_OUTPUT=COBS adds -DGS_OUTPUT_COBS; the two modes are mutually exclusive
+# (CLAUDE.md rule #4 — never mix ASCII and binary on the same CDC pipe).
+GS_OUTPUT ?= ASCII
+ifeq ($(GS_OUTPUT),COBS)
+C_DEFS += -DGS_OUTPUT_COBS
+endif
 else
 C_DEFS += -DBUILD_TARGET_FLIGHT
 endif
 
-# Extra defines from command line: make -j8 EXTRA_DEFS="-DHIL_MODE"
+# Extra defines from command line: make -j8 EXTRA_DEFS="-DSOMETHING"
 ifdef EXTRA_DEFS
 C_DEFS += $(EXTRA_DEFS)
 endif
@@ -257,6 +287,8 @@ C_INCLUDES =  \
 -IFATFS/Target \
 -IFATFS/App \
 -IMiddlewares/Third_Party/FatFs/src \
+-IApp/port \
+-IApp/port/board_casper2 \
 -IApp/drivers \
 -IApp/nav \
 -IApp/cal \
@@ -342,6 +374,20 @@ flight:
 
 ground:
 	$(MAKE) BUILD_TARGET=GROUND
+
+# Binary COBS / Mission Control output mode (suppresses all ASCII CDC paths).
+ground-cobs:
+	$(MAKE) BUILD_TARGET=GROUND GS_OUTPUT=COBS
+	@echo ""
+	@echo "Ground-COBS build complete. Flash $(BUILD_DIR)/$(TARGET).hex via DFU."
+
+# Hardware-in-the-loop build (firmware consumes injected sensor packets
+# over USB CDC). Use the host runner under tools/hil to drive a scenario.
+hil:
+	$(MAKE) BUILD_TARGET=FLIGHT HIL=1
+	@echo ""
+	@echo "HIL build complete. Flash $(BUILD_DIR)/$(TARGET).hex via DFU,"
+	@echo "then run a scenario from tools/hil/."
 
 #######################################
 # clean up

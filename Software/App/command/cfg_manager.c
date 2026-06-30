@@ -6,6 +6,7 @@
 #include "cfg_manager.h"
 #include "crc32_hw.h"
 #include "tlm_manager.h"
+#include "endian.h"
 #include <string.h>
 
 /* ── Private state ──────────────────────────────────────────────── */
@@ -53,16 +54,10 @@ void cfg_handle_upload(const uint8_t *data, int len)
     /* Send ACK with config hash */
     uint8_t ack[10];
     ack[0] = MSG_ID_ACK_CFG;   /* 0xA3 */
-    ack[1] = (uint8_t)(s_config_hash & 0xFF);
-    ack[2] = (uint8_t)((s_config_hash >> 8) & 0xFF);
-    ack[3] = (uint8_t)((s_config_hash >> 16) & 0xFF);
-    ack[4] = (uint8_t)((s_config_hash >> 24) & 0xFF);
+    put_le32(&ack[1], s_config_hash);
     ack[5] = PROTOCOL_VERSION;
     uint32_t crc = crc32_hw_compute(ack, 6);
-    ack[6] = (uint8_t)(crc & 0xFF);
-    ack[7] = (uint8_t)((crc >> 8) & 0xFF);
-    ack[8] = (uint8_t)((crc >> 16) & 0xFF);
-    ack[9] = (uint8_t)((crc >> 24) & 0xFF);
+    put_le32(&ack[6], crc);
     tlm_send_response(ack, 10);
 }
 
@@ -83,12 +78,4 @@ void cfg_handle_eraselog(const uint8_t *data, int len)
 uint32_t cfg_get_active_hash(void)
 {
     return s_config_hash;
-}
-
-const flight_config_t *cfg_get_active(void)
-{
-    if (!s_config_valid) {
-        return (const flight_config_t *)0;
-    }
-    return &s_config;
 }

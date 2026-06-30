@@ -1,0 +1,84 @@
+=== casper() top-level setup ===
+[casper] profile=apogee, StopTime override = 6.0 s
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=6.0 s
+[load_truth_ts] loading cached E:\C.A.S.P.E.R\C.A.S.P.E.R Flight Software V2\Casper 2 flight firmware\C.A.S.P.E.R.-2\Matlab Code\Simulink Development\truth\truth_trajectory.mat
+[load_truth_ts] truncating to first 60001 samples (6.00 s)
+[load_truth_ts] truth_ts populated in base WS (60001 samples, 6.00 s span)
+
+=== ready to simulate ===
+  Profile  : apogee
+  Seed     : 20260519
+  StopTime : 6.0 s
+  Solver dt: 1e-04 s
+Next steps:
+  open_system('casper_sim_phase0')                      % visual inspection
+  sim('casper_sim_phase0', 'StopTime', '6.0')          % run the simulation
+  test_visual_model_compile                              % automated 5 s smoke
+  run_phase0_trustgate                                   % canonical byte-exact regression
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=5.0 s
+[build_casper_sim_phase0] wrote E:\C.A.S.P.E.R\C.A.S.P.E.R Flight Software V2\Casper 2 flight firmware\C.A.S.P.E.R.-2\Matlab Code\Simulink Development\integration\casper_sim_phase0.slx
+  running short 1 s sim...
+[prelaunch_pad] prepended 5.00 s (50000 samples @ dt=0.0001) to truth_ts; new t0 = -5.000 s
+  sim done.
+imu log shape: t=[6001 1], v=[6001 3]
+First 5 IMU log samples (after t=-5):
+  t=-5.0000: v=[ -32.0000 -32.0000 -32.0000 ]
+  t=-4.9990: v=[ -32.0000 -32.0000 -32.0000 ]
+  t=-4.9980: v=[ -0.9858 -0.0166 0.0224 ]
+  t=-4.9970: v=[ -0.9848 -0.0098 0.0312 ]
+  t=-4.9960: v=[ -0.9750 -0.0176 0.0332 ]
+IMU log samples around launch:
+  t=-0.0100: v=[ -0.9867 -0.0166 0.0312 ]
+  t=-0.0090: v=[ -0.9828 -0.0215 0.0293 ]
+  t=-0.0080: v=[ -0.9848 -0.0107 0.0303 ]
+  t=-0.0070: v=[ -0.9838 -0.0107 0.0342 ]
+  t=-0.0060: v=[ -0.9838 -0.0303 0.0273 ]
+  t=-0.0050: v=[ -0.9838 -0.0176 0.0332 ]
+  t=-0.0040: v=[ -0.9867 -0.0195 0.0322 ]
+  t=-0.0030: v=[ -0.9848 -0.0146 0.0273 ]
+  t=-0.0020: v=[ -0.9789 -0.0127 0.0371 ]
+  t=-0.0010: v=[ -0.9867 -0.0127 0.0322 ]
+  t= 0.0000: v=[ -0.9828 -0.0166 0.0303 ]
+  t= 0.0010: v=[ -0.9867 -0.0166 0.0332 ]
+  t= 0.0020: v=[ -0.9838 -0.0137 0.0303 ]
+  t= 0.0030: v=[ -0.9809 -0.0107 0.0322 ]
+  t= 0.0040: v=[ -0.9819 -0.0088 0.0293 ]
+  t= 0.0050: v=[ -0.9906 -0.0127 0.0293 ]
+  t= 0.0060: v=[ -0.9867 -0.0137 0.0400 ]
+  t= 0.0070: v=[ -0.9858 -0.0166 0.0390 ]
+  t= 0.0080: v=[ -0.9799 -0.0156 0.0283 ]
+  t= 0.0090: v=[ -0.9789 -0.0068 0.0273 ]
+  t= 0.0100: v=[ -0.9916 -0.0068 0.0322 ]
+[T02] casper_sensor_params loaded. Firmware ref: 80210b26318aec39f28818b6985ca2098afe2b9e
+[sim_config] Seed=20260519, StopTime=1.0 s
+
+Legacy driver, PreLaunchPad=5, StopTime=1:
+[T11] casper_phase0_run: wall 0.55 s (N_imu=4999, N_baro=601, N_mag=601)
+LEGACY first 5 IMU samples (std-body, g):
+  t=-5.0000: a=[1.0189 -0.0166 -0.0146]
+  t=-4.9988: a=[1.0307 -0.0342 -0.0254]
+  t=-4.9976: a=[1.0258 -0.0029 -0.0137]
+  t=-4.9964: a=[1.0199 -0.0088 -0.0137]
+  t=-4.9952: a=[1.0199 -0.0166 -0.0010]
+
+LEGACY frame-switched (fw, m/s^2):
+  t=-5.0000: a_fw=[-0.1627 9.9924 0.1436]
+  t=-4.9988: a_fw=[-0.3350 10.1073 0.2489]
+  t=-4.9976: a_fw=[-0.0287 10.0594 0.1340]
+  t=-4.9964: a_fw=[-0.0861 10.0020 0.1340]
+  t=-4.9952: a_fw=[-0.1627 10.0020 0.0096]
+
+truth_ts.accel_NED first 5 samples:
+  t=-5.0000: accel_NED=[0.0000 0.0000 -0.0000]
+  t=-4.9999: accel_NED=[0.0000 0.0000 -0.0000]
+  t=-4.9998: accel_NED=[0.0000 0.0000 -0.0000]
+  t=-4.9997: accel_NED=[0.0000 0.0000 -0.0000]
+  t=-4.9996: accel_NED=[0.0000 0.0000 -0.0000]
+truth_ts.quat_std first 5 samples:
+  t=-5.0000: q=[0.7133 0.0000 0.7009 0.0000]
+  t=-4.9999: q=[0.7133 0.0000 0.7009 0.0000]
+  t=-4.9998: q=[0.7133 0.0000 0.7009 0.0000]
+  t=-4.9997: q=[0.7133 0.0000 0.7009 0.0000]
+  t=-4.9996: q=[0.7133 0.0000 0.7009 0.0000]

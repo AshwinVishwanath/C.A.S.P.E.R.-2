@@ -7,7 +7,6 @@
 #include "casper_pyro.h"
 #include "flight_fsm.h"
 #include "tlm_types.h"
-#include "stm32h7xx_hal.h"
 #include "fsm_types.h"
 
 extern int tlm_queue_event(uint8_t type, uint16_t data);
@@ -27,11 +26,11 @@ static inline bool pyro_ch_excluded(uint8_t ch)
     return (PYRO_EXCLUDE_MASK >> ch) & 1;
 }
 
-void pyro_mgr_init(ADC_HandleTypeDef *hadc1,
-                    ADC_HandleTypeDef *hadc2,
-                    ADC_HandleTypeDef *hadc3)
+void pyro_mgr_init(casper_adc_t *adc[PYRO_NUM_CHANNELS],
+                   casper_pin_t  fire[PYRO_NUM_CHANNELS],
+                   casper_pin_t  led[PYRO_NUM_CHANNELS])
 {
-    casper_pyro_init(&pyro, hadc1, hadc2, hadc3);
+    casper_pyro_init(&pyro, adc, fire, led);
     for (int i = 0; i < PYRO_MGR_NUM_CHANNELS; i++) {
         s_armed[i] = false;
     }
@@ -208,3 +207,12 @@ int pyro_mgr_auto_fire(uint8_t ch, uint16_t duration_ms)
                     ((uint16_t)ch << 8) | (duration_ms & 0xFF));
     return 0;
 }
+
+#ifdef HIL_MODE
+void pyro_mgr_hil_set_continuity(uint8_t cont_bitmap)
+{
+    for (int i = 0; i < PYRO_MGR_NUM_CHANNELS; i++) {
+        pyro.continuity[i] = (cont_bitmap & (1u << i)) != 0u;
+    }
+}
+#endif

@@ -6,13 +6,13 @@
 /**
  * @file ground_radio.h
  * @brief Ground station radio RX state machine: packet parsing,
- *        command relay, and profile switching.
+ *        binary COBS relay (GS_OUTPUT=COBS) or ASCII debug output
+ *        (GS_OUTPUT=ASCII, default), profile switching, command relay.
  */
 
 #ifndef APP_GROUND_GROUND_RADIO_H
 #define APP_GROUND_GROUND_RADIO_H
 
-#include "stm32h7xx_hal.h"
 #include <stdint.h>
 
 /* Profile switch FSM states */
@@ -34,10 +34,11 @@ typedef struct {
 /**
  * Initialize ground station radio: SX1276 in RX-continuous mode,
  * Profile A (SF7, BW250, CR4/5).
- * @param hspi  SPI1 handle
+ * @param hspi_opaque  SPI1 handle as void* (SPI_HandleTypeDef* cast to void*).
+ *                     Keeps HAL types out of this header.
  * @return 0 on success, -1 on SX1276 init failure
  */
-int ground_radio_init(SPI_HandleTypeDef *hspi);
+int ground_radio_init(void *hspi_opaque);
 
 /**
  * Handle a received packet from the SX1276 FIFO.
@@ -74,5 +75,17 @@ int ground_radio_send_cmd(const uint8_t *buf, uint8_t len);
  * Called from ground_main_tick() each iteration.
  */
 void ground_radio_check_tx_done(void);
+
+/**
+ * COBS-encode raw bytes and transmit via USB CDC.
+ * Mirrors the pattern in tlm_manager.c:
+ *   cobs_encode(raw, len, buf, max) -> append 0x00 -> CDC_Transmit_FS.
+ * Always compiled; used by ground_main.c for the 0x13 status heartbeat
+ * in GS_OUTPUT=COBS mode.
+ * @param raw  Raw packet bytes to encode (must not alias the internal buffer)
+ * @param len  Number of raw bytes (max SIZE_GS_MSG_TELEM = 39)
+ * @return 1 on success, 0 on COBS encode error or USB busy
+ */
+int ground_radio_cobs_send(const uint8_t *raw, int len);
 
 #endif /* APP_GROUND_GROUND_RADIO_H */

@@ -9,11 +9,17 @@
  *
  * MEMSIC MMC5983MA: ±8 Gauss, 18-bit, auto SET/RESET degauss.
  * Connected via I2C3 (PA8=SCL, PC9=SDA), DRDY interrupt on PC8.
+ *
+ * Board dependencies accessed exclusively through the casper_port seam:
+ *   casper_i2c_*       for bus I/O
+ *   casper_millis      for poll-timeout
+ *   casper_delay_ms    for post-reset delay
+ * No HAL types appear here.
  */
 #ifndef MMC5983MA_H
 #define MMC5983MA_H
 
-#include "stm32h7xx_hal.h"
+#include "casper_port.h"   /* casper_i2c_t, casper_millis, casper_delay_ms */
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -99,8 +105,8 @@
 
 /* ── Device handle ───────────────────────────────────────────────────────── */
 typedef struct {
-    I2C_HandleTypeDef *hi2c;
-    uint16_t           addr;           /* 8-bit shifted address for HAL */
+    casper_i2c_t      *bus;            /* opaque I2C bus handle (e.g. &BSP_I2C_MAG) */
+    uint16_t           addr;           /* 8-bit shifted address (7-bit << 1 = 0x60) */
     float              mag_gauss[3];   /* X, Y, Z in Gauss */
     float              mag_ut[3];      /* X, Y, Z in microtesla */
     uint32_t           raw_mag[3];     /* 18-bit unsigned raw */
@@ -117,7 +123,7 @@ typedef struct {
  *         enable DRDY interrupt.
  * @return true if product ID matches 0x30
  */
-bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c);
+bool mmc5983ma_init(mmc5983ma_t *dev, casper_i2c_t *bus);
 
 /**
  * @brief  Read 18-bit magnetic field data, convert to Gauss and uT.
@@ -126,19 +132,12 @@ bool mmc5983ma_init(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c);
 int mmc5983ma_read(mmc5983ma_t *dev);
 
 /**
- * @brief  Read temperature register.
- *         Result: temperature_C = -75 + (raw_temp * 200.0 / 255.0)
- * @return MMC5983MA_OK on success, negative on I2C error.
- */
-int mmc5983ma_read_temp(mmc5983ma_t *dev);
-
-/**
  * @brief  Initialise MMC5983MA in single-shot mode (no continuous measurement).
  *         Same as mmc5983ma_init() but skips CTRL2 continuous mode setup.
  *         Use with mmc5983ma_trigger_oneshot() for on-demand measurements.
  * @return true if product ID matches 0x30
  */
-bool mmc5983ma_init_oneshot(mmc5983ma_t *dev, I2C_HandleTypeDef *hi2c);
+bool mmc5983ma_init_oneshot(mmc5983ma_t *dev, casper_i2c_t *bus);
 
 /**
  * @brief  Trigger a single magnetic measurement, poll for completion,

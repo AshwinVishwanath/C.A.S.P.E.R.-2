@@ -4,6 +4,7 @@
  *  SUMMARY:  Power-on integrity checks; gates entry to ARMED.
  * ============================================================ */
 #include "self_test.h"
+#include "endian.h"
 #include "crc32_hw.h"
 #include "tlm_manager.h"
 #include "lsm6dso32.h"
@@ -20,24 +21,9 @@ extern ms5611_t     baro;
 /* ── Forward declaration ────────────────────────────────────────── */
 extern uint32_t cfg_get_active_hash(void);
 
-/* ── Helpers ────────────────────────────────────────────────────── */
-static void put_le16(uint8_t *dst, uint16_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-}
-
-static void put_le32(uint8_t *dst, uint32_t val)
-{
-    dst[0] = (uint8_t)(val & 0xFF);
-    dst[1] = (uint8_t)((val >> 8) & 0xFF);
-    dst[2] = (uint8_t)((val >> 16) & 0xFF);
-    dst[3] = (uint8_t)((val >> 24) & 0xFF);
-}
-
 /* ── Self-test implementations ──────────────────────────────────── */
 
-int self_test_run_all(diag_result_t *results)
+static int self_test_run_all(diag_result_t *results)
 {
     int n = 0;
 

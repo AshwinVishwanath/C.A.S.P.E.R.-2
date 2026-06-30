@@ -50,7 +50,6 @@ typedef struct {
     uint8_t ungate_count;   /* counts 0..N post-gate, then stops */
 
     /* ── Timing ── */
-    float dt;               /* predict timestep (s) */
     float R_baro;           /* baro measurement noise (m²) */
 
 } casper_ekf_t;

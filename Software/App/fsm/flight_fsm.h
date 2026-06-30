@@ -17,12 +17,6 @@
 void flight_fsm_init(void);
 
 /**
- * Reset all FSM internal state (for testing).
- * Equivalent to flight_fsm_init().
- */
-void flight_fsm_reset(void);
-
-/**
  * Tick the FSM. Call every superloop iteration.
  * Handles simulated flight progression and sensor-driven state transitions.
  *

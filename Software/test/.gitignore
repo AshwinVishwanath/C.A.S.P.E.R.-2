@@ -1,0 +1,5 @@
+# host-test build artifacts
+*.exe
+*.o
+gen_golden*.c
+gcc_err.txt

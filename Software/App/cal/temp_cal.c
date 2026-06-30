@@ -11,8 +11,8 @@
  * of gyro bias vs. die temperature coefficients.
  */
 #include "temp_cal.h"
+#include "board_casper2.h"
 #include "usbd_cdc_if.h"
-#include "main.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -74,7 +74,7 @@ static bool tcal_check_stop(temp_cal_t *tc)
 static void tcal_cdc_print(const char *msg, int len)
 {
     CDC_Transmit_FS((uint8_t *)msg, (uint16_t)len);
-    HAL_Delay(50);
+    casper_delay_ms(50);
 }
 
 /* ── Init ───────────────────────────────────────────────────────────────── */
@@ -110,7 +110,7 @@ bool temp_cal_init(temp_cal_t *tc)
     f_sync(&tc->file);
 
     tc->state = TCAL_COLLECTING;
-    tc->start_ms = HAL_GetTick();
+    tc->start_ms = casper_millis();
     tc->last_heartbeat_ms = tc->start_ms;
 
     /* CDC startup banner */
@@ -209,7 +209,7 @@ void temp_cal_tick(temp_cal_t *tc, lsm6dso32_t *imu,
     {
         static uint32_t led_last = 0;
         if (now_ms - led_last >= 500) {
-            HAL_GPIO_TogglePin(CONT_YN_1_GPIO_Port, CONT_YN_1_Pin);
+            casper_gpio_toggle(BSP_PIN_CONT_LED[0]);
             led_last = now_ms;
         }
     }

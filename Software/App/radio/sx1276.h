@@ -14,7 +14,6 @@
 #ifndef APP_RADIO_SX1276_H
 #define APP_RADIO_SX1276_H
 
-#include "stm32h7xx_hal.h"
 #include <stdint.h>
 
 /* ── SX1276 Register Map (LoRa mode) ──────────────────────────── */
@@ -141,10 +140,13 @@
  * Initialise SX1276: hardware reset, verify silicon ID (0x12),
  * enter LoRa + sleep mode.
  *
- * @param hspi  SPI1 handle (must be initialised before calling)
- * @return      0 on success, -1 if silicon ID mismatch (SPI bus broken)
+ * @param hspi_opaque  SPI1 handle as void* (SPI_HandleTypeDef* cast to void*).
+ *                     Using void* keeps HAL types out of radio_manager.h
+ *                     while still letting sx1276.c (the approved HAL exception)
+ *                     cast back to the concrete HAL type.
+ * @return             0 on success, -1 if silicon ID mismatch (SPI bus broken)
  */
-int sx1276_init(SPI_HandleTypeDef *hspi);
+int sx1276_init(void *hspi_opaque);
 
 /**
  * Hardware reset: pulse RADIO_NRST low for 1 ms, wait 5 ms.
@@ -170,7 +172,6 @@ void sx1276_set_tx_power(int8_t dbm);
 void sx1276_set_modulation(uint8_t sf, uint32_t bw_hz, uint8_t cr);
 void sx1276_set_sync_word(uint8_t sw);
 void sx1276_set_preamble(uint16_t symbols);
-void sx1276_set_payload_length(uint8_t len);
 
 /* ── IRQ ────────────────────────────────────────────────────────── */
 

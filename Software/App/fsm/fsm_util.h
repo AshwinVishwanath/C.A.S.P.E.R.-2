@@ -17,8 +17,8 @@ extern "C" {
 uint32_t fsm_get_tick(void);
 void     fsm_set_tick(uint32_t ms);
 #else
-#include "stm32h7xx_hal.h"
-#define  fsm_get_tick() HAL_GetTick()
+#include "casper_port.h"
+#define  fsm_get_tick() casper_millis()
 #endif
 
 /* ── Dwell Timer (FSM_TRANSITION_SPEC.md §3) ─────────────────────── */
@@ -63,11 +63,6 @@ void quat_rotate_vec(const float q[4], const float v[3], float out[3]);
 float compute_vert_accel(const float q[4], const float accel_body_ms2[3]);
 
 /* ── Antenna-Up Check (FSM_TRANSITION_SPEC.md §2.3) ─────────────── */
-
-/**
- * Check if rocket nose (body Y) is within 10° of vertical (Z-up frame).
- */
-bool check_antenna_up(const float q[4]);
 
 /**
  * Same check, also returns tilt decomposition in degrees.
