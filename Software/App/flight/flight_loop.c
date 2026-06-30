@@ -793,17 +793,42 @@ void flight_loop_tick(void)
         if (len > 0) CDC_Transmit_FS((uint8_t *)buf, (uint16_t)len);
       }
 #else
-      /* Normal: 10 Hz output, suppressed during flash dump */
+      /* Normal output, suppressed during flash dump */
       if (!cmd_router_dump_requested()) {
         static uint32_t ascii_last = 0;
-        if (now - ascii_last >= 100) {
+        /* NAV_DIAG streams at 50 Hz for high-rate attitude capture;
+         * normal flight monitor runs at 10 Hz. */
+#ifdef NAV_DIAG
+        const uint32_t ascii_interval_ms = 20u;
+#else
+        const uint32_t ascii_interval_ms = 100u;
+#endif
+        if (now - ascii_last >= ascii_interval_ms) {
           ascii_last = now;
-          char buf[200];
+          char buf[320];
           int len;
           if (fsm == FSM_STATE_PAD) {
+#ifdef NAV_DIAG
+            /* High-rate attitude diagnostic: raw sensor inputs + full
+             * quaternion + Euler angles + init flag.  Used to validate
+             * the Mahony convention on a static hand-held board.
+             * NO flight_logger calls — flash path deadlocks. */
+            float euler[3];
+            casper_quat_to_euler(att.q, euler); /* tilt-from-vertical deg: [0]=yaw(bodyZ,heading) [1]=roll(bodyY,nose-spin) [2]=pitch(bodyX,fore-aft-tilt) */
+            len = snprintf(buf, sizeof(buf),
+                ">ax:%.3f,ay:%.3f,az:%.3f,gx:%.4f,gy:%.4f,gz:%.4f,qw:%.4f,qx:%.4f,qy:%.4f,qz:%.4f,roll:%.2f,pitch:%.2f,yaw:%.2f,gbx:%.5f,gby:%.5f,gbz:%.5f,eix:%.5f,eiy:%.5f,eiz:%.5f,magok:%d,init:%d\r\n",
+                (double)last_body_accel_ms2[0],(double)last_body_accel_ms2[1],(double)last_body_accel_ms2[2],
+                (double)att.gyro_filtered[0],(double)att.gyro_filtered[1],(double)att.gyro_filtered[2],
+                (double)att.q[0],(double)att.q[1],(double)att.q[2],(double)att.q[3],
+                (double)euler[1],(double)euler[2],(double)euler[0],
+                (double)att.gyro_bias[0],(double)att.gyro_bias[1],(double)att.gyro_bias[2],
+                (double)att.e_int[0],(double)att.e_int[1],(double)att.e_int[2],
+                (int)att.mag_available,
+                (int)att.init_complete);
+#else
             /* Serial plotter: >name:value pairs */
             float euler[3];
-            casper_quat_to_euler(att.q, euler);
+            casper_quat_to_euler(att.q, euler); /* tilt-from-vertical deg: [0]=yaw(bodyZ,heading) [1]=roll(bodyY,nose-spin) [2]=pitch(bodyX,fore-aft-tilt) */
             float heading_deg = euler[2] * 57.2957795f;
             float mag_norm = sqrtf(mag_cal_ut[0]*mag_cal_ut[0]
                                  + mag_cal_ut[1]*mag_cal_ut[1]
@@ -818,6 +843,7 @@ void flight_loop_tick(void)
                 (unsigned)fsm,
                 (double)heading_deg,
                 (double)mag_norm);
+#endif /* NAV_DIAG */
           } else {
             len = snprintf(buf, sizeof(buf),
                 ">alt:%.1f,vel:%.1f,vaccel:%.2f,fsm:%u,t:%.1f\r\n",
