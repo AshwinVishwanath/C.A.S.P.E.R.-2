@@ -72,32 +72,59 @@ void casper_quat_from_euler(float roll, float pitch, float yaw, float q[4])
 
 void casper_quat_to_euler(const float q[4], float euler[3])
 {
-    float w = q[0], x = q[1], y = q[2], z = q[3];
-
-    /* Body frame: Y = nose (thrust axis).
-     * ZYX Euler decomposition:
-     * euler[0] = body Z rotation (toward operator)
-     * euler[1] = body Y rotation (spin about nose)
-     * euler[2] = body X rotation (starboard tilt)
+    /* Body frame: +Y = nose (thrust axis, up on pad), +X = starboard, +Z = toward operator.
      *
-     * Rocket-physical mapping (via casper_att_get_euler):
-     *   Roll  = euler[1] (spin about nose Y)
-     *   Pitch = euler[2] (lateral tilt about X)
-     *   Yaw   = euler[0] (heading about Z)            */
+     * Nominal nose-up attitude: q0 = [sqrt2/2, -sqrt2/2, 0, 0]  (Rx(-90 deg) body->ref).
+     * Step 1: compute deviation  qd = conj(q0) x q.
+     *         conj(q0) = [sqrt2/2, +sqrt2/2, 0, 0].
+     *         With s = sqrt2/2, the product simplifies to:
+     *           wd = s*(q[0] - q[1])
+     *           xd = s*(q[0] + q[1])
+     *           yd = s*(q[2] - q[3])
+     *           zd = s*(q[2] + q[3])
+     *
+     * Step 2: extract intrinsic Z-X-Y Euler angles from qd:
+     *   qd = Rz(yaw) * Rx(pitch) * Ry(roll)
+     *   roll  (body Y, nose spin)      = INNER  = atan2 => full +/-180 deg
+     *   pitch (body X, fore/aft tilt)  = MIDDLE = asin  => singularity at +/-90 (nose horizontal)
+     *   yaw   (body Z, side tilt / heading) = OUTER = atan2
+     *
+     * Key property: a pure spin about the nose (body Y) changes ONLY roll;
+     * pitch and yaw are invariant under nose-spin.
+     *
+     * Output array layout (UNCHANGED — callers must not be modified):
+     *   euler[0] = yaw   (body Z rotation, heading / side tilt)  degrees
+     *   euler[1] = roll  (body Y rotation, nose spin)             degrees
+     *   euler[2] = pitch (body X rotation, fore/aft tilt)         degrees   */
 
-    /* Body Z rotation — ZYX yaw extraction */
-    float siny = 2.0f * (w*z + x*y);
-    float cosy = 1.0f - 2.0f * (y*y + z*z);
-    euler[0] = atan2f(siny, cosy) * (180.0f / 3.14159265f);
+    static const float INV_SQRT2 = 0.70710678118f;
+    static const float RAD2DEG   = 57.29577951f;   /* 180 / pi */
 
-    /* Body Y rotation (nose spin) — ZYX pitch extraction, clamped */
-    float sinp = 2.0f * (w*y - z*x);
-    if (sinp >= 1.0f)       sinp = 1.0f;
+    /* --- Step 1: deviation qd = conj(q0) x q --- */
+    float wd = INV_SQRT2 * (q[0] - q[1]);
+    float xd = INV_SQRT2 * (q[0] + q[1]);
+    float yd = INV_SQRT2 * (q[2] - q[3]);
+    float zd = INV_SQRT2 * (q[2] + q[3]);
+
+    /* --- Step 2: ZXY decomposition of qd --- */
+
+    /* pitch (body X, middle rotation): R[2][1] = sin(pitch) = 2*(yd*zd + wd*xd) */
+    float sinp = 2.0f * (yd*zd + wd*xd);
+    if      (sinp >=  1.0f) sinp =  1.0f;
     else if (sinp <= -1.0f) sinp = -1.0f;
-    euler[1] = asinf(sinp) * (180.0f / 3.14159265f);
+    float pitch_deg = asinf(sinp) * RAD2DEG;
 
-    /* Body X rotation (starboard tilt) — ZYX roll extraction */
-    float sinr = 2.0f * (w*x + y*z);
-    float cosr = 1.0f - 2.0f * (x*x + y*y);
-    euler[2] = atan2f(sinr, cosr) * (180.0f / 3.14159265f);
+    /* roll (body Y, inner rotation): atan2(-R[2][0], R[2][2])
+     * R[2][0] = 2*(xd*zd - wd*yd),  R[2][2] = 1 - 2*(xd*xd + yd*yd) */
+    float roll_deg  = atan2f(2.0f*(wd*yd - xd*zd),
+                             1.0f - 2.0f*(xd*xd + yd*yd)) * RAD2DEG;
+
+    /* yaw (body Z, outer rotation): atan2(-R[0][1], R[1][1])
+     * R[0][1] = 2*(xd*yd - wd*zd),  R[1][1] = 1 - 2*(xd*xd + zd*zd) */
+    float yaw_deg   = atan2f(2.0f*(wd*zd - xd*yd),
+                             1.0f - 2.0f*(xd*xd + zd*zd)) * RAD2DEG;
+
+    euler[0] = yaw_deg;
+    euler[1] = roll_deg;
+    euler[2] = pitch_deg;
 }

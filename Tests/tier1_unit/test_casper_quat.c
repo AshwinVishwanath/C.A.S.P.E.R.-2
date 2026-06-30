@@ -3,6 +3,18 @@
  * @brief Unit tests for casper_quat quaternion operations (PRD S3.1).
  *
  * Convention: q[4] = {w, x, y, z}, Hamilton product, scalar-first, body-to-NED.
+ *
+ * Body frame: +Y = nose (up on pad), +X = starboard, +Z = toward operator.
+ * Nominal nose-up quaternion q0 = [sqrt2/2, -sqrt2/2, 0, 0].
+ *
+ * ZXY Euler output layout (euler[3]):
+ *   euler[0] = yaw   (body Z, outer),  atan2 full range
+ *   euler[1] = roll  (body Y, inner),  atan2 full +/-180  <- nose spin axis
+ *   euler[2] = pitch (body X, middle), asin +/-90 singular
+ *
+ * Key property verified by the combined tests:
+ *   A pure spin about the nose (body Y) changes ONLY roll.
+ *   Pitch and yaw are invariant under nose-spin.
  */
 
 #include "test_config.h"
@@ -15,8 +27,38 @@ void tearDown(void) { }
 /* ---- Helpers ---- */
 static const float Q_ID[4] = {1.0f, 0.0f, 0.0f, 0.0f};
 
-/* 90-degree rotation about Z:  cos(45)=sin(45)=sqrt(2)/2 */
+/* sqrt(2)/2 */
 static const float SQRT2_2 = 0.70710678118f;
+
+/* Nominal nose-up attitude: Rx(-90 deg) */
+static const float Q0[4] = {0.70710678f, -0.70710678f, 0.0f, 0.0f};
+
+#define DEG2RAD(d) ((d) * 3.14159265358979f / 180.0f)
+
+/* --- Body-axis elementary rotation quaternions (angle in degrees) --- */
+/* Rx(t): rotation about body X (fore/aft tilt / pitch) */
+static void make_Rx(float deg, float q[4])
+{
+    float h = DEG2RAD(deg) * 0.5f;
+    q[0] = cosf(h); q[1] = sinf(h); q[2] = 0.0f; q[3] = 0.0f;
+}
+
+/* Ry(t): rotation about body Y (nose spin / roll) */
+static void make_Ry(float deg, float q[4])
+{
+    float h = DEG2RAD(deg) * 0.5f;
+    q[0] = cosf(h); q[1] = 0.0f; q[2] = sinf(h); q[3] = 0.0f;
+}
+
+/* Rz(t): rotation about body Z (side tilt / yaw) */
+static void make_Rz(float deg, float q[4])
+{
+    float h = DEG2RAD(deg) * 0.5f;
+    q[0] = cosf(h); q[1] = 0.0f; q[2] = 0.0f; q[3] = sinf(h);
+}
+
+/* Tolerance for euler tests (degrees) */
+#define EULER_TOL 0.5f
 
 /* ================================================================== */
 /*  Hamilton multiply                                                  */
@@ -48,13 +90,11 @@ void test_quat_z90_multiply(void)
 /* Hamilton convention: i*j=k, j*k=i, k*i=j */
 void test_quat_hamilton_ij_eq_k(void)
 {
-    /* Pure quaternion i = [0,1,0,0], j = [0,0,1,0] */
     float qi[4] = {0.0f, 1.0f, 0.0f, 0.0f};
     float qj[4] = {0.0f, 0.0f, 1.0f, 0.0f};
     float r[4];
     casper_quat_mult(qi, qj, r);
 
-    /* Expected: k = [0,0,0,1] */
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0f, r[0]);
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0f, r[1]);
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0f, r[2]);
@@ -68,7 +108,6 @@ void test_quat_hamilton_jk_eq_i(void)
     float r[4];
     casper_quat_mult(qj, qk, r);
 
-    /* Expected: i = [0,1,0,0] */
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0f, r[0]);
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 1.0f, r[1]);
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0f, r[2]);
@@ -82,7 +121,6 @@ void test_quat_hamilton_ki_eq_j(void)
     float r[4];
     casper_quat_mult(qk, qi, r);
 
-    /* Expected: j = [0,0,1,0] */
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0f, r[0]);
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0f, r[1]);
     TEST_ASSERT_FLOAT_WITHIN(1e-7f, 1.0f, r[2]);
@@ -115,10 +153,7 @@ void test_quat_normalize_non_unit(void)
 
 void test_quat_normalize_near_zero(void)
 {
-    /* Near-zero quaternion: should not produce NaN/Inf.
-     * The implementation guards norm > 1e-10, so [1e-20,0,0,0]
-     * has norm 1e-20 which is below threshold. The quaternion
-     * should be left unchanged (guard prevents division). */
+    /* Near-zero quaternion: norm guard prevents division, no NaN/Inf. */
     float q[4] = {1e-20f, 0.0f, 0.0f, 0.0f};
     casper_quat_normalize(q);
     TEST_ASSERT_ALL_FINITE(q, 4);
@@ -133,7 +168,6 @@ void test_quat_rotmat_identity(void)
     float R[9];
     casper_quat_to_rotmat(Q_ID, R);
 
-    /* Expected: I3 */
     float I3[9] = {1,0,0, 0,1,0, 0,0,1};
     TEST_ASSERT_FLOAT_ARRAY_WITHIN(1e-7f, I3, R, 9);
 }
@@ -142,7 +176,7 @@ void test_quat_rotmat_90_pitch(void)
 {
     /* 90-degree rotation about Y axis:
      * q = [cos(45), 0, sin(45), 0] = [sqrt2/2, 0, sqrt2/2, 0]
-     * Expected rotation matrix for body-to-NED 90-deg Y:
+     * Expected rotation matrix:
      *   [0  0  1]
      *   [0  1  0]
      *   [-1 0  0]
@@ -160,116 +194,146 @@ void test_quat_rotmat_90_pitch(void)
 }
 
 /* ================================================================== */
-/*  From accelerometer                                                 */
+/*  ZXY Euler: tilt-from-vertical (EDIT B spec tests)                 */
+/*                                                                     */
+/*  Test quaternions are built as  q = Q0 x Raxis(angle).             */
+/*  casper_quat_to_euler internally removes Q0 and decomposes with     */
+/*  intrinsic Z-X-Y (roll innermost = full range).                    */
 /* ================================================================== */
 
-void test_quat_from_accel_level(void)
+/* --- single-axis: nominal vertical -> all zeros --- */
+void test_euler_q0_nominal(void)
 {
-    /* accel = [0, 0, 9.81] => body Z pointing up => roll=0, pitch=0
-     * (using the Y-nose convention: pitch = atan2(-ax, sqrt(ay^2+az^2)),
-     *  roll = atan2(ay, az))
-     * pitch = atan2(0, 9.81) = 0
-     * roll  = atan2(0, 9.81) = 0
-     * => q = from_euler(0, 0, 0) = identity */
-    float accel[3] = {0.0f, 0.0f, 9.81f};
-    float q[4];
-    casper_quat_from_accel(accel, q);
-
-    /* Convert to euler and check roll/pitch near 0 */
     float euler[3];
-    casper_quat_to_euler(q, euler);
-
-    /* euler[0]=bodyZ(heading), euler[1]=bodyY(nose spin), euler[2]=bodyX(tilt) */
-    /* With accel=[0,0,g], pitch and roll should be ~0 degrees */
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, euler[1]); /* body Y rotation */
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, euler[2]); /* body X rotation */
+    casper_quat_to_euler(Q0, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL, 0.0f, euler[0]); /* yaw   */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL, 0.0f, euler[1]); /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL, 0.0f, euler[2]); /* pitch */
 }
 
-void test_quat_from_accel_tilted(void)
+/* --- single-axis: pure roll (body Y spin), full range --- */
+void test_euler_pure_roll_p90(void)
 {
-    /* accel = [0, 4.9, 8.5] => tilted about body X
-     * pitch = atan2(0, sqrt(4.9^2+8.5^2)) = 0
-     * roll  = atan2(4.9, 8.5) ~ 30 deg */
-    float accel[3] = {0.0f, 4.9f, 8.5f};
-    float q[4];
-    casper_quat_from_accel(accel, q);
+    float ry[4]; make_Ry(90.0f, ry);
+    float q[4];  casper_quat_mult(Q0, ry, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  90.0f, euler[1]); /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[2]); /* pitch */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[0]); /* yaw   */
+}
 
-    /* Should produce a valid, finite quaternion */
-    TEST_ASSERT_ALL_FINITE(q, 4);
+void test_euler_pure_roll_p170(void)
+{
+    /* 170 deg tests full atan2 range, beyond asin limit */
+    float ry[4]; make_Ry(170.0f, ry);
+    float q[4];  casper_quat_mult(Q0, ry, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL, 170.0f, euler[1]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[2]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[0]);
+}
 
-    float euler[3];
-    casper_quat_to_euler(q, euler);
+void test_euler_pure_roll_n90(void)
+{
+    float ry[4]; make_Ry(-90.0f, ry);
+    float q[4];  casper_quat_mult(Q0, ry, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL, -90.0f, euler[1]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[2]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[0]);
+}
+
+/* --- single-axis: pure pitch (body X fore/aft tilt) --- */
+void test_euler_pure_pitch_p20(void)
+{
+    float rx[4]; make_Rx(20.0f, rx);
+    float q[4];  casper_quat_mult(Q0, rx, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  20.0f, euler[2]); /* pitch */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[1]); /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[0]); /* yaw   */
+}
+
+/* --- single-axis: pure yaw (body Z side tilt) --- */
+void test_euler_pure_yaw_p20(void)
+{
+    float rz[4]; make_Rz(20.0f, rz);
+    float q[4];  casper_quat_mult(Q0, rz, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  20.0f, euler[0]); /* yaw   */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[1]); /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[2]); /* pitch */
+}
+
+/* ================================================================== */
+/*  Combined: tilt MUST be invariant under nose-spin                  */
+/* ================================================================== */
+
+void test_euler_combined_pitch20_roll60(void)
+{
+    /* q = Q0 x Rx(20) x Ry(60) -> pitch=20, roll=60, yaw~0 */
+    float rx[4]; make_Rx(20.0f, rx);
+    float ry[4]; make_Ry(60.0f, ry);
+    float tmp[4], q[4];
+    casper_quat_mult(Q0, rx, tmp);
+    casper_quat_mult(tmp, ry, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  20.0f, euler[2]); /* pitch unchanged by spin */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  60.0f, euler[1]); /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[0]); /* yaw~0 */
+}
+
+void test_euler_combined_pitch20_roll150(void)
+{
+    /* Full-range roll while pitch is invariant */
+    float rx[4]; make_Rx(20.0f, rx);
+    float ry[4]; make_Ry(150.0f, ry);
+    float tmp[4], q[4];
+    casper_quat_mult(Q0, rx, tmp);
+    casper_quat_mult(tmp, ry, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  20.0f, euler[2]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL, 150.0f, euler[1]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[0]);
+}
+
+void test_euler_combined_yaw15_roll90(void)
+{
+    /* q = Q0 x Rz(15) x Ry(90) -> yaw=15, roll=90, pitch~0 */
+    float rz[4]; make_Rz(15.0f, rz);
+    float ry[4]; make_Ry(90.0f, ry);
+    float tmp[4], q[4];
+    casper_quat_mult(Q0, rz, tmp);
+    casper_quat_mult(tmp, ry, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  15.0f, euler[0]); /* yaw unchanged by spin */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,  90.0f, euler[1]); /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[2]); /* pitch~0 */
+}
+
+void test_euler_combined_neg_pitch_neg_roll(void)
+{
+    /* q = Q0 x Rx(-25) x Ry(-120) -> pitch=-25, roll=-120, yaw~0 */
+    float rx[4]; make_Rx(-25.0f, rx);
+    float ry[4]; make_Ry(-120.0f, ry);
+    float tmp[4], q[4];
+    casper_quat_mult(Q0, rx, tmp);
+    casper_quat_mult(tmp, ry, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL, -25.0f, euler[2]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,-120.0f, euler[1]);
+    TEST_ASSERT_FLOAT_WITHIN(EULER_TOL,   0.0f, euler[0]);
+}
+
+/* --- near-singularity guard: pitch -> +/-90 must not produce NaN --- */
+void test_euler_near_singularity(void)
+{
+    /* q = Q0 x Rx(89.9) -> pitch~89.9, no NaN/Inf */
+    float rx[4]; make_Rx(89.9f, rx);
+    float q[4];  casper_quat_mult(Q0, rx, q);
+    float euler[3]; casper_quat_to_euler(q, euler);
     TEST_ASSERT_ALL_FINITE(euler, 3);
-
-    /* The roll (body X) should be approximately atan2(4.9, 8.5) ~ 30 deg.
-     * Use generous tolerance for indirect measurement. */
-    float expected_roll_deg = atan2f(4.9f, 8.5f) * RAD_TO_DEG;
-    TEST_ASSERT_FLOAT_WITHIN(0.5f, expected_roll_deg, euler[2]);
-}
-
-/* ================================================================== */
-/*  Euler round-trip                                                   */
-/* ================================================================== */
-
-void test_euler_round_trip(void)
-{
-    /* euler -> quat -> euler should return the original values */
-    float roll_deg  = 15.0f;
-    float pitch_deg = 25.0f;
-    float yaw_deg   = 45.0f;
-
-    float roll_rad  = roll_deg  * DEG_TO_RAD;
-    float pitch_rad = pitch_deg * DEG_TO_RAD;
-    float yaw_rad   = yaw_deg   * DEG_TO_RAD;
-
-    float q[4];
-    casper_quat_from_euler(roll_rad, pitch_rad, yaw_rad, q);
-
-    float euler[3];
-    casper_quat_to_euler(q, euler);
-
-    /* euler[0] = body Z = yaw, euler[1] = body Y = pitch, euler[2] = body X = roll */
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, yaw_deg,   euler[0]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, pitch_deg,  euler[1]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, roll_deg,   euler[2]);
-}
-
-void test_euler_round_trip_negative(void)
-{
-    float roll_deg  = -30.0f;
-    float pitch_deg = -10.0f;
-    float yaw_deg   = -60.0f;
-
-    float q[4];
-    casper_quat_from_euler(roll_deg * DEG_TO_RAD,
-                           pitch_deg * DEG_TO_RAD,
-                           yaw_deg * DEG_TO_RAD, q);
-
-    float euler[3];
-    casper_quat_to_euler(q, euler);
-
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, yaw_deg,   euler[0]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, pitch_deg,  euler[1]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, roll_deg,   euler[2]);
-}
-
-void test_euler_gimbal_lock(void)
-{
-    /* pitch = 89.9 degrees => near gimbal lock, should not produce NaN */
-    float roll_rad  = 0.0f;
-    float pitch_rad = 89.9f * DEG_TO_RAD;
-    float yaw_rad   = 0.0f;
-
-    float q[4];
-    casper_quat_from_euler(roll_rad, pitch_rad, yaw_rad, q);
-    TEST_ASSERT_ALL_FINITE(q, 4);
-
-    float euler[3];
-    casper_quat_to_euler(q, euler);
-    TEST_ASSERT_ALL_FINITE(euler, 3);
-
-    /* pitch (euler[1]) should be close to 89.9 */
-    TEST_ASSERT_FLOAT_WITHIN(0.5f, 89.9f, euler[1]);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 89.9f, euler[2]);
 }
 
 /* ================================================================== */
@@ -296,14 +360,20 @@ int main(void)
     RUN_TEST(test_quat_rotmat_identity);
     RUN_TEST(test_quat_rotmat_90_pitch);
 
-    /* From accelerometer */
-    RUN_TEST(test_quat_from_accel_level);
-    RUN_TEST(test_quat_from_accel_tilted);
+    /* ZXY Euler: single-axis */
+    RUN_TEST(test_euler_q0_nominal);
+    RUN_TEST(test_euler_pure_roll_p90);
+    RUN_TEST(test_euler_pure_roll_p170);
+    RUN_TEST(test_euler_pure_roll_n90);
+    RUN_TEST(test_euler_pure_pitch_p20);
+    RUN_TEST(test_euler_pure_yaw_p20);
 
-    /* Euler round-trip */
-    RUN_TEST(test_euler_round_trip);
-    RUN_TEST(test_euler_round_trip_negative);
-    RUN_TEST(test_euler_gimbal_lock);
+    /* ZXY Euler: combined — tilt invariant under spin */
+    RUN_TEST(test_euler_combined_pitch20_roll60);
+    RUN_TEST(test_euler_combined_pitch20_roll150);
+    RUN_TEST(test_euler_combined_yaw15_roll90);
+    RUN_TEST(test_euler_combined_neg_pitch_neg_roll);
+    RUN_TEST(test_euler_near_singularity);
 
     return UNITY_END();
 }

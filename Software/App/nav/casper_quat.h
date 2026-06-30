@@ -48,14 +48,20 @@ void casper_quat_from_euler(float roll_rad, float pitch_rad, float yaw_rad,
                             float q[4]);
 
 /**
- * Convert quaternion to ZYX Euler angles for display.
- * Body frame convention: Y = nose (thrust axis).
- *   +X = starboard, +Y = nose (up on pad), +Z = toward operator.
- * @param q     Input quaternion [w,x,y,z] (body-to-NED)
- * @param euler Output [bodyZ, bodyY, bodyX] in degrees (ZYX decomposition)
- *              euler[0] = body Z rotation (heading via casper_att_get_euler)
- *              euler[1] = body Y rotation (roll/spin about nose)
- *              euler[2] = body X rotation (lateral pitch/tilt)
+ * Extract tilt-from-vertical Euler angles from a body-to-reference quaternion.
+ *
+ * Body frame: +Y = nose (up on pad), +X = starboard, +Z = toward operator.
+ * Nominal nose-up attitude q0 = [sqrt2/2, -sqrt2/2, 0, 0].
+ *
+ * Internally computes deviation qd = conj(q0) x q, then decomposes with
+ * intrinsic Z-X-Y order (Rz * Rx * Ry), so that a pure nose-spin (body Y)
+ * changes ONLY roll and leaves pitch and yaw unchanged.
+ *
+ * @param q     Input quaternion [w,x,y,z] (body-to-NED, from Mahony filter)
+ * @param euler Output angles in degrees:
+ *              euler[0] = yaw   (body Z, side-tilt / heading),  atan2 full range
+ *              euler[1] = roll  (body Y, nose spin),            atan2 full +/-180
+ *              euler[2] = pitch (body X, fore/aft tilt),        asin, singular at +/-90
  */
 void casper_quat_to_euler(const float q[4], float euler[3]);
 

@@ -280,7 +280,7 @@ void app_init(void)
       .Kp_grav           = 10.0f,
       .Kp_mag_pad        = 0.0f,
       .Kp_mag_flight     = 0.0f,
-      .Ki                = 0.1f,
+      .Ki                = 0.0f,   /* bias handled by EMA estimator; integral wind-up disabled */
       .gyro_lpf_cutoff_hz = 50.0f,
       .mag_update_hz     = 10.0f,
     };
