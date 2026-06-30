@@ -242,6 +242,15 @@ C_DEFS += -DHIL_MODE
 SUPPRESS_LOGGER_SANITY := 1
 endif
 
+# NAV_DIAG: live attitude serial diagnostic — streams accel/gyro/quat/euler +
+# filter internals over CDC at 50 Hz in PAD (no flash logger). Suppresses the
+# logger-sanity bench harness so the ASCII stream compiles in and nothing waits for 'go'.
+NAV_DIAG ?= 0
+ifeq ($(NAV_DIAG),1)
+C_DEFS += -DNAV_DIAG
+SUPPRESS_LOGGER_SANITY := 1
+endif
+
 # Bench logger sanity test (CDC 'go' + 5s + finalize). Suppressed
 # automatically when HIL=1.
 ifndef SUPPRESS_LOGGER_SANITY
