@@ -112,6 +112,7 @@ App/telemetry/cobs.c \
 App/telemetry/crc32_hw.c \
 App/pack/quat_pack.c \
 App/pack/status_pack.c \
+App/nav/casper_quat.c \
 App/buzzer/buzzer.c
 
 ifeq ($(BUILD_TARGET),GROUND)
@@ -127,7 +128,6 @@ App/drivers/lsm6dso32.c \
 App/drivers/adxl372.c \
 App/drivers/w25q512jv.c \
 App/drivers/mmc5983ma.c \
-App/nav/casper_quat.c \
 App/nav/casper_attitude.c \
 App/nav/casper_ekf.c \
 App/cal/mag_cal.c \
@@ -250,6 +250,14 @@ endif
 
 ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND
+# GS_OUTPUT: ASCII (default — current behavior, unchanged) or COBS (binary
+# COBS-framed Mission Control mode).  Only meaningful for BUILD_TARGET=GROUND.
+# GS_OUTPUT=COBS adds -DGS_OUTPUT_COBS; the two modes are mutually exclusive
+# (CLAUDE.md rule #4 — never mix ASCII and binary on the same CDC pipe).
+GS_OUTPUT ?= ASCII
+ifeq ($(GS_OUTPUT),COBS)
+C_DEFS += -DGS_OUTPUT_COBS
+endif
 else
 C_DEFS += -DBUILD_TARGET_FLIGHT
 endif
@@ -366,6 +374,12 @@ flight:
 
 ground:
 	$(MAKE) BUILD_TARGET=GROUND
+
+# Binary COBS / Mission Control output mode (suppresses all ASCII CDC paths).
+ground-cobs:
+	$(MAKE) BUILD_TARGET=GROUND GS_OUTPUT=COBS
+	@echo ""
+	@echo "Ground-COBS build complete. Flash $(BUILD_DIR)/$(TARGET).hex via DFU."
 
 # Hardware-in-the-loop build (firmware consumes injected sensor packets
 # over USB CDC). Use the host runner under tools/hil to drive a scenario.

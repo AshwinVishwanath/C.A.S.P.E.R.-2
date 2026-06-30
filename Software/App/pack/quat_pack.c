@@ -54,3 +54,49 @@ void quat_pack_smallest_three(uint8_t out[5], const float q[4])
     out[3] = (uint8_t)(ua & 0xFF);
     out[4] = (uint8_t)(((uint8_t)drop << 6) | ((ua >> 8) & 0x0F));
 }
+
+void quat_unpack_smallest_three(const uint8_t in[5], float q[4])
+{
+    /* 1. Extract drop index from bits [7:6] of byte 4 */
+    int drop = (in[4] >> 6) & 0x03;
+
+    /* 2. Reconstruct three 12-bit unsigned words
+     *    ua -> rem[0] (packed into in[3] and in[4][3:0])
+     *    ub -> rem[1] (packed into in[2] and in[1][7:4])
+     *    uc -> rem[2] (packed into in[0] and in[1][3:0])
+     *
+     *    Bit layout mirrors the packer:
+     *      in[3]       = ua[7:0]
+     *      in[4][3:0]  = ua[11:8]
+     *      in[2]       = ub[11:4]
+     *      in[1][7:4]  = ub[3:0]
+     *      in[0]       = uc[7:0]
+     *      in[1][3:0]  = uc[11:8]
+     */
+    uint16_t ua = (uint16_t)(((uint16_t)(in[4] & 0x0F) << 8) | in[3]);
+    uint16_t ub = (uint16_t)(((uint16_t)in[2] << 4) | ((in[1] >> 4) & 0x0F));
+    uint16_t uc = (uint16_t)(((uint16_t)(in[1] & 0x0F) << 8) | in[0]);
+
+    /* 3. Sign-extend each 12-bit value to signed (two's complement) */
+    int16_t sa = (ua & 0x800U) ? (int16_t)ua - 4096 : (int16_t)ua;
+    int16_t sb = (ub & 0x800U) ? (int16_t)ub - 4096 : (int16_t)ub;
+    int16_t sc = (uc & 0x800U) ? (int16_t)uc - 4096 : (int16_t)uc;
+
+    /* 4. Scale back to float: rem = signed / 4096.0f */
+    float rem[3];
+    rem[0] = (float)sa / 4096.0f;
+    rem[1] = (float)sb / 4096.0f;
+    rem[2] = (float)sc / 4096.0f;
+
+    /* 5. Place rem[0..2] into the three non-drop indices in ascending order */
+    int ri = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i != drop) {
+            q[i] = rem[ri++];
+        }
+    }
+
+    /* 6. Recover dropped component (always non-negative by pack convention) */
+    float sumsq = rem[0]*rem[0] + rem[1]*rem[1] + rem[2]*rem[2];
+    q[drop] = sqrtf(fmaxf(0.0f, 1.0f - sumsq));
+}

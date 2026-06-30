@@ -158,9 +158,11 @@ typedef struct {
 #define TLM_TX_BUF_SIZE      (SIZE_FC_MSG_FAST + COBS_MAX_OVERHEAD + 1)
 
 /* ── Ground station message IDs ─────────────────────────────────── */
+#define MSG_ID_GS_TELEM      0x10
 #define MSG_ID_GS_STATUS     0x13
 
 /* ── Ground station packet sizes ────────────────────────────────── */
+#define SIZE_GS_MSG_TELEM    39  /* [ID:1][FC_RELAY:15][SEQ:1][RSSI:2][SNR:1][FREQ_ERR:2][DATA_AGE:2][RECOV:1][MACH:2][QBAR:2][ROLL:2][PITCH:2][YAW:2][CRC:4] = 39 */
 #define SIZE_GS_MSG_STATUS   24  /* [ID:1][PROF:1][RSSI:1][SNR:1][PKTS:2][FAIL:2][BARO:4][LAT:4][LON:4][CRC:4] = 24 */
 
 /* ── Ground station state structs ───────────────────────────────── */
