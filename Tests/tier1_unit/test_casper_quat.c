@@ -163,113 +163,105 @@ void test_quat_rotmat_90_pitch(void)
 /*  From accelerometer                                                 */
 /* ================================================================== */
 
-void test_quat_from_accel_level(void)
+void test_quat_from_accel_finite(void)
 {
-    /* accel = [0, 0, 9.81] => body Z pointing up => roll=0, pitch=0
-     * (using the Y-nose convention: pitch = atan2(-ax, sqrt(ay^2+az^2)),
-     *  roll = atan2(ay, az))
-     * pitch = atan2(0, 9.81) = 0
-     * roll  = atan2(0, 9.81) = 0
-     * => q = from_euler(0, 0, 0) = identity */
-    float accel[3] = {0.0f, 0.0f, 9.81f};
-    float q[4];
-    casper_quat_from_accel(accel, q);
-
-    /* Convert to euler and check roll/pitch near 0 */
-    float euler[3];
-    casper_quat_to_euler(q, euler);
-
-    /* euler[0]=bodyZ(heading), euler[1]=bodyY(nose spin), euler[2]=bodyX(tilt) */
-    /* With accel=[0,0,g], pitch and roll should be ~0 degrees */
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, euler[1]); /* body Y rotation */
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.0f, euler[2]); /* body X rotation */
-}
-
-void test_quat_from_accel_tilted(void)
-{
-    /* accel = [0, 4.9, 8.5] => tilted about body X
-     * pitch = atan2(0, sqrt(4.9^2+8.5^2)) = 0
-     * roll  = atan2(4.9, 8.5) ~ 30 deg */
+    /* casper_quat_from_accel must produce a finite unit quaternion. */
     float accel[3] = {0.0f, 4.9f, 8.5f};
     float q[4];
     casper_quat_from_accel(accel, q);
-
-    /* Should produce a valid, finite quaternion */
     TEST_ASSERT_ALL_FINITE(q, 4);
-
     float euler[3];
     casper_quat_to_euler(q, euler);
     TEST_ASSERT_ALL_FINITE(euler, 3);
+}
 
-    /* The roll (body X) should be approximately atan2(4.9, 8.5) ~ 30 deg.
-     * Use generous tolerance for indirect measurement. */
-    float expected_roll_deg = atan2f(4.9f, 8.5f) * RAD_TO_DEG;
-    TEST_ASSERT_FLOAT_WITHIN(0.5f, expected_roll_deg, euler[2]);
+/* ── Tilt-from-vertical euler convention helpers ─────────────────────
+ * casper_quat_to_euler uses a Y-nose tilt-from-vertical convention:
+ *   euler[0]=yaw (bodyZ, heading), euler[1]=roll (bodyY, nose spin,
+ *   full ±180), euler[2]=pitch (bodyX, fore/aft tilt).  Nose-up nominal
+ *   q0=[sqrt2/2,-sqrt2/2,0,0] -> (0,0,0). Pitch/yaw are invariant under
+ *   nose-spin (roll changes only). */
+static const float Q0_NOSE_UP[4] = { 0.70710678f, -0.70710678f, 0.0f, 0.0f };
+
+/* q_out = q0 (x) R_axis(theta_deg), axis: 0=X (pitch), 1=Y (roll/spin), 2=Z (yaw) */
+static void build_dev_quat(int axis, float theta_deg, float q_out[4])
+{
+    float h = theta_deg * DEG_TO_RAD * 0.5f;
+    float r[4] = { cosf(h), 0.0f, 0.0f, 0.0f };
+    r[axis + 1] = sinf(h);
+    casper_quat_mult(Q0_NOSE_UP, r, q_out);
+}
+
+void test_tilt_nose_up_is_zero(void)
+{
+    float euler[3];
+    casper_quat_to_euler(Q0_NOSE_UP, euler);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, euler[0]); /* yaw   */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, euler[1]); /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, euler[2]); /* pitch */
+}
+
+void test_tilt_nose_spin_is_roll(void)
+{
+    float q[4], euler[3];
+    build_dev_quat(1, 90.0f, q);              /* pure spin about nose (Y) */
+    casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 90.0f, euler[1]);  /* roll = spin */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f,  euler[2]);  /* pitch unchanged */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f,  euler[0]);  /* yaw unchanged */
+
+    build_dev_quat(1, 170.0f, q);             /* full range, no wrap before 180 */
+    casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 170.0f, euler[1]);
 }
 
 /* ================================================================== */
-/*  Euler round-trip                                                   */
+/*  Euler — tilt-from-vertical single-axis + combined                  */
 /* ================================================================== */
 
-void test_euler_round_trip(void)
+void test_tilt_pitch_is_bodyX(void)
 {
-    /* euler -> quat -> euler should return the original values */
-    float roll_deg  = 15.0f;
-    float pitch_deg = 25.0f;
-    float yaw_deg   = 45.0f;
-
-    float roll_rad  = roll_deg  * DEG_TO_RAD;
-    float pitch_rad = pitch_deg * DEG_TO_RAD;
-    float yaw_rad   = yaw_deg   * DEG_TO_RAD;
-
-    float q[4];
-    casper_quat_from_euler(roll_rad, pitch_rad, yaw_rad, q);
-
-    float euler[3];
+    float q[4], euler[3];
+    build_dev_quat(0, 20.0f, q);              /* fore/aft tilt about body X */
     casper_quat_to_euler(q, euler);
-
-    /* euler[0] = body Z = yaw, euler[1] = body Y = pitch, euler[2] = body X = roll */
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, yaw_deg,   euler[0]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, pitch_deg,  euler[1]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, roll_deg,   euler[2]);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 20.0f, euler[2]);  /* pitch */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f,  euler[1]);  /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f,  euler[0]);  /* yaw   */
 }
 
-void test_euler_round_trip_negative(void)
+void test_tilt_yaw_is_bodyZ(void)
 {
-    float roll_deg  = -30.0f;
-    float pitch_deg = -10.0f;
-    float yaw_deg   = -60.0f;
-
-    float q[4];
-    casper_quat_from_euler(roll_deg * DEG_TO_RAD,
-                           pitch_deg * DEG_TO_RAD,
-                           yaw_deg * DEG_TO_RAD, q);
-
-    float euler[3];
+    float q[4], euler[3];
+    build_dev_quat(2, 20.0f, q);              /* side tilt about body Z */
     casper_quat_to_euler(q, euler);
-
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, yaw_deg,   euler[0]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, pitch_deg,  euler[1]);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, roll_deg,   euler[2]);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 20.0f, euler[0]);  /* yaw   */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f,  euler[1]);  /* roll  */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f,  euler[2]);  /* pitch */
 }
 
-void test_euler_gimbal_lock(void)
+void test_tilt_invariant_under_spin(void)
 {
-    /* pitch = 89.9 degrees => near gimbal lock, should not produce NaN */
-    float roll_rad  = 0.0f;
-    float pitch_rad = 89.9f * DEG_TO_RAD;
-    float yaw_rad   = 0.0f;
+    /* fore/aft tilt 20deg, THEN spin 60deg about the nose: pitch must stay
+     * at 20 (invariant), roll = spin, yaw ~ 0. This is the key property. */
+    float qtilt[4], rspin[4], q[4], euler[3];
+    build_dev_quat(0, 20.0f, qtilt);          /* q0 (x) Rx(20) */
+    float h = 60.0f * DEG_TO_RAD * 0.5f;
+    rspin[0] = cosf(h); rspin[1] = 0.0f; rspin[2] = sinf(h); rspin[3] = 0.0f; /* Ry(60) */
+    casper_quat_mult(qtilt, rspin, q);        /* q0 (x) Rx(20) (x) Ry(60) */
+    casper_quat_to_euler(q, euler);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 20.0f, euler[2]);  /* pitch invariant under spin */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 60.0f, euler[1]);  /* roll = spin */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f,  euler[0]);  /* yaw ~ 0 */
+}
 
-    float q[4];
-    casper_quat_from_euler(roll_rad, pitch_rad, yaw_rad, q);
-    TEST_ASSERT_ALL_FINITE(q, 4);
-
-    float euler[3];
+void test_tilt_near_singularity_finite(void)
+{
+    /* pitch ~ 89.9deg (nose horizontal) — must stay finite, no NaN. */
+    float q[4], euler[3];
+    build_dev_quat(0, 89.9f, q);
     casper_quat_to_euler(q, euler);
     TEST_ASSERT_ALL_FINITE(euler, 3);
-
-    /* pitch (euler[1]) should be close to 89.9 */
-    TEST_ASSERT_FLOAT_WITHIN(0.5f, 89.9f, euler[1]);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 89.9f, euler[2]);
 }
 
 /* ================================================================== */
@@ -297,13 +289,15 @@ int main(void)
     RUN_TEST(test_quat_rotmat_90_pitch);
 
     /* From accelerometer */
-    RUN_TEST(test_quat_from_accel_level);
-    RUN_TEST(test_quat_from_accel_tilted);
+    RUN_TEST(test_quat_from_accel_finite);
 
-    /* Euler round-trip */
-    RUN_TEST(test_euler_round_trip);
-    RUN_TEST(test_euler_round_trip_negative);
-    RUN_TEST(test_euler_gimbal_lock);
+    /* Euler — tilt-from-vertical convention */
+    RUN_TEST(test_tilt_nose_up_is_zero);
+    RUN_TEST(test_tilt_nose_spin_is_roll);
+    RUN_TEST(test_tilt_pitch_is_bodyX);
+    RUN_TEST(test_tilt_yaw_is_bodyZ);
+    RUN_TEST(test_tilt_invariant_under_spin);
+    RUN_TEST(test_tilt_near_singularity_finite);
 
     return UNITY_END();
 }

@@ -262,9 +262,11 @@ void casper_att_update(casper_attitude_t *att,
             vec3_cross(m_hat, m_pred_hat, e_mag);
         }
 
-        /* Integral accumulates raw error */
-        for (i = 0; i < 3; i++)
-            att->e_int[i] += (e_grav[i] + e_mag[i]) * dt;
+        /* Integral accumulates raw error — only when the integral term is
+         * active (Ki != 0), to prevent unbounded e_int windup when Ki == 0. */
+        if (att->config.Ki != 0.0f)
+            for (i = 0; i < 3; i++)
+                att->e_int[i] += (e_grav[i] + e_mag[i]) * dt;
 
         /* Apply corrections */
         for (i = 0; i < 3; i++)
@@ -290,10 +292,11 @@ void casper_att_update(casper_attitude_t *att,
                 vec3_normalize(m_pred, m_pred_hat);
                 vec3_cross(m_hat, m_pred_hat, e_mag);
 
-                /* Integral accumulates raw error */
+                /* Integral accumulates raw error — skip when Ki == 0 (no windup) */
                 float dt_corr = att->mag_update_timer;
-                for (i = 0; i < 3; i++)
-                    att->e_int[i] += e_mag[i] * dt_corr;
+                if (att->config.Ki != 0.0f)
+                    for (i = 0; i < 3; i++)
+                        att->e_int[i] += e_mag[i] * dt_corr;
 
                 /* Apply correction */
                 for (i = 0; i < 3; i++)
