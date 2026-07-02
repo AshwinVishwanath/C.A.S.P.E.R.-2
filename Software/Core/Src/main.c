@@ -398,7 +398,7 @@ int main(void)
       .Kp_grav           = 10.0f,
       .Kp_mag_pad        = 0.0f,
       .Kp_mag_flight     = 0.0f,
-      .Ki                = 0.1f,
+      .Ki                = 0.0f,   /* integral disabled — bias handled by EMA estimator; avoids windup-driven heading drift */
       .gyro_lpf_cutoff_hz = 50.0f,
       .mag_update_hz     = 10.0f,
       .launch_accel_g    = 3.0f,
