@@ -112,6 +112,12 @@ C_SOURCES += \
 App/ground/ground_main.c \
 App/ground/ground_radio.c
 
+# COBS relay needs casper_quat_to_euler for euler angle computation in 0x10 packet.
+# Not needed for ASCII mode, so gate it here rather than in shared sources.
+ifeq ($(GS_OUTPUT),COBS)
+C_SOURCES += App/nav/casper_quat.c
+endif
+
 else
 # ── Flight-only sources ─────────────────────────────────────────
 C_SOURCES += \
@@ -230,6 +236,15 @@ ifeq ($(BUILD_TARGET),GROUND)
 C_DEFS += -DBUILD_TARGET_GROUND
 else
 C_DEFS += -DBUILD_TARGET_FLIGHT
+endif
+
+# GS_OUTPUT: selects ground-station CDC output format.
+#   ASCII (default) — human-readable ">..." lines, unchanged from original.
+#   COBS            — binary COBS-framed packets for Mission Control receiver.
+# Usage: make BUILD_TARGET=GROUND GS_OUTPUT=COBS -j8
+GS_OUTPUT ?= ASCII
+ifeq ($(GS_OUTPUT),COBS)
+C_DEFS += -DGS_OUTPUT_COBS
 endif
 
 # Extra defines from command line: make -j8 EXTRA_DEFS="-DHIL_MODE"

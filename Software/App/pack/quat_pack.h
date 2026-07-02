@@ -37,4 +37,21 @@
  */
 void quat_pack_smallest_three(uint8_t out[5], const float q[4]);
 
+/**
+ * Exact inverse of quat_pack_smallest_three.
+ *
+ * Reconstructs a unit quaternion [w, x, y, z] from the 5-byte smallest-three
+ * packed representation.  The recovered dropped component is always
+ * non-negative (consistent with the pack convention that negates q when the
+ * largest-magnitude component is negative).
+ *
+ * Uses the same QUAT_PACK_INT12_SCALE = 2896.309f (2048 * sqrt(2)) as the
+ * packer, so round-trip accuracy is within int12 quantisation (~3.5e-4 per
+ * component at the sqrt(2) edges).
+ *
+ * @param in  Input buffer, exactly 5 bytes (same layout as quat_pack output)
+ * @param q   Output unit quaternion [w, x, y, z]
+ */
+void quat_unpack_smallest_three(const uint8_t in[5], float q[4]);
+
 #endif /* APP_PACK_QUAT_PACK_H */

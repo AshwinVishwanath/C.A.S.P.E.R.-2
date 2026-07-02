@@ -6,6 +6,12 @@
 #include "quat_pack.h"
 #include <math.h>
 
+/* Scale factor: 2048 * sqrt(2) ≈ 2896.309
+ * Maps the smallest-three range [-1/sqrt(2), +1/sqrt(2)] exactly to
+ * the int12 range [-2048, +2047].  Both pack and unpack share this
+ * constant so round-trip fidelity is guaranteed. */
+static const float QUAT_PACK_INT12_SCALE = 2896.309f;
+
 void quat_pack_smallest_three(uint8_t out[5], const float q[4])
 {
     /* 1. Find index of largest-magnitude component */
@@ -35,9 +41,7 @@ void quat_pack_smallest_three(uint8_t out[5], const float q[4])
         }
     }
 
-    /* 4. Scale to int12: 2048 * sqrt(2) ≈ 2896 maps the full
-     *    smallest-three range [-1/sqrt(2), +1/sqrt(2)] to [-2048, +2047]. */
-    static const float QUAT_PACK_INT12_SCALE = 2896.309f;
+    /* 4. Scale to int12 using shared constant */
     int16_t qa = (int16_t)roundf(rem[0] * QUAT_PACK_INT12_SCALE);
     int16_t qb = (int16_t)roundf(rem[1] * QUAT_PACK_INT12_SCALE);
     int16_t qc = (int16_t)roundf(rem[2] * QUAT_PACK_INT12_SCALE);
@@ -60,4 +64,48 @@ void quat_pack_smallest_three(uint8_t out[5], const float q[4])
     out[2] = (uint8_t)((ub >> 4) & 0xFF);
     out[3] = (uint8_t)(ua & 0xFF);
     out[4] = (uint8_t)(((uint8_t)drop << 6) | ((ua >> 8) & 0x0F));
+}
+
+void quat_unpack_smallest_three(const uint8_t in[5], float q[4])
+{
+    /* 1. Extract drop index from bits [7:6] of byte 4 */
+    int drop = (in[4] >> 6) & 0x03;
+
+    /* 2. Reconstruct three 12-bit unsigned words from the packed bytes.
+     *    Bit layout mirrors the packer:
+     *      in[3]       = ua[7:0]       (rem[0] bits 7..0)
+     *      in[4][3:0]  = ua[11:8]      (rem[0] bits 11..8)
+     *      in[2]       = ub[11:4]      (rem[1] bits 11..4)
+     *      in[1][7:4]  = ub[3:0]       (rem[1] bits 3..0)
+     *      in[0]       = uc[7:0]       (rem[2] bits 7..0)
+     *      in[1][3:0]  = uc[11:8]      (rem[2] bits 11..8)
+     */
+    uint16_t ua = (uint16_t)(((uint16_t)(in[4] & 0x0F) << 8) | in[3]);
+    uint16_t ub = (uint16_t)(((uint16_t)in[2] << 4) | ((in[1] >> 4) & 0x0F));
+    uint16_t uc = (uint16_t)(((uint16_t)(in[1] & 0x0F) << 8) | in[0]);
+
+    /* 3. Sign-extend each 12-bit value to signed (two's complement) */
+    int16_t sa = (ua & 0x800U) ? (int16_t)ua - 4096 : (int16_t)ua;
+    int16_t sb = (ub & 0x800U) ? (int16_t)ub - 4096 : (int16_t)ub;
+    int16_t sc = (uc & 0x800U) ? (int16_t)uc - 4096 : (int16_t)uc;
+
+    /* 4. Scale back to float using the SAME constant used by the packer.
+     *    This guarantees round-trip fidelity regardless of which scale is
+     *    used; both are derived from QUAT_PACK_INT12_SCALE = 2896.309f. */
+    float rem[3];
+    rem[0] = (float)sa / QUAT_PACK_INT12_SCALE;
+    rem[1] = (float)sb / QUAT_PACK_INT12_SCALE;
+    rem[2] = (float)sc / QUAT_PACK_INT12_SCALE;
+
+    /* 5. Place rem[0..2] into the three non-drop indices in ascending order */
+    int ri = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i != drop) {
+            q[i] = rem[ri++];
+        }
+    }
+
+    /* 6. Recover dropped component (always non-negative by pack convention) */
+    float sumsq = rem[0]*rem[0] + rem[1]*rem[1] + rem[2]*rem[2];
+    q[drop] = sqrtf(fmaxf(0.0f, 1.0f - sumsq));
 }
