@@ -75,4 +75,15 @@ int ground_radio_send_cmd(const uint8_t *buf, uint8_t len);
  */
 void ground_radio_check_tx_done(void);
 
+/**
+ * COBS-encode raw bytes and transmit via USB CDC.
+ * Pattern mirrors tlm_manager.c: cobs_encode -> append 0x00 -> CDC_Transmit_FS.
+ * Always compiled; reserved for callers that need to send binary GS packets
+ * (e.g. ground_main.c 0x13 status heartbeat when GS_OUTPUT=COBS).
+ * @param raw  Raw packet bytes (must not alias the internal encode buffer)
+ * @param len  Number of raw bytes (max SIZE_GS_MSG_TELEM = 39)
+ * @return 1 on success, 0 on COBS encode error or USB busy
+ */
+int ground_radio_cobs_send(const uint8_t *raw, int len);
+
 #endif /* APP_GROUND_GROUND_RADIO_H */
