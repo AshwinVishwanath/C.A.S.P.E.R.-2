@@ -574,7 +574,12 @@ void ground_radio_check_tx_done(void)
 {
     if (!s_tx_pending) return;
 
-    if (g_radio_dio0_flag) {
+    /* DIO0 is hard-mapped to RxDone (RegDioMapping1 bits[7:6]=00), so a TxDone
+     * NEVER raises DIO0. Poll the SX1276 IRQ-flags register directly for the
+     * TX_DONE bit instead — otherwise the GS never learns the reply finished,
+     * stays parked in TX, and goes deaf after its first transmit. */
+    uint8_t irq = sx1276_get_irq_flags();
+    if (irq & SX1276_IRQ_TX_DONE) {
         sx1276_clear_irq_flags(SX1276_IRQ_ALL);
         g_radio_dio0_flag = 0;
 
