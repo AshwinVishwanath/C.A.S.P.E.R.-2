@@ -234,6 +234,30 @@ void ground_radio_on_rx(void)
     s_stats.last_rssi = (rssi_raw < -128) ? -128 : (int8_t)rssi_raw;
     s_stats.last_snr  = sx1276_get_packet_snr();
 
+    /* ── Ping-pong responder (bench two-way link test with Casper-3) ─────
+     * PING packet = [0xCA][0x53][0x01][seq_lo][seq_hi][sum8]; reply with a
+     * PONG (type 0x02, same seq).  This bypasses the telemetry CRC-32 framing,
+     * so it must be handled BEFORE the CRC-32 check below (and returns after).
+     * The LoRa hardware CRC already guaranteed integrity of these bytes. */
+    if (nb >= 6u &&
+        s_rx_buf[0] == 0xCAu && s_rx_buf[1] == 0x53u && s_rx_buf[2] == 0x01u &&
+        s_rx_buf[5] == (uint8_t)(s_rx_buf[0] + s_rx_buf[1] + s_rx_buf[2] +
+                                 s_rx_buf[3] + s_rx_buf[4])) {
+        uint16_t seq = (uint16_t)s_rx_buf[3] | ((uint16_t)s_rx_buf[4] << 8);
+        uint8_t pong[6] = { 0xCAu, 0x53u, 0x02u, s_rx_buf[3], s_rx_buf[4], 0u };
+        pong[5] = (uint8_t)(pong[0] + pong[1] + pong[2] + pong[3] + pong[4]);
+        ground_radio_send_cmd(pong, 6u);   /* TX; check_tx_done() returns to RX */
+        s_stats.rx_pkt_count++;
+        s_last_valid_rx_ms = HAL_GetTick();
+#ifndef GS_OUTPUT_COBS
+        char l[80];
+        int n = snprintf(l, sizeof(l), ">GS PING %u -> PONG  rssi %d snr %d\r\n",
+                         (unsigned)seq, (int)s_stats.last_rssi, (int)s_stats.last_snr);
+        if (n > 0) { gs_cdc_print(l, n); }
+#endif
+        return;                            /* handled — skip telemetry decode */
+    }
+
     /* Validate CRC-32 */
     uint32_t payload_len = (uint32_t)(nb - 4);
     uint32_t computed    = crc32_hw_compute(s_rx_buf, payload_len);
