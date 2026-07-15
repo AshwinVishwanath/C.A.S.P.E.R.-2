@@ -76,6 +76,13 @@ int ground_radio_send_cmd(const uint8_t *buf, uint8_t len);
 void ground_radio_check_tx_done(void);
 
 /**
+ * @return non-zero while a TX is in flight (awaiting TxDone).
+ * DIO0 is shared RxDone/TxDone; the main loop uses this to route a DIO0
+ * edge to check_tx_done() rather than on_rx() while transmitting.
+ */
+int ground_radio_tx_pending(void);
+
+/**
  * COBS-encode raw bytes and transmit via USB CDC.
  * Pattern mirrors tlm_manager.c: cobs_encode -> append 0x00 -> CDC_Transmit_FS.
  * Always compiled; reserved for callers that need to send binary GS packets

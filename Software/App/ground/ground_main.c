@@ -76,14 +76,20 @@ void ground_main_tick(void)
     if (HAL_GPIO_ReadPin(RADIO_DIO1_GPIO_Port, RADIO_DIO1_Pin))
         g_radio_dio1_flag = 1;
 
-    /* ── 1. Radio RX: check for received packets ──────────────── */
+    /* ── 1. Radio DIO0 event (SHARED RxDone/TxDone on this pin) ──
+     *        While a TX is in flight the edge is TxDone -> route it to
+     *        check_tx_done() so the radio is re-armed to RX-continuous.
+     *        Otherwise it is RxDone -> parse the packet. The previous code
+     *        always called on_rx(), which cleared the flag on a TxDone
+     *        before check_tx_done() could re-arm RX, leaving the GS stuck
+     *        in TX and deaf after its first reply. ── */
     if (g_radio_dio0_flag) {
-        ground_radio_on_rx();
-        /* Note: g_radio_dio0_flag is cleared inside ground_radio_on_rx() */
+        if (ground_radio_tx_pending()) {
+            ground_radio_check_tx_done();  /* TxDone: clears flag, re-arms RX */
+        } else {
+            ground_radio_on_rx();          /* RxDone: clears flag, parses pkt */
+        }
     }
-
-    /* ── 2. Radio TX completion check ─────────────────────────── */
-    ground_radio_check_tx_done();
 
     /* ── 3. Profile switch tick ───────────────────────────────── */
     ground_radio_profile_tick();

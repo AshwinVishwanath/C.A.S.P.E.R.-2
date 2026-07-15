@@ -601,3 +601,15 @@ const gs_radio_stats_t *ground_radio_get_stats(void)
 {
     return &s_stats;
 }
+
+/* ------------------------------------------------------------------ */
+/*  TX-in-flight query                                                 */
+/* ------------------------------------------------------------------ */
+/* DIO0 is shared for RxDone and TxDone. The main loop uses this to route
+ * a DIO0 edge to check_tx_done() while a TX is pending, instead of
+ * misrouting the TxDone into on_rx() (which would clear the flag before
+ * check_tx_done() could re-arm RX, leaving the GS stuck in TX and deaf). */
+int ground_radio_tx_pending(void)
+{
+    return (int)s_tx_pending;
+}
