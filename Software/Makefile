@@ -257,6 +257,15 @@ ifeq ($(GS_FEI_BEACON),1)
 C_DEFS += -DGS_FEI_BEACON
 endif
 
+# GS_FEI_MEASURE: role-swap of the FEI bench — the Casper-3 FC transmits
+# (+22 dBm TXBCN=1 image) and THIS GS measures the FC's TX carrier error via
+# the SX1276 FEI registers, one ">gfei_hz:..." line per received packet.
+# Same pinned bench modem config as GS_FEI_BEACON; RX-only, never transmits.
+# Usage: make ground GS_FEI_MEASURE=1 -j8   (clean first, same caveat)
+ifeq ($(GS_FEI_MEASURE),1)
+C_DEFS += -DGS_FEI_MEASURE
+endif
+
 # Extra defines from command line: make -j8 EXTRA_DEFS="-DHIL_MODE"
 ifdef EXTRA_DEFS
 C_DEFS += $(EXTRA_DEFS)

@@ -44,6 +44,9 @@
 #define SX1276_REG_PKT_RSSI_VALUE      0x1A
 #define SX1276_REG_RSSI_VALUE          0x1B
 #define SX1276_REG_HOP_CHANNEL         0x1C
+#define SX1276_REG_FEI_MSB             0x28  /* LoRa freq-error, 20-bit signed: 0x28[3:0]:0x29:0x2A */
+#define SX1276_REG_FEI_MID             0x29
+#define SX1276_REG_FEI_LSB             0x2A
 #define SX1276_REG_MODEM_CONFIG_1      0x1D
 #define SX1276_REG_MODEM_CONFIG_2      0x1E
 #define SX1276_REG_SYMB_TIMEOUT_LSB    0x1F
@@ -181,5 +184,13 @@ void    sx1276_clear_irq_flags(uint8_t mask);
 
 int16_t sx1276_get_packet_rssi(void);
 int8_t  sx1276_get_packet_snr(void);
+
+/* ── LoRa frequency-error indicator (read after RxDone) ─────────── */
+
+/* Estimated frequency error of the last received packet, Hz (SX1276 DS
+ * §6.4: Ferr = FEI[19:0 signed] * 2^24 / Fxtal * BW[kHz] / 500). Sign
+ * convention determined empirically against the Casper-3 FC whose TX
+ * offset is independently known — see the GS_FEI_MEASURE bench notes. */
+float sx1276_get_freq_error_hz(uint32_t bw_hz);
 
 #endif /* APP_RADIO_SX1276_H */

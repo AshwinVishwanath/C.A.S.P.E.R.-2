@@ -18,6 +18,13 @@
  * are suppressed when GS_OUTPUT_COBS is defined.
  */
 
+#if defined(GS_FEI_BEACON) && defined(GS_FEI_MEASURE)
+#error "GS_FEI_BEACON and GS_FEI_MEASURE are mutually exclusive"
+#endif
+#if defined(GS_FEI_MEASURE) && defined(GS_OUTPUT_COBS)
+#error "GS_FEI_MEASURE emits ASCII lines; build with GS_OUTPUT=ASCII"
+#endif
+
 #include "ground_radio.h"
 #include "sx1276.h"
 #include "radio_config.h"
@@ -191,12 +198,13 @@ int ground_radio_init(SPI_HandleTypeDef *hspi)
     sx1276_set_tx_power(RADIO_PROFILE_A.tx_power_dbm);
     s_stats.current_profile = 0;
 
-#ifdef GS_FEI_BEACON
-    /* FEI-beacon bench overrides (Casper-3 radio-testing, 2026-07-22): must
-     * match flight/app/radio_app.c in the C3 repo — 868.0 MHz, SF9, BW125,
-     * CR4/5, preamble 8, explicit header, CRC on, sync 0x12 (the SX1276
-     * equivalent of the SX1262's 0x1424). +10 dBm, not +20: desk-range bench,
-     * keep the FC front-end well out of saturation. */
+#if defined(GS_FEI_BEACON) || defined(GS_FEI_MEASURE)
+    /* FEI bench overrides (Casper-3 radio-testing, 2026-07-22): must match
+     * flight/app/radio_app.c in the C3 repo — 868.0 MHz, SF9, BW125, CR4/5,
+     * preamble 8, explicit header, CRC on, sync 0x12 (the SX1276 equivalent
+     * of the SX1262's 0x1424). +10 dBm, not +20: desk-range bench, keep the
+     * FC front-end well out of saturation (MEASURE never transmits, the
+     * power setting is simply harmless there). */
     sx1276_set_frequency(868000000UL);
     sx1276_set_modulation(9U, 125000UL, 5U);
     sx1276_set_sync_word(0x12U);
@@ -223,6 +231,35 @@ void ground_radio_on_rx(void)
     uint8_t irq = sx1276_get_irq_flags();
     sx1276_clear_irq_flags(SX1276_IRQ_ALL);
     g_radio_dio0_flag = 0;
+
+#ifdef GS_FEI_MEASURE
+    /* FEI-measure bench (Casper-3 radio-testing, role-swap run): the FC
+     * transmits +22 dBm beacons (C3 TXBCN=1 image); this GS measures the
+     * FC's TX carrier error per packet and prints it. Every RxDone is
+     * reported — CRC-failed frames included, the FEI estimate is valid
+     * either way — and nothing downstream (ping-pong, telemetry decode,
+     * stats) runs: the per-line ok/bad counters are the bench's stats.
+     * RegFei registers persist after the IRQ clear above. */
+    {
+        static uint32_t s_meas_ok, s_meas_bad;
+        int crc_bad  = (irq & SX1276_IRQ_PAYLOAD_CRC_ERROR) ? 1 : 0;
+        uint8_t nb   = sx1276_read_reg(SX1276_REG_RX_NB_BYTES);
+        int16_t rssi = sx1276_get_packet_rssi();
+        int8_t  snr  = sx1276_get_packet_snr();
+        float   fei  = sx1276_get_freq_error_hz(125000UL);
+
+        if (crc_bad) s_meas_bad++; else s_meas_ok++;
+
+        char l[128];
+        int n = snprintf(l, sizeof(l),
+            ">gfei_hz:%.1f,gfei_ppm:%.3f,rssi:%d,snr:%d,crc:%d,len:%u,ok:%lu,bad:%lu\r\n",
+            (double)fei, (double)(fei / 868.0f),
+            (int)rssi, (int)snr, crc_bad ? 0 : 1, (unsigned)nb,
+            (unsigned long)s_meas_ok, (unsigned long)s_meas_bad);
+        if (n > 0) CDC_Transmit_FS((uint8_t *)l, (uint16_t)n);
+        return;
+    }
+#endif /* GS_FEI_MEASURE */
 
     /* HW CRC error */
     if (irq & SX1276_IRQ_PAYLOAD_CRC_ERROR) {
@@ -536,10 +573,11 @@ void ground_radio_on_rx(void)
 
 void ground_radio_profile_tick(void)
 {
-#ifdef GS_FEI_BEACON
-    /* Beacon bench: the modem is pinned to the FEI config. The loss-timeout
-     * A->B switch below would silently retune it (the FC bench is RX-only,
-     * so "no valid RX for 2 s" is this mode's PERMANENT condition, not loss). */
+#if defined(GS_FEI_BEACON) || defined(GS_FEI_MEASURE)
+    /* FEI bench: the modem is pinned to the bench config. The loss-timeout
+     * A->B switch below would silently retune it (in BEACON mode "no valid
+     * RX" is permanent; in MEASURE mode the beacon frames never pass the
+     * telemetry CRC path that feeds s_last_valid_rx_ms). */
     return;
 #endif
     if (s_profile_state != GS_PROFILE_A_ACTIVE) return;

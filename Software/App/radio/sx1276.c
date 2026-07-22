@@ -347,3 +347,20 @@ int8_t sx1276_get_packet_snr(void)
     uint8_t val = sx1276_read_reg(SX1276_REG_PKT_SNR_VALUE);
     return (int8_t)val / 4;
 }
+
+/* ── LoRa frequency-error indicator ─────────────────────────────── */
+
+float sx1276_get_freq_error_hz(uint32_t bw_hz)
+{
+    /* 20-bit signed two's complement: 0x28[3:0] : 0x29 : 0x2A */
+    int32_t raw = ((int32_t)(sx1276_read_reg(SX1276_REG_FEI_MSB) & 0x0F) << 16) |
+                  ((int32_t)sx1276_read_reg(SX1276_REG_FEI_MID) << 8) |
+                   (int32_t)sx1276_read_reg(SX1276_REG_FEI_LSB);
+    if (raw & 0x80000L) {
+        raw -= 0x100000L;
+    }
+
+    /* Ferr = raw * 2^24/Fxtal * BW[kHz]/500  (DS §6.4; Fxtal = 32 MHz,
+     * 2^24/32e6 = 0.524288). */
+    return (float)raw * 0.524288f * ((float)bw_hz * 0.001f) / 500.0f;
+}
