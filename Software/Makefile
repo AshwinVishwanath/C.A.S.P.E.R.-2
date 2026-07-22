@@ -247,6 +247,16 @@ ifeq ($(GS_OUTPUT),COBS)
 C_DEFS += -DGS_OUTPUT_COBS
 endif
 
+# GS_FEI_BEACON: ground station becomes a 10 Hz TX beacon for the Casper-3
+# FEI (crystal-vs-TCXO) bench — see flight/app/radio_app.c in the C3 repo.
+# Pins the modem to the bench config (868.0 MHz, SF9, BW125, CR4/5, sync 0x12)
+# and disables the loss-timeout profile switch that would silently retune it.
+# Usage: make ground GS_FEI_BEACON=1 -j8   (do a clean first — objects do not
+# depend on C_DEFS in this Makefile, so stale mixing is possible)
+ifeq ($(GS_FEI_BEACON),1)
+C_DEFS += -DGS_FEI_BEACON
+endif
+
 # Extra defines from command line: make -j8 EXTRA_DEFS="-DHIL_MODE"
 ifdef EXTRA_DEFS
 C_DEFS += $(EXTRA_DEFS)

@@ -191,6 +191,19 @@ int ground_radio_init(SPI_HandleTypeDef *hspi)
     sx1276_set_tx_power(RADIO_PROFILE_A.tx_power_dbm);
     s_stats.current_profile = 0;
 
+#ifdef GS_FEI_BEACON
+    /* FEI-beacon bench overrides (Casper-3 radio-testing, 2026-07-22): must
+     * match flight/app/radio_app.c in the C3 repo — 868.0 MHz, SF9, BW125,
+     * CR4/5, preamble 8, explicit header, CRC on, sync 0x12 (the SX1276
+     * equivalent of the SX1262's 0x1424). +10 dBm, not +20: desk-range bench,
+     * keep the FC front-end well out of saturation. */
+    sx1276_set_frequency(868000000UL);
+    sx1276_set_modulation(9U, 125000UL, 5U);
+    sx1276_set_sync_word(0x12U);
+    sx1276_set_preamble(8U);
+    sx1276_set_tx_power(10);
+#endif
+
     radio_irq_clear_all();
 
     /* Enter RX-continuous mode */
@@ -523,6 +536,12 @@ void ground_radio_on_rx(void)
 
 void ground_radio_profile_tick(void)
 {
+#ifdef GS_FEI_BEACON
+    /* Beacon bench: the modem is pinned to the FEI config. The loss-timeout
+     * A->B switch below would silently retune it (the FC bench is RX-only,
+     * so "no valid RX for 2 s" is this mode's PERMANENT condition, not loss). */
+    return;
+#endif
     if (s_profile_state != GS_PROFILE_A_ACTIVE) return;
 
     uint32_t now = HAL_GetTick();
