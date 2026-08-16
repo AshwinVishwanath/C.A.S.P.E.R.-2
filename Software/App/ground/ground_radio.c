@@ -91,6 +91,12 @@ static const char *event_name(uint8_t evt)
     case FC_EVT_BURNOUT: return "BURNOUT";
     case FC_EVT_STAGING: return "STAGING";
     case FC_EVT_ARM:     return "ARM";
+    /* Casper-3 FC events relayed by this groundstation (see tlm_types.h).
+     * SHADOW in particular is the whole data product of the September
+     * shadow-mode campaign -- without a case here every Logic-VM decision
+     * edge prints as an anonymous UNK on the bench console. */
+    case FC_EVT_PYRO_MODE:    return "PYROMODE";
+    case FC_EVT_LOGIC_SHADOW: return "SHADOW";
     default:             return "UNK";
     }
 }
@@ -539,9 +545,14 @@ void ground_radio_on_rx(void)
         uint16_t edata = get_le16(&s_rx_buf[2]);
         uint16_t etime = get_le16(&s_rx_buf[4]);
 
+        /* Always print the raw type byte alongside the name: the FC's event
+         * table grows independently of this repo, and a future event this
+         * build has never heard of must still be identifiable from a console
+         * capture rather than collapsing into an indistinguishable "UNK". */
         len = snprintf(s_cdc_buf, sizeof(s_cdc_buf),
-            ">EVT %s DATA:%u T:%u RSSI:%d\r\n",
-            event_name(etype), edata, etime, (int)s_stats.last_rssi);
+            ">EVT %s(0x%02X) DATA:%u T:%u RSSI:%d\r\n",
+            event_name(etype), (unsigned)etype, edata, etime,
+            (int)s_stats.last_rssi);
         break;
     }
     case MSG_ID_ACK_ARM:

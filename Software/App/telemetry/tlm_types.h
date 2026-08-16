@@ -58,6 +58,19 @@
 #define FC_EVT_BURNOUT       0x06
 #define FC_EVT_STAGING       0x07
 #define FC_EVT_ARM           0x08
+/* 0x09 / 0x0A are emitted by the CASPER-3 FC, not by this firmware. They are
+ * declared here because the groundstation build (Software/App/ground/) lives
+ * in this repo and relays C3 telemetry: the COBS path forwards every event
+ * opaquely and needs no per-type knowledge, but the ASCII console names them,
+ * and an event it cannot name prints as "UNK". Keep in step with the C3 repo's
+ * flight/telemetry/tlm_types.h. */
+#define FC_EVT_PYRO_MODE     0x09  /* C3 MC_FC_ALIGNMENT.md S7: boot pyro-mode
+                                     * visibility; data = pyro_live_mask |
+                                     * (stored_config_valid << 8)            */
+#define FC_EVT_LOGIC_SHADOW  0x0A  /* C3 MC_FC_ALIGNMENT.md S13c: SHADOW-mode
+                                     * Logic-VM decision edge (logged, NEVER
+                                     * actuated); data = (ch << 8) |
+                                     * min(duration_ms/10, 255)              */
 
 /* ── Error codes ─────────────────────────────────────────────────── */
 #define ERR_DROGUE_FAIL      0x01
