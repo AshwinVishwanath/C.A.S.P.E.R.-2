@@ -202,12 +202,12 @@ static int build_gps_packet(uint8_t *buf, const fc_gps_state_t *gps)
     /* [0] msg_id */
     *p++ = MSG_ID_GPS;
 
-    /* [1-4] dlat_mm, i32 LE */
-    put_le32(p, (uint32_t)gps->dlat_mm);
+    /* [1-4] lat_deg7, i32 LE (absolute latitude, degrees x 1e-7) */
+    put_le32(p, (uint32_t)gps->lat_deg7);
     p += 4;
 
-    /* [5-8] dlon_mm, i32 LE */
-    put_le32(p, (uint32_t)gps->dlon_mm);
+    /* [5-8] lon_deg7, i32 LE (absolute longitude, degrees x 1e-7) */
+    put_le32(p, (uint32_t)gps->lon_deg7);
     p += 4;
 
     /* [9-11] alt_msl in cm, u24 LE (1 cm resolution, max 167.7 km) */

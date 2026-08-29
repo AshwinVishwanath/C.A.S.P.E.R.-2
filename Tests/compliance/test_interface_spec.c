@@ -93,7 +93,7 @@ static void test_size_fc_msg_fast(void)
 
 static void test_size_fc_msg_gps(void)
 {
-    /* [ID:1][DLAT:4][DLON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
+    /* [ID:1][LAT:4][LON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
     TEST_ASSERT_EQUAL_INT(18, SIZE_FC_MSG_GPS);
 }
 

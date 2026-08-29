@@ -524,8 +524,16 @@ void ground_radio_on_rx(void)
     }
     case MSG_ID_GPS: {
         if (nb < SIZE_FC_MSG_GPS) break;
-        int32_t  dlat_mm = get_le32_signed(&s_rx_buf[1]);
-        int32_t  dlon_mm = get_le32_signed(&s_rx_buf[5]);
+        /* [1-4]/[5-8] are ABSOLUTE degrees x 1e-7 (UBX NAV-PVT encoding) as of
+         * today's wire-contract change -- previously dlat_mm/dlon_mm (mm delta
+         * from an untransmitted pad origin). Print as signed degrees with 7
+         * decimal places (1e-7 deg ~= 1.1 cm) for recovery use. Matches the
+         * %.7f pattern ground_main.c already uses for GLAT/GLON; this build
+         * links -u _printf_float so %f is safe on newlib-nano. */
+        int32_t  lat_deg7 = get_le32_signed(&s_rx_buf[1]);
+        int32_t  lon_deg7 = get_le32_signed(&s_rx_buf[5]);
+        double   lat_deg  = (double)lat_deg7 * 1e-7;
+        double   lon_deg  = (double)lon_deg7 * 1e-7;
         uint32_t alt_raw = get_le24(&s_rx_buf[9]);
         float    alt_m   = (float)alt_raw * ALT_SCALE_M;
         uint8_t  fix     = s_rx_buf[12];
@@ -534,8 +542,8 @@ void ground_radio_on_rx(void)
         const char *fix_str = (fix == 3) ? "3D" :
                               (fix == 2) ? "2D" : "NONE";
         len = snprintf(s_cdc_buf, sizeof(s_cdc_buf),
-            ">GPS DLAT:%ld DLON:%ld ALT:%.2f FIX:%s SAT:%u RSSI:%d\r\n",
-            (long)dlat_mm, (long)dlon_mm, alt_m, fix_str, sats,
+            ">GPS LAT:%.7f LON:%.7f ALT:%.2f FIX:%s SAT:%u RSSI:%d\r\n",
+            lat_deg, lon_deg, alt_m, fix_str, sats,
             (int)s_stats.last_rssi);
         break;
     }

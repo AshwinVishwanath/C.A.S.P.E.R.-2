@@ -18,7 +18,7 @@ This document specifies every interface between Mission Control (MC), the Flight
 >
 > **2. FC_MSG_GPS — completely different layout**
 > - Msgset: **12 bytes** — dlat/dlon int16 metres (2B each), alt uint16 decametres (2B), fixsat packed u8 ([7:6] fix + [5:0] sats), pdop u8, CRC over 0–7
-> - This spec: **18 bytes** — dlat/dlon i32 millimetres (4B each), alt u24 × 0.01 (3B), fix_type u8, sat_count u8, no pDOP, CRC over 0–13
+> - This spec: **18 bytes** — absolute lat/lon i32 deg×1e-7 (4B each), alt u24 × 0.01 (3B), fix_type u8, sat_count u8, no pDOP, CRC over 0–13
 >
 > **3. FC_MSG_EVENT — size**
 > - Msgset: **9 bytes**, CRC over bytes 0–4
@@ -401,14 +401,25 @@ Every decoded payload has `msg_id` at byte `[0]`. The parser dispatches by this 
 | Offset | Field | Type | Scale | Unit | Description |
 |---|---|---|---|---|---|
 | 0 | msg_id | u8 | — | — | `0x02` |
-| 1–4 | dlat_mm | i32 LE | ÷ 1000 | m | Delta latitude from pad origin |
-| 5–8 | dlon_mm | i32 LE | ÷ 1000 | m | Delta longitude from pad origin |
+| 1–4 | lat_deg7 | i32 LE | × 1e-7 | deg | **Absolute** latitude (WGS84, UBX NAV-PVT encoding) |
+| 5–8 | lon_deg7 | i32 LE | × 1e-7 | deg | **Absolute** longitude (WGS84, UBX NAV-PVT encoding) |
 | 9–11 | alt_msl | u24 LE | × 0.01 | m | GPS altitude MSL (1 cm resolution, max 167,772 m) |
 | 12 | fix_type | u8 | — | — | 0=none, 2=2D, 3=3D |
 | 13 | sat_count | u8 | — | — | Satellites in use |
 | 14–17 | crc32 | u32 LE | — | — | CRC-32 over [0–13] |
 
-**Range saturation:** If `dlat_mm` or `dlon_mm` equals `±0x7FFFFFFF`, the delta has overflowed.
+**Changed 2026-08-29:** bytes 1–8 were `dlat_mm` / `dlon_mm` — millimetres from a pad
+origin the vehicle captured on its own first valid fix and never transmitted. They are now
+absolute WGS84 coordinates. The packet size is unchanged at 18 bytes, so **the two encodings
+are indistinguishable on the wire** — a decoder built against the old layout will silently
+read degrees as millimetres. There is no saturation case any more: an absolute coordinate
+cannot overflow an i32 at 1e-7 resolution (±180° = ±1.8e9, i32 max 2.1e9). A decoder should
+instead range-check the decoded degrees ([-90,90] / [-180,180]) as a corrupt-payload signal.
+
+Rationale: a recovery crew needs coordinates it can type into a handset, and the pad origin
+belongs on the ground side, where it can be re-chosen after the fact. Capturing it on the
+FIRST valid fix meant a fix taken on a bench, or a poor first fix, silently displaced every
+later report.
 
 ### 6.3 FC_MSG_EVENT (0x03) — Discrete Event
 
@@ -554,7 +565,7 @@ UBX-NAV-PVT payload is 92 bytes, received at 10 Hz. The driver parses the follow
 | 20 | fixType | u8 | enum | `fix_type` | → FC_MSG_GPS[12]; gates EKF GPS calls |
 | 23 | numSV | u8 | count | `num_sv` | → FC_MSG_GPS[13] |
 | 24–27 | lon | i32 LE | deg × 10⁻⁷ | `lon_deg7` → `lon_deg` (float) | → FC_MSG_GPS[5–8] as dlon_mm delta |
-| 28–31 | lat | i32 LE | deg × 10⁻⁷ | `lat_deg7` → `lat_deg` (float) | → FC_MSG_GPS[1–4] as dlat_mm delta |
+| 28–31 | lat | i32 LE | deg × 10⁻⁷ | `lat_deg7` → `lat_deg` (float) | → FC_MSG_GPS[1–4] verbatim (absolute) |
 | 36–39 | hMSL | i32 LE | mm | `h_msl_mm` → `alt_msl_m` (÷1000) | → FC_MSG_GPS[9–11]; passed to EKF stub (no-op) |
 | 40–43 | hAcc | u32 LE | mm | `h_acc_mm` | Parsed, not downlinked |
 | 44–47 | vAcc | u32 LE | mm | `v_acc_mm` | Parsed, not downlinked |
@@ -591,22 +602,25 @@ Horizontal position/velocity (velN, velE, lat, lon) are not fed to the EKF (vert
 
 The telemetry pipeline for GPS is designed but **not connected** in the current build:
 
-1. **Pad origin capture:** `flight_config_t` has `pad_lat_deg`, `pad_lon_deg`, `pad_alt_m` — intended to be set when GPS first locks on the pad. `FC_EVT_ORIGIN` (`0x05`) is defined in `tlm_types.h` to announce this event.
+1. **No pad-origin capture is needed.** As of the 2026-08-29 contract change (§6.2) the
+   vehicle downlinks absolute coordinates and the ground side differences them. The
+   `pad_lat_deg` / `pad_lon_deg` / `pad_alt_m` fields in `flight_config_t` and the
+   `FC_EVT_ORIGIN` (`0x05`) event remain defined but are not required by the GPS path.
 
-2. **Delta computation:** `fc_gps_state_t` has `dlat_mm` and `dlon_mm` (millimetres from pad). Intended transform:
-   ```
-   dlat_mm = (lat_deg7 - pad_lat_deg7) × 0.0111320   [deg×1e-7 → mm, using 111.32 km/deg]
-   dlon_mm = (lon_deg7 - pad_lon_deg7) × 0.0111320 × cos(pad_lat)
-   ```
+2. **Packet build:** `tlm_send_gps()` and `radio_send_gps()` pack `fc_gps_state_t`
+   (`lat_deg7` / `lon_deg7`, straight from NAV-PVT) into the 18-byte FC_MSG_GPS format
+   (§6.2). No transform: the driver's raw i32s go on the wire verbatim.
 
-3. **Packet build:** `tlm_send_gps()` and `radio_send_gps()` pack `fc_gps_state_t` into the 18-byte FC_MSG_GPS format (§6.2).
+3. **Missing wiring:** no code in `flight_loop.c` calls `tlm_send_gps()` or
+   `radio_send_gps()`, so the Casper-2 flight build still emits no FC_MSG_GPS. The
+   encoders are kept correct because the format is shared with Casper-3, which does
+   emit it, and with this tree's own ground-station decoder.
 
-4. **Missing wiring:** No code in `flight_loop.c` currently:
-   - Captures pad origin from GPS
-   - Computes dlat_mm / dlon_mm deltas from raw lat_deg7 / lon_deg7
-   - Calls `tlm_send_gps()` or `radio_send_gps()`
-
-> **Note:** The flight logger (`flight_logger.c:377–378`) stores raw `lat_deg7` / `lon_deg7` into fields named `gps_dlat_mm` / `gps_dlon_mm` — this is a naming mismatch (absolute position stored in delta-named fields).
+> **Note:** The flight logger (`flight_logger.c`) stores raw `lat_deg7` / `lon_deg7` into
+> fields named `gps_dlat_mm` / `gps_dlon_mm`. The stored values were always absolute, so
+> the log is correct and only the names are wrong; they are left alone deliberately —
+> `tools/casper_decode.py` emits them as CSV column headers, and renaming them would break
+> existing analysis for no gain in the data.
 
 #### 6.7.7 M10M Supported Messages (Not Currently Used)
 
@@ -1461,8 +1475,8 @@ FC_MSG_FAST (21 bytes):
 
 FC_MSG_GPS (18 bytes):
   [0]     0x02
-  [1-4]   dlat_mm (i32 LE, ÷1000 → m)
-  [5-8]   dlon_mm (i32 LE, ÷1000 → m)
+  [1-4]   lat_deg7 (i32 LE, ×1e-7 → deg, ABSOLUTE)
+  [5-8]   lon_deg7 (i32 LE, ×1e-7 → deg, ABSOLUTE)
   [9-11]  alt_msl (u24 LE, ×0.01 → m, max 167,772 m)
   [12]    fix_type (u8)
   [13]    sat_count (u8)

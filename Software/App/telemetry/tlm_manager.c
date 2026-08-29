@@ -132,19 +132,19 @@ int tlm_tick(const fc_telem_state_t *state, const pyro_state_t *pyro,
 int tlm_send_gps(const fc_gps_state_t *gps_state)
 {
     /* FC_MSG_GPS: 18 bytes per INTERFACE_SPEC §5.2
-     * [0]=0x02 [1-4]=dlat_mm(i32) [5-8]=dlon_mm(i32)
+     * [0]=0x02 [1-4]=lat_deg7(i32) [5-8]=lon_deg7(i32)
      * [9-11]=alt_msl(u24) [12]=fix_type [13]=sat_count [14-17]=CRC */
     uint8_t *p = s_raw_buf;
 
     /* Byte 0: message ID */
     *p++ = MSG_ID_GPS;
 
-    /* Bytes 1–4: dlat_mm, int32 LE (millimetres from pad) */
-    put_le32(p, (uint32_t)gps_state->dlat_mm);
+    /* Bytes 1–4: lat_deg7, int32 LE (absolute latitude, degrees x 1e-7) */
+    put_le32(p, (uint32_t)gps_state->lat_deg7);
     p += 4;
 
-    /* Bytes 5–8: dlon_mm, int32 LE (millimetres from pad) */
-    put_le32(p, (uint32_t)gps_state->dlon_mm);
+    /* Bytes 5–8: lon_deg7, int32 LE (absolute longitude, degrees x 1e-7) */
+    put_le32(p, (uint32_t)gps_state->lon_deg7);
     p += 4;
 
     /* Bytes 9–11: alt_msl in cm, uint24 LE (1 cm resolution, max 167.7 km) */

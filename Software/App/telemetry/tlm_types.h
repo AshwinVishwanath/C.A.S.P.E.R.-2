@@ -91,7 +91,7 @@
 
 /* ── Packet sizes (byte-counted per INTERFACE_SPEC.md) ───────────── */
 #define SIZE_FC_MSG_FAST     21  /* [ID:1][STATUS:2][ALT:3][VEL:2][QUAT:5][TIME:2][BATT:1][SEQ:1][CRC:4] = 21 */
-#define SIZE_FC_MSG_GPS      18  /* [ID:1][DLAT:4][DLON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
+#define SIZE_FC_MSG_GPS      18  /* [ID:1][LAT:4][LON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
 #define SIZE_FC_MSG_EVENT    11  /* [ID:1][TYPE:1][DATA:2][TIME:2][RSVD:1][CRC:4] = 11 */
 #define SIZE_CMD_ARM         12  /* [ID:1][MAG:2][NONCE:2][CH:1][ACT:1][~CH:1][CRC:4] = 12 */
 #define SIZE_CMD_FIRE        13  /* [ID:1][MAG:2][NONCE:2][CH:1][DUR:1][~CH:1][~DUR:1][CRC:4] = 13 */
@@ -141,9 +141,20 @@ typedef struct {
     bool  adxl_available;   /* ADXL372 passed init (degraded mode)   */
 } fc_telem_state_t;
 
+/* FC_MSG_GPS payload state. Bytes 1-8 are ABSOLUTE coordinates as of the
+ * 2026-08-29 wire-contract change -- they were dlat_mm/dlon_mm, millimetres
+ * from a pad origin the vehicle captured on its first valid fix and never
+ * transmitted. The packet size did not change, so the two encodings are
+ * indistinguishable on the wire; ground_radio.c's MSG_ID_GPS decoder and
+ * Mission Control both read absolute now, and this struct must agree with
+ * them or the GS prints degrees as though they were millimetres.
+ *
+ * Nothing in the Casper-2 flight build currently emits FC_MSG_GPS
+ * (tlm_send_gps() and radio_send_gps() have no callers) -- this is the
+ * shared contract, kept correct so it cannot drift back. */
 typedef struct {
-    int32_t dlat_mm;        /* delta latitude from pad, millimetres (spec: ÷1000 → m) */
-    int32_t dlon_mm;        /* delta longitude from pad, millimetres */
+    int32_t lat_deg7;       /* absolute latitude,  degrees x 1e-7 (UBX NAV-PVT encoding) */
+    int32_t lon_deg7;       /* absolute longitude, degrees x 1e-7 */
     float alt_msl_m;
     uint8_t fix_type;
     uint8_t sat_count;

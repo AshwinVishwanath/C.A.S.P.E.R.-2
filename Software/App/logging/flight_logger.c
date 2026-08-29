@@ -442,8 +442,14 @@ void flight_logger_push_lr(flight_logger_t *log,
 
     /* GPS delta position */
     if (gps) {
-        /* dlat/dlon in mm (int32 from telemetry convention) */
-        rec.gps_dlat_mm   = gps->lat_deg7;  /* raw 1e-7 deg stored as-is for now */
+        /* ABSOLUTE lat/lon, degrees x 1e-7, straight from NAV-PVT -- despite
+         * the field names, which say millimetres-from-pad. The names are the
+         * wrong half: these fields have always held absolute coordinates, so
+         * every log ever written is correct and only the header is misleading.
+         * Left as-is deliberately -- tools/casper_decode.py emits them as CSV
+         * column names, and renaming breaks existing analysis for no new data.
+         * See INTERFACE_SPEC 6.7.6. */
+        rec.gps_dlat_mm   = gps->lat_deg7;
         rec.gps_dlon_mm   = gps->lon_deg7;
         rec.gps_alt_msl_m = (int16_t)(gps->alt_msl_m);
         rec.gps_fix_sats  = (uint8_t)((gps->fix_type << 4) | (gps->num_sv & 0x0F));

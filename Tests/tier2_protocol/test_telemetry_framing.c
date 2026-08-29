@@ -83,11 +83,15 @@ static void build_fc_msg_event(uint8_t *buf, uint8_t evt_type, uint16_t evt_data
 /* Build a synthetic FC_MSG_GPS packet (18 bytes) */
 static void build_fc_msg_gps(uint8_t *buf)
 {
-    /* [ID:1][DLAT:4][DLON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
+    /* [ID:1][LAT:4][LON:4][ALT:3][FIX:1][SAT:1][CRC:4] = 18 */
     memset(buf, 0, SIZE_FC_MSG_GPS);
     buf[0] = MSG_ID_GPS;
-    put_le32(&buf[1], 1234567);     /* dlat_mm */
-    put_le32(&buf[5], -7654321);    /* dlon_mm */
+    /* Absolute WGS84 coordinates, degrees x 1e-7 (UBX NAV-PVT encoding).
+     * These were pad-relative dlat_mm/dlon_mm until 2026-08-29; this test
+     * only exercises framing/CRC/COBS and asserts no semantic field values,
+     * so the change is comment-only here. */
+    put_le32(&buf[1], 1234567);     /* lat_deg7 */
+    put_le32(&buf[5], -7654321);    /* lon_deg7 */
     put_le24(&buf[9], 45600);       /* alt in cm (u24 LE) */
     buf[12] = 3;                     /* fix type */
     buf[13] = 12;                    /* sat count */
