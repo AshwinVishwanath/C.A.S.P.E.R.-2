@@ -21,6 +21,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef GS_OUTPUT_COBS
+#include "tlm_types.h"
+#include "crc32_hw.h"
+#endif /* GS_OUTPUT_COBS */
+
 /* ── Module state ─────────────────────────────────────────────────── */
 
 static ms5611_t   *s_baro;
@@ -137,16 +142,42 @@ void ground_main_tick(void)
         s_last_gps_ms = now;
     }
 
-    /* ── 6. GS status heartbeat: 1Hz ASCII output ────────────── */
+    /* ── 6. GS status heartbeat: 1Hz ─────────────────────────── */
     if (now - s_last_status_ms >= 1000) {
         const gs_radio_stats_t *stats = ground_radio_get_stats();
 
-#ifdef GS_FEI_BEACON
+#ifdef GS_OUTPUT_COBS
+        /* Binary GS_MSG_STATUS (0x13) — the ASCII heartbeat below is not
+         * available in COBS mode (CLAUDE.md rule #4: one output format per
+         * USB CDC), so without this Mission Control gets no GS profile /
+         * RSSI / SNR / pkt-count / ground-reference data at all. Takes
+         * precedence even if GS_FEI_BEACON is also set, for the same reason. */
+        gs_msg_status_t pkt;
+        pkt.msg_id             = MSG_ID_GS_STATUS;
+        pkt.radio_profile      = stats->current_profile;
+        pkt.last_rssi          = stats->last_rssi;
+        pkt.last_snr           = stats->last_snr;
+        pkt.rx_pkt_count       = stats->rx_pkt_count;
+        pkt.rx_crc_fail        = stats->rx_crc_fail;
+        pkt.ground_pressure_pa = (uint32_t)s_ground_pressure_pa;
+        /* Straight from the driver's raw NAV-PVT i32s, NOT via
+         * s_ground_lat_deg/s_ground_lon_deg -- those are float (~7 sig
+         * figs), which loses ~1 m of the GS's own reference position at
+         * two-digit latitudes. lat_deg7/lon_deg7 never round-trip through
+         * float. */
+        pkt.ground_lat_1e7     = s_gps->lat_deg7;
+        pkt.ground_lon_1e7     = s_gps->lon_deg7;
+        pkt.crc32 = crc32_hw_compute((const uint8_t *)&pkt,
+                                     SIZE_GS_MSG_STATUS - 4U);
+
+        ground_radio_cobs_send((const uint8_t *)&pkt, SIZE_GS_MSG_STATUS);
+#elif defined(GS_FEI_BEACON)
         int len = snprintf(s_status_buf, sizeof(s_status_buf),
             ">GS FEI_BEACON n=%lu seq=%u cfg=868.0MHz/SF9/BW125/CR5/+10dBm "
             "RX_PKTS:%u RX_FAIL:%u\r\n",
             (unsigned long)s_beacon_count, (unsigned)s_beacon_seq,
             stats->rx_pkt_count, stats->rx_crc_fail);
+        CDC_Transmit_FS((uint8_t *)s_status_buf, (uint16_t)len);
 #else
         int len = snprintf(s_status_buf, sizeof(s_status_buf),
             ">GS PROF:%c PKTS:%u FAIL:%u RSSI:%d SNR:%d "
@@ -161,8 +192,8 @@ void ground_main_tick(void)
             (double)s_ground_lon_deg,
             s_gps->fix_type,
             s_gps->num_sv);
-#endif /* GS_FEI_BEACON */
         CDC_Transmit_FS((uint8_t *)s_status_buf, (uint16_t)len);
+#endif /* GS_OUTPUT_COBS */
 
         s_last_status_ms = now;
     }

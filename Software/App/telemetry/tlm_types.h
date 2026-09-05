@@ -212,6 +212,8 @@ typedef struct __attribute__((packed)) {
     int32_t  ground_lon_1e7;      /* degrees x 10^7 (UBX encoding) */
     uint32_t crc32;               /* CRC over bytes 0..N-5         */
 } gs_msg_status_t;
+_Static_assert(sizeof(gs_msg_status_t) == SIZE_GS_MSG_STATUS,
+              "gs_msg_status_t must be SIZE_GS_MSG_STATUS bytes");
 
 /* ── Flight FSM configuration ───────────────────────────────── */
 typedef struct {
