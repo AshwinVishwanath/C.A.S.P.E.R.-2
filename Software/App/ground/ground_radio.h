@@ -15,11 +15,12 @@
 #include "stm32h7xx_hal.h"
 #include <stdint.h>
 
-/* Profile switch FSM states */
+/* Profile switch FSM states. Bidirectional (see ground_radio_profile_tick):
+ * a one-way A->B commit could not recover from an FC power-cycle without a
+ * GS power-cycle, since a rebooted FC always comes back up on Profile A. */
 typedef enum {
-    GS_PROFILE_AWAITING_FIRST,   /* Before any packet — stay on A indefinitely */
-    GS_PROFILE_A_ACTIVE,         /* Receiving packets on Profile A (SF7) */
-    GS_PROFILE_B_ACTIVE          /* Switched to Profile B (SF8) — permanent */
+    GS_PROFILE_A_ACTIVE,         /* Listening on Profile A (SF7) */
+    GS_PROFILE_B_ACTIVE          /* Listening on Profile B (SF8) */
 } gs_profile_state_t;
 
 /* Radio statistics */
@@ -48,9 +49,13 @@ void ground_radio_on_rx(void);
 
 /**
  * Profile switching tick. Call from main loop.
- * Tracks packet loss timer. Switches from Profile A to B
- * after 2 seconds of no valid packets (one-way, never switches back).
- * Only starts timing after first valid packet received.
+ * Cycles between Profile A and B after 2 seconds of no valid packets on
+ * whichever is currently active. Bidirectional: the FC's own profile
+ * switch (altitude/velocity driven) is one-way, but the GS has no such
+ * signal -- silence alone can't tell "FC switched to B for range" apart
+ * from "FC power-cycled and came back up on A" -- so the GS keeps trying
+ * both until one of them starts producing valid packets, then stays there
+ * (the timer only fires on continued silence).
  */
 void ground_radio_profile_tick(void);
 

@@ -172,8 +172,8 @@ int ground_radio_cobs_send(const uint8_t *raw, int len)
 int ground_radio_init(SPI_HandleTypeDef *hspi)
 {
     memset(&s_stats, 0, sizeof(s_stats));
-    s_profile_state    = GS_PROFILE_AWAITING_FIRST;
-    s_last_valid_rx_ms = 0;
+    s_profile_state    = GS_PROFILE_A_ACTIVE;
+    s_last_valid_rx_ms = HAL_GetTick();
     s_tx_pending       = 0;
 #ifdef GS_OUTPUT_COBS
     s_gs_seq           = 0;
@@ -323,13 +323,10 @@ void ground_radio_on_rx(void)
         return;
     }
 
-    /* Valid packet — update stats and profile timer */
+    /* Valid packet — resets the loss timer, keeping the GS parked on
+     * whichever profile (A or B) it's currently listening on. */
     s_stats.rx_pkt_count++;
     s_last_valid_rx_ms = HAL_GetTick();
-
-    if (s_profile_state == GS_PROFILE_AWAITING_FIRST) {
-        s_profile_state = GS_PROFILE_A_ACTIVE;
-    }
 
     uint8_t msg_id = s_rx_buf[0];
 
@@ -594,34 +591,57 @@ void ground_radio_profile_tick(void)
 {
 #if defined(GS_FEI_BEACON) || defined(GS_FEI_MEASURE)
     /* FEI bench: the modem is pinned to the bench config. The loss-timeout
-     * A->B switch below would silently retune it (in BEACON mode "no valid
-     * RX" is permanent; in MEASURE mode the beacon frames never pass the
-     * telemetry CRC path that feeds s_last_valid_rx_ms). */
+     * cycle below would silently retune it (in BEACON mode "no valid RX" is
+     * permanent; in MEASURE mode the beacon frames never pass the telemetry
+     * CRC path that feeds s_last_valid_rx_ms). */
     return;
 #endif
-    if (s_profile_state != GS_PROFILE_A_ACTIVE) return;
-
     uint32_t now = HAL_GetTick();
-    if (now - s_last_valid_rx_ms >= GS_PROFILE_LOSS_TIMEOUT_MS) {
-        /* Switch to Profile B (SF8) — one-way, never switch back */
-        sx1276_set_mode(SX1276_MODE_STDBY);
-        sx1276_set_modulation(RADIO_PROFILE_B.sf, RADIO_PROFILE_B.bw_hz,
-                              RADIO_PROFILE_B.cr);
+    if (now - s_last_valid_rx_ms < GS_PROFILE_LOSS_TIMEOUT_MS) return;
 
-        /* Back to RX-continuous */
-        sx1276_write_reg(SX1276_REG_FIFO_ADDR_PTR, SX1276_FIFO_RX_BASE);
-        sx1276_clear_irq_flags(SX1276_IRQ_ALL);
-        sx1276_set_mode(SX1276_MODE_RXCONTINUOUS);
-
-        s_stats.current_profile = 1;
+    /* No valid packet on the current profile for GS_PROFILE_LOSS_TIMEOUT_MS:
+     * cycle to the other one and give it its own full listen window.
+     * Bidirectional by design -- found bench-testing FC power-cycle recovery
+     * 2026-09-05: the FC's own A->B switch (radio_manager.c
+     * check_profile_switch) is one-way because it is driven by altitude and
+     * velocity, which only increase during a flight, so "never switch back"
+     * is correct there. The GS has no such signal, only silence, and
+     * silence is equally explained by "FC switched to B for range" and by
+     * "FC power-cycled and came back up on A" -- a rebooted FC always does,
+     * regardless of how far into a flight it previously got. A one-way GS
+     * commit to B could not tell those apart and had no way back short of a
+     * GS power-cycle. Cycling converges on whichever profile is actually
+     * live within one timeout period either way, then stops: once packets
+     * are flowing, s_last_valid_rx_ms keeps advancing and this never fires
+     * again. */
+    const radio_profile_t *next;
+    uint8_t next_id;
+    if (s_profile_state == GS_PROFILE_A_ACTIVE) {
+        next = &RADIO_PROFILE_B;
+        next_id = 1;
         s_profile_state = GS_PROFILE_B_ACTIVE;
+    } else {
+        next = &RADIO_PROFILE_A;
+        next_id = 0;
+        s_profile_state = GS_PROFILE_A_ACTIVE;
+    }
+
+    sx1276_set_mode(SX1276_MODE_STDBY);
+    sx1276_set_modulation(next->sf, next->bw_hz, next->cr);
+
+    /* Back to RX-continuous */
+    sx1276_write_reg(SX1276_REG_FIFO_ADDR_PTR, SX1276_FIFO_RX_BASE);
+    sx1276_clear_irq_flags(SX1276_IRQ_ALL);
+    sx1276_set_mode(SX1276_MODE_RXCONTINUOUS);
+
+    s_stats.current_profile = next_id;
+    s_last_valid_rx_ms = now;  /* fresh listen window on the new profile */
 
 #ifndef GS_OUTPUT_COBS
-        int len = snprintf(s_cdc_buf, sizeof(s_cdc_buf),
-            ">GS PROFILE_SWITCH A->B (loss timeout)\r\n");
-        gs_cdc_print(s_cdc_buf, len);
+    int len = snprintf(s_cdc_buf, sizeof(s_cdc_buf),
+        ">GS PROFILE_SWITCH %s (loss timeout)\r\n", next_id ? "A->B" : "B->A");
+    gs_cdc_print(s_cdc_buf, len);
 #endif
-    }
 }
 
 /* ------------------------------------------------------------------ */
